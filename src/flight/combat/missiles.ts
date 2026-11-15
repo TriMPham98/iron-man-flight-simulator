@@ -15,7 +15,7 @@ import type { Decoy, Hostile, PlayerTarget } from './types';
 
 type Team = 'player' | 'enemy';
 
-interface Missile {
+export interface Missile {
   team: Team;
   pos: THREE.Vector3;
   vel: THREE.Vector3;
@@ -219,6 +219,21 @@ export class Missiles {
   /** Enemy rounds on their way to the house. */
   strikes(): Missile[] {
     return this.live.filter((m) => m.team === 'enemy' && m.onImpact !== null);
+  }
+
+  /** Enemy rounds in the air: seekers on the suit and strikes on the house. */
+  inbound(): Missile[] {
+    return this.live.filter((m) => m.team === 'enemy' && (m.onImpact !== null || isPlayer(m.target)));
+  }
+
+  /** Burn a round out of the air: it goes off where it is and does nothing more. */
+  shootDown(m: Missile): void {
+    const i = this.live.indexOf(m);
+    if (i < 0) return;
+    this.explosions.blast(m.pos, m.blast * 0.8, { vel: m.vel.clone().multiplyScalar(0.05) });
+    this.group.remove(m.mesh, m.glow);
+    m.glow.material.dispose();
+    this.live.splice(i, 1);
   }
 
   /** Every round in the air gone, without a bang (a fresh run). */

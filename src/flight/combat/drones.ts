@@ -5,7 +5,7 @@ import type { EventBus } from '../sim/events';
 import type { Explosions, SurfaceQuery } from './explosions';
 import type { Missiles } from './missiles';
 import { box, glowMaterial, loft, merge, paint, type V3 } from './modelKit';
-import type { DamageKind, Hostile, PlayerTarget } from './types';
+import type { DamageKind, Hostile, HostileKind, HouseTarget, PlayerTarget } from './types';
 
 /**
  * Hostile drones: tailless jet UCAVs, gunmetal with a red sensor eye.
@@ -14,6 +14,14 @@ import type { DamageKind, Hostile, PlayerTarget } from './types';
  * again — plus terrain avoidance, a hard break when a rocket is on it, and
  * the odd heat seeker from range. Shot down, it trails fire and smoke all
  * the way in and blows again where it hits.
+ *
+ * The same airframe comes in three more builds ({@link DRONE_TYPES}):
+ *  - interceptors, stretched and dark: twice as fast, quicker with their
+ *    seekers, and too fast to turn with — they slash through and extend;
+ *  - jammers, a radome on the back: unarmed, they stand off and blind the
+ *    suit's seekers (and can't be painted themselves), and run when chased;
+ *  - bombers, three times the size: they ignore the suit and fly runs on
+ *    the house, with a tail gun for whoever follows them in.
  */
 
 const mats = {
@@ -175,15 +183,89 @@ const INGRESS_DASH = 1.5;
 
 type Mode = 'patrol' | 'attack' | 'extend' | 'break' | 'dying';
 
+export type DroneType = 'drone' | 'interceptor' | 'jammer' | 'bomber';
+
+interface DroneSpec {
+  label?: string;
+  hp: number;
+  /** The airframe's scale (x, y, z) and the hit sphere that goes with it (m). */
+  scale: V3;
+  radius: number;
+  /** Tint over the paint, and the exhaust's colour and size. */
+  tint: number;
+  flame: number;
+  flameSize: number;
+  /** Cruise speed: least, and the spread over it (m/s). */
+  cruise: readonly [number, number];
+  /** The pull it turns at (g), and its dash running in from far out (× cruise). */
+  g: number;
+  dash: number;
+  /** Nose cannon (bursts in the cone) or a turret that fires any way it likes. */
+  guns: 'nose' | 'turret' | null;
+  /** Heat seekers: seconds to the first, and between them (least, spread). */
+  seekers: readonly [number, number, number, number] | null;
+  role: 'fighter' | 'jammer' | 'bomber';
+}
+
+export const DRONE_TYPES: Record<DroneType, DroneSpec> = {
+  drone: { hp: 100, scale: [1, 1, 1], radius: 2.6, tint: 0xffffff, flame: 0xffc080, flameSize: 1.6, cruise: [165, 45], g: 7.5, dash: 1.5, guns: 'nose', seekers: [14, 16, 18, 16], role: 'fighter' },
+  interceptor: { label: 'INT', hp: 80, scale: [0.8, 0.85, 1.35], radius: 2.6, tint: 0x4a4e5c, flame: 0x9fd0ff, flameSize: 2.6, cruise: [280, 40], g: 11, dash: 1.15, guns: 'nose', seekers: [5, 6, 9, 6], role: 'fighter' },
+  jammer: { label: 'JAM', hp: 130, scale: [1.3, 1.3, 1.3], radius: 3.4, tint: 0xd8c9a0, flame: 0xffc080, flameSize: 1.8, cruise: [150, 20], g: 6, dash: 1, guns: null, seekers: null, role: 'jammer' },
+  bomber: { label: 'BMR', hp: 420, scale: [3.2, 3.2, 3.2], radius: 7.5, tint: 0x8f9a86, flame: 0xffb070, flameSize: 5, cruise: [120, 15], g: 3, dash: 1.2, guns: 'turret', seekers: null, role: 'bomber' },
+};
+
+/** A jammer stands off this far from the suit (m), and runs when it comes inside {@link JAM_FLEE}. */
+const JAM_STANDOFF = 2400;
+const JAM_FLEE = 1100;
+/** …and blinds the seekers out to here (m). */
+export const JAM_RANGE = 4500;
+/** A bomber's run: height over the house (m), how far out it lets go (m), bombs in a stick, the gap between them (s), and the share of the house each takes. */
+const BOMB_HEIGHT = 520;
+const BOMB_RELEASE = 1300;
+const BOMB_STICK = 2;
+const BOMB_GAP = 0.6;
+export const BOMB_DAMAGE = 0.07;
+/** After a stick it runs on this long (s) before it comes round for another. */
+const BOMB_EXTEND = 16;
+
+const variantMats = new Map<DroneType, THREE.MeshStandardMaterial>();
+function bodyMaterial(type: DroneType): THREE.MeshStandardMaterial {
+  if (type === 'drone') return mats.body;
+  let m = variantMats.get(type);
+  if (!m) {
+    m = mats.body.clone();
+    m.color.set(DRONE_TYPES[type].tint);
+    variantMats.set(type, m);
+  }
+  return m;
+}
+
+let radomeGeo: { body: THREE.BufferGeometry; glow: THREE.BufferGeometry } | null = null;
+/** The jammer's emitter: a flat dish on a pylon over the spine, an amber ring round its rim. */
+function radome() {
+  if (radomeGeo) return radomeGeo;
+  radomeGeo = {
+    body: merge([
+      box(0.1, 0.34, 0.5, C.dark, 0, 0.42, -0.2),
+      paint(new THREE.CylinderGeometry(0.95, 1.05, 0.14, 20).translate(0, 0.64, -0.2), C.edge),
+    ]),
+    glow: merge([paint(new THREE.TorusGeometry(1.02, 0.03, 6, 28).rotateX(Math.PI / 2).translate(0, 0.64, -0.2), new THREE.Color(1, 0.55, 0.08), 4)]),
+  };
+  return radomeGeo;
+}
+
 export class Drone implements Hostile {
   readonly id = nextId++;
-  readonly kind = 'drone' as const;
+  readonly kind: HostileKind;
+  readonly label?: string;
+  readonly noLock?: boolean;
   readonly pos = new THREE.Vector3();
   readonly vel = new THREE.Vector3();
-  readonly radius = 2.6;
-  readonly maxHp = 100;
-  hp = 100;
+  readonly radius: number;
+  readonly maxHp: number;
+  hp: number;
   alive = true;
+  private readonly spec: DroneSpec;
   threatened = 0;
   readonly mesh = new THREE.Group();
   mode: Mode = 'patrol';
@@ -192,12 +274,18 @@ export class Drone implements Hostile {
   private modeT = 0;
   private gunT = 0;
   private burst = 0;
-  private missileT = 14 + Math.random() * 16;
+  private missileT: number;
   private lockT = 0;
+  /** Bombs left in the stick being dropped, the time to the next (s), and the roof it is laid on. */
+  private stick = 0;
+  private stickT = 0;
+  private mark: THREE.Vector3 | null = null;
+  /** Which way round a jammer circles. */
+  private readonly orbit = Math.random() < 0.5 ? -1 : 1;
   private readonly q = new THREE.Quaternion();
   private roll = 0;
   private readonly exhaust: THREE.Sprite;
-  private readonly cruise = 165 + Math.random() * 45;
+  private readonly cruise: number;
   private readonly jink = Math.random() * 100;
   private smokeT = 0;
   private spin = 0;
@@ -209,18 +297,34 @@ export class Drone implements Hostile {
   crashed = false;
   flybyDone = false;
 
-  constructor(at: THREE.Vector3, heading: THREE.Vector3) {
+  constructor(at: THREE.Vector3, heading: THREE.Vector3, readonly type: DroneType = 'drone') {
+    const sp = (this.spec = DRONE_TYPES[type]);
+    this.kind = type;
+    this.label = sp.label;
+    if (sp.role === 'jammer') this.noLock = true;
+    this.radius = sp.radius;
+    this.maxHp = this.hp = sp.hp;
+    this.cruise = sp.cruise[0] + Math.random() * sp.cruise[1];
+    this.missileT = sp.seekers ? sp.seekers[0] + Math.random() * sp.seekers[1] : Infinity;
     const g = droneGeometry();
-    this.mesh.add(new THREE.Mesh(g.body, mats.body), new THREE.Mesh(g.glow, mats.glow));
+    // (the airframe in its own group, so the build's scale leaves the exhaust sprite alone)
+    const frame = new THREE.Group();
+    frame.add(new THREE.Mesh(g.body, bodyMaterial(type)), new THREE.Mesh(g.glow, mats.glow));
+    if (sp.role === 'jammer') {
+      const r = radome();
+      frame.add(new THREE.Mesh(r.body, bodyMaterial(type)), new THREE.Mesh(r.glow, mats.glow));
+    }
+    frame.scale.set(...sp.scale);
+    this.mesh.add(frame);
     this.mesh.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = false;
     });
     this.exhaust = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: exhaustTexture(), color: 0xffc080, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
+      new THREE.SpriteMaterial({ map: exhaustTexture(), color: sp.flame, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
     );
-    this.exhaust.scale.setScalar(1.6);
+    this.exhaust.scale.setScalar(sp.flameSize);
     this.mesh.add(this.exhaust);
-    this.exhaust.position.set(0, 0.02, -2.4);
+    this.exhaust.position.set(0, 0.02 * sp.scale[1], -2.4 * sp.scale[2]);
     this.pos.copy(at);
     this.vel.copy(heading).normalize().multiplyScalar(this.cruise);
     this.patrolAt.copy(at);
@@ -237,8 +341,8 @@ export class Drone implements Hostile {
       this.spin = (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 3);
       return true;
     }
-    // Hit: it flinches into a break
-    if (this.mode === 'attack' && Math.random() < 0.4) this.setMode('break');
+    // Hit: it flinches into a break (a bomber holds its run)
+    if (this.spec.role !== 'bomber' && this.mode === 'attack' && Math.random() < 0.4) this.setMode('break');
     return false;
   }
 
@@ -257,7 +361,10 @@ export class Drone implements Hostile {
     particles: Particles,
     explosions: Explosions,
     events: EventBus,
+    house?: HouseTarget,
   ): void {
+    const spec = this.spec;
+    const big = spec.scale[2];
     this.modeT += dt;
     this.threatened = Math.max(0, this.threatened - dt);
     const speed = this.vel.length();
@@ -274,12 +381,12 @@ export class Drone implements Hostile {
       this.smokeT += dt;
       while (this.smokeT > 0.025) {
         this.smokeT -= 0.025;
-        particles.emit('darkSmoke', this.pos, this._w.set(0, 1, 0), { scale: 0.45, life: 0.6 });
-        particles.emit('fire', this.pos, this._w.copy(this.vel).multiplyScalar(-0.05), { scale: 0.45 });
+        particles.emit('darkSmoke', this.pos, this._w.set(0, 1, 0), { scale: 0.45 * big, life: 0.6 });
+        particles.emit('fire', this.pos, this._w.copy(this.vel).multiplyScalar(-0.05), { scale: 0.45 * big });
       }
       this.orient(dt, this.vel.clone().normalize(), 0);
       if (this.pos.y < ground.surface(this.pos.x, this.pos.z) + 1) {
-        explosions.blast(this.pos, 7, { debris: 10, burn: !ground.isWater(this.pos.x, this.pos.z) });
+        explosions.blast(this.pos, 7 * Math.sqrt(big), { debris: 10, burn: !ground.isWater(this.pos.x, this.pos.z) });
         this.crashed = true;
       }
       return;
@@ -290,6 +397,20 @@ export class Drone implements Hostile {
     const facing = dist > 1 ? dir.dot(toP) / dist : 0;
     if (this.passive) {
       want.copy(dir);
+    } else if (spec.role === 'jammer' && this.mode !== 'break') {
+      // Stand off: circle the suit out of its reach, above it; run when it closes
+      const away = toP.clone().setY(0).normalize().negate();
+      if (dist < JAM_FLEE) want.copy(away).setY(0.12);
+      else {
+        const tangent = new THREE.Vector3(-away.z, 0, away.x).multiplyScalar(this.orbit);
+        want.copy(tangent).addScaledVector(away, THREE.MathUtils.clamp((JAM_STANDOFF - dist) / 600, -1, 1));
+        want.y = THREE.MathUtils.clamp((player.pos.y + 350 - this.pos.y) / 400, -0.3, 0.3);
+      }
+      want.normalize();
+      this.mode = 'attack';
+      if (this.threatened > 0.5 && Math.random() < dt * 1.5) this.setMode('break');
+    } else if (spec.role === 'bomber' && house && house.marks.length) {
+      want.copy(this.bomb(dt, dir, house, missiles, explosions, events));
     } else switch (this.mode) {
       case 'patrol':
         // Orbit the patrol point until the suit comes near (or is seen firing)
@@ -309,7 +430,8 @@ export class Drone implements Hostile {
       case 'extend':
         // Run out past the suit, then come round
         want.copy(dir).addScaledVector(toP.clone().normalize(), -0.4).setY(dir.y * 0.5 + 0.15).normalize();
-        if (this.modeT > 3.5 + Math.random() * 2) this.setMode('attack');
+        // (an interceptor is already a long way out by then: it comes straight round)
+        if (this.modeT > (this.type === 'interceptor' ? 1.5 : 3.5 + Math.random() * 2)) this.setMode('attack');
         break;
       case 'break': {
         // Hard jinking turn across the threat
@@ -322,21 +444,32 @@ export class Drone implements Hostile {
     // Terrain avoidance: look ahead and pull up hard if low
     const ahead = this.pos.clone().addScaledVector(this.vel, 2.5);
     const floor = Math.max(ground.surface(ahead.x, ahead.z), ground.surface(this.pos.x, this.pos.z), 0);
-    const clearance = this.pos.y - floor;
-    const safe = this.passive ? 40 : 140;
-    if (clearance < safe) want.y = Math.max(want.y, 0.25 + (safe - clearance) / safe);
+    // …judged from where the dive is taking it: the height it will lose
+    // pulling out at its own g (a fast one needs a lot of sky, and one that
+    // misjudged it used to fly into the sea and quietly vanish)
+    const sink = Math.max(0, -this.vel.y) / Math.max(speed, 1);
+    const pullOut = ((speed * speed) / (spec.g * 9.81)) * (1 - Math.sqrt(Math.max(0, 1 - sink * sink)));
+    const clearance = this.pos.y - floor - (this.passive ? 0 : pullOut * 1.25);
+    const safe = this.passive ? 40 : 140 + 30 * (big - 1);
+    if (clearance < safe) {
+      // Pull up along the way it's going: turning for a target behind it
+      // from a dive, the short way round used to be down through the ground
+      const h = Math.max(Math.hypot(dir.x, dir.z), 1e-3);
+      want.set(dir.x / h + 0.3 * want.x, Math.max(want.y, 0.25 + (safe - clearance) / safe), dir.z / h + 0.3 * want.z);
+    }
     if (this.pos.y > 4000) want.y = Math.min(want.y, -0.2);
     want.normalize();
 
     // ── Fly: turn the velocity toward `want` within the g limit ───────
-    const maxRate = (7.5 * 9.81) / Math.max(speed, 80);
+    const maxRate = (spec.g * 9.81) / Math.max(speed, 80);
     const ang = dir.angleTo(want);
     if (ang > 1e-4) {
       const axis = new THREE.Vector3().crossVectors(dir, want).normalize();
       dir.applyAxisAngle(axis, Math.min(ang, maxRate * dt));
     }
     // Running in from far out they dash, and settle to cruise for the merge
-    const dash = this.mode === 'extend' ? 1.25 : this.mode === 'attack' && dist > INGRESS_DIST ? INGRESS_DASH : 1;
+    const fleeing = spec.role === 'jammer' && dist < JAM_FLEE;
+    const dash = fleeing ? 1.3 : spec.role !== 'fighter' ? 1 : this.mode === 'extend' ? 1.25 : this.mode === 'attack' && dist > INGRESS_DIST ? Math.min(spec.dash, INGRESS_DASH) : 1;
     const sp = speed + (this.cruise * dash - speed) * (1 - Math.exp(-dt * 0.8));
     // Bank into the turn: roll by the lateral acceleration
     const lateral = new THREE.Vector3().crossVectors(dir, want).y;
@@ -348,7 +481,8 @@ export class Drone implements Hostile {
 
     // ── Guns: short bursts when the suit is in the cone and in range ──
     this.gunT -= dt;
-    if (this.mode === 'attack' && !this.passive && player.alive && dist < 950 && facing > 0.985) {
+    const inSights = spec.guns === 'turret' ? dist < 800 : spec.guns === 'nose' && this.mode === 'attack' && dist < 950 && facing > 0.985;
+    if (inSights && !this.passive && player.alive) {
       if (this.gunT <= 0 && this.burst <= 0) {
         this.burst = 4 + Math.floor(Math.random() * 3);
         this.gunT = 0.9 + Math.random() * 0.8;
@@ -360,11 +494,12 @@ export class Drone implements Hostile {
       if (this.burstT <= 0) {
         this.burstT = 0.07;
         this.burst--;
-        const muzzle = this.pos.clone().addScaledVector(dir, 2.4);
+        // (a bomber's gun is in its tail)
+        const muzzle = this.pos.clone().addScaledVector(dir, spec.guns === 'turret' ? -2 * big : 2.4 * big);
         const tgo = dist / 900;
         const aim = player.pos.clone().addScaledVector(player.vel, tgo).sub(muzzle).normalize();
         // Spread: they're drones, not snipers
-        aim.add(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.035)).normalize();
+        aim.add(new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(spec.guns === 'turret' ? 0.05 : 0.035)).normalize();
         rounds.push({ p: muzzle, v: aim.multiplyScalar(900).add(this.vel), life: 1.6 });
         particles.emit('flash', muzzle, undefined, { scale: 0.09 });
       }
@@ -372,12 +507,12 @@ export class Drone implements Hostile {
 
     // ── Heat seeker from range ───────────────────────────────────────
     this.missileT -= dt;
-    if (this.mode === 'attack' && !this.passive && player.alive && dist > 700 && dist < 2800 && facing > 0.9) {
+    if (spec.seekers && this.mode === 'attack' && !this.passive && player.alive && dist > 700 && dist < 2800 && facing > 0.9) {
       this.lockT += dt;
       if (this.lockT > 1.6 && this.missileT <= 0) {
         missiles.launch({ team: 'enemy', from: this.pos.clone().addScaledVector(dir, -0.5).add(new THREE.Vector3(0, -0.5, 0)), vel: this.vel, target: player });
         events.emit('enemyMissile', { at: this.pos });
-        this.missileT = 18 + Math.random() * 16;
+        this.missileT = spec.seekers[2] + Math.random() * spec.seekers[3];
         this.lockT = 0;
       }
     } else {
@@ -386,6 +521,50 @@ export class Drone implements Hostile {
   }
 
   private burstT = 0;
+
+  /**
+   * A bomber's run: in on the house at height, a stick of glide bombs let go
+   * short of it, on over the top and out, then round for another. Returns
+   * the way it wants to fly.
+   */
+  private bomb(dt: number, dir: THREE.Vector3, house: HouseTarget, missiles: Missiles, explosions: Explosions, events: EventBus): THREE.Vector3 {
+    const want = new THREE.Vector3();
+    this.mark ??= house.marks[Math.floor(Math.random() * house.marks.length)];
+    const to = want.copy(this.mark).sub(this.pos);
+    const flat = Math.hypot(to.x, to.z);
+    const climb = THREE.MathUtils.clamp((this.mark.y + BOMB_HEIGHT - this.pos.y) / 300, -0.35, 0.35);
+    if (this.mode === 'extend') {
+      // Straight on over the house and away
+      want.copy(dir).setY(climb).normalize();
+      if (this.modeT > BOMB_EXTEND) {
+        this.mark = null;
+        this.setMode('attack');
+      }
+      return want;
+    }
+    this.mode = 'attack';
+    to.setY(0).normalize();
+    const lined = dir.x * to.x + dir.z * to.z > 0.96 * Math.hypot(dir.x, dir.z);
+    to.setY(climb).normalize();
+    if (this.stick === 0 && flat < BOMB_RELEASE && lined) {
+      this.stick = BOMB_STICK;
+      this.stickT = 0;
+    }
+    if (this.stick > 0) {
+      this.stickT -= dt;
+      if (this.stickT <= 0) {
+        this.stickT = BOMB_GAP;
+        this.stick--;
+        const at = house.marks[Math.floor(Math.random() * house.marks.length)];
+        const from = this.pos.clone().add(new THREE.Vector3(0, -0.8 * this.spec.scale[1], 0));
+        missiles.launch({ team: 'enemy', from, vel: this.vel, target: null, aimPoint: at, onImpact: (p) => house.struck(p, BOMB_DAMAGE), coast: 0.5, caliber: 0.2, length: 2.6 });
+        explosions.muzzle(from, dir, 1.2);
+        events.emit('enemyMissile', { at: from });
+        if (this.stick === 0) this.setMode('extend');
+      }
+    }
+    return to;
+  }
 
   private orient(dt: number, dir: THREE.Vector3, roll: number): void {
     void dt;

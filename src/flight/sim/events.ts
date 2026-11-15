@@ -68,6 +68,12 @@ export type SimEventKind =
   /** A fresh run from the pad after the suit was lost. */
   | 'redeploy'
   | 'jarvis'
+  /** A round came down on the house: value = what's left of it (0–1). */
+  | 'houseHit'
+  /** The house is gone (and the run with it). */
+  | 'houseLost'
+  /** An inbound round shot out of the air (the suit's point defence, or the house's): text = suit / house. */
+  | 'intercept'
   // Picture (directed reels)
   | 'cameraCut';
 

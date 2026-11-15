@@ -1,6 +1,6 @@
 import './screens.css';
 import { isTouchDevice } from '../sim/touchMath';
-import { MAX_LEVEL, UPGRADES, type RefitRefusal, type Upgrades } from '../sim/upgrades';
+import { HOUSE_REPAIR_COST, MAX_LEVEL, UPGRADES, type RefitRefusal, type Upgrades } from '../sim/upgrades';
 import { deviceProfile, type DeviceTier } from '../../scene/deviceProfile';
 
 /**
@@ -112,7 +112,15 @@ export interface RefitMenu {
   upgrades: Upgrades;
   /** Why the suit can't be refitted right now, or null when it can. */
   gate(): string | null;
+  /** The house, to patch up with R&D: what's left of it (0–1; null when there's no run to repair it for), and putting a share of it back. */
+  house?: { hp(): number | null; repair(share: number): void };
 }
+
+/** The most of the house one purchase puts back (share of the whole). */
+const REPAIR_STEP = 0.25;
+
+/** The repair row's key among the upgrade rows. */
+const REPAIR_ROW = 'house-repair';
 
 const REFUSAL: Record<Exclude<RefitRefusal, null>, string> = {
   cost: 'NOT ENOUGH R&D',
@@ -373,7 +381,9 @@ export class Screens {
       const target = t.target as HTMLElement;
       const row = target.closest<HTMLElement>('.rd-row');
       if (!row || !this.refitMenu) return;
-      if (target.closest('[data-buy]') || t.detail === 0) {
+      if (row.dataset.up === REPAIR_ROW) {
+        if (target.closest('[data-buy]') || t.detail === 0) this.repairHouse();
+      } else if (target.closest('[data-buy]') || t.detail === 0) {
         const up = UPGRADES.find((x) => x.id === row.dataset.up)!;
         this.refit((u) => u.buy(up.id), `${up.name} · LEVEL ${this.refitMenu.upgrades.state.level[up.id] + 1} FITTED`);
       }
@@ -443,7 +453,34 @@ export class Screens {
     this.renderRefit();
   }
 
-  /** The R&D pane: points, levels fitted and the wave record up top, then a row per system. */
+  /** What a press of the repair row would do now: the share it would put back and its price (null with nothing to mend, or nothing to pay with). */
+  private repairOffer(): { share: number; cost: number } | null {
+    const m = this.refitMenu;
+    const hp = m?.house?.hp() ?? null;
+    if (!m || hp === null || hp > 0.995) return null;
+    // (whole percents: as much as the step, the damage and the points allow)
+    const pts = Math.min(Math.round(REPAIR_STEP * 100), Math.ceil((1 - hp) * 100), Math.floor(m.upgrades.state.rd / HOUSE_REPAIR_COST));
+    return pts > 0 ? { share: pts / 100, cost: pts * HOUSE_REPAIR_COST } : null;
+  }
+
+  private repairHouse(): void {
+    const m = this.refitMenu;
+    const hp = m?.house?.hp() ?? null;
+    if (!m?.house || hp === null) return;
+    if (hp > 0.995) {
+      this.refitMsg = 'THE HOUSE IS WHOLE';
+      this.renderRefit();
+      return;
+    }
+    const offer = this.repairOffer();
+    this.refit((u) => {
+      if (!offer || !u.spend(offer.cost)) return 'cost';
+      m.house!.repair(offer.share);
+      return null;
+    }, offer ? `HOUSE REPAIRED · +${Math.round(offer.share * 100)}%` : undefined);
+  }
+
+  /** The R&D pane: points, levels fitted and the wave record up top, the house's repairs, then a row per system. */
   private renderRefit(): void {
     const m = this.refitMenu;
     if (!m) return;
@@ -482,6 +519,21 @@ export class Screens {
         <div class="rd-stats">${stats}</div>
       </div>`;
     }).join('');
+    const hp = m.house?.hp() ?? null;
+    let houseHtml = '';
+    if (hp !== null) {
+      const offer = this.repairOffer();
+      const whole = hp > 0.995;
+      const pct = Math.ceil(hp * 100);
+      const price = Math.min(Math.round(REPAIR_STEP * 100), Math.ceil((1 - hp) * 100)) * HOUSE_REPAIR_COST;
+      const buy = whole ? '<span class="rd-max">WHOLE</span>' : `<button class="rd-buy${offer && !gate ? '' : ' dim'}" data-buy tabindex="-1">${offer ? offer.cost : price}<small>R&amp;D</small></button>`;
+      houseHtml = `<div class="rd-row${whole ? ' owned' : ''}" tabindex="0" data-up="${REPAIR_ROW}" aria-label="House repairs: ${pct} percent standing${whole ? '' : `, repair for ${offer ? offer.cost : price} R&D`}">
+        <div class="rd-name">HOUSE REPAIRS<small>MALIBU</small></div>
+        <div class="rd-pips"><span class="rd-max">${pct}%</span></div>
+        <div class="rd-buyc">${buy}</div>
+        <div class="rd-stats"><span><small>STANDING</small>${pct}%${offer ? `<em>&#x2192; ${Math.min(100, pct + Math.round(offer.share * 100))}%</em>` : ''}</span><span><small>PRICE</small>${HOUSE_REPAIR_COST} R&amp;D / 1%</span><span><small>LOSE THE HOUSE</small>LOSE THE RUN</span></div>
+      </div>`;
+    }
     const hint = this.touch ? 'TAP THE PRICE TO BUY THE NEXT LEVEL' : 'ENTER BUYS THE NEXT LEVEL';
     pane.innerHTML = `
       <div class="rd-top">
@@ -490,7 +542,7 @@ export class Screens {
         <div class="rd-stat"><small>BEST WAVE</small><b>${u.state.best}</b></div>
       </div>
       <p class="fp-note rd-gate${gate ? ' shut' : ''}">${esc(this.refitMsg || gate || '')}${this.refitMsg || gate ? '' : hint}</p>
-      <div class="rd-rows">${rowsHtml}</div>`;
+      <div class="rd-rows">${houseHtml}${rowsHtml}</div>`;
     if (focused) this.focus(pane.querySelector<HTMLElement>(`[data-up="${focused}"]`) ?? undefined, padFocus);
   }
 

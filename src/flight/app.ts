@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Suit } from '../suit/Suit';
-import { createAdaptiveResolution } from '../scene/adaptiveResolution';
+import { createAdaptiveResolution, type ResolutionRenderer } from '../scene/adaptiveResolution';
 import { GameAudio } from './audio/gameAudio';
 import { SFX, Soundscape } from './audio/soundscape';
 import { CONTEXT_ATTRIBUTES, canReverseDepth, useReversedDepth } from './render/depth';
@@ -61,6 +61,23 @@ export class FlightApp {
   readonly timings: BuildTimings = {};
   readonly query = new URLSearchParams(location.search);
   readonly maxDpr: number;
+  /** Pixel ratio of the canvas's drawing buffer: {@link sharpDpr} unless a preset holds it down. */
+  outputDpr: number;
+  /** The canvas as sharp as the screen (to 2×; a touch GPU's stays at the scene's ceiling). */
+  readonly sharpDpr: number;
+  private sceneDpr: number;
+  /**
+   * The scene's pixel ratio (what the adaptive resolution, the gauge and the
+   * graphics preset move): the scene target's size, not the canvas's. Follow
+   * a change with post.resize().
+   */
+  readonly resolution: ResolutionRenderer = {
+    getPixelRatio: () => this.sceneDpr,
+    setPixelRatio: (v: number) => {
+      this.sceneDpr = Math.min(v, this.outputDpr);
+      this.post?.setScale(this.sceneDpr / this.outputDpr);
+    },
+  };
   world!: World;
   suit!: Suit;
   game!: Game;
@@ -139,7 +156,14 @@ export class FlightApp {
       })(),
     );
     this.maxDpr = opts.pixelRatio ?? Math.min(window.devicePixelRatio, opts.maxPixelRatio ?? 1.5);
-    r.setPixelRatio(this.maxDpr);
+    // The canvas itself is as sharp as the screen (to 2×) and stays that
+    // size; only the scene target follows the adaptive ratio, and the final
+    // pass upscales it (render/post.ts). A touch GPU keeps the canvas at the
+    // scene's ceiling: its fill rate is what the ratio is saving
+    this.sharpDpr = opts.screens.touch ? this.maxDpr : Math.max(this.maxDpr, Math.min(window.devicePixelRatio || 1, 2));
+    this.outputDpr = this.sharpDpr;
+    this.sceneDpr = this.maxDpr;
+    r.setPixelRatio(this.outputDpr);
     r.shadowMap.enabled = true;
     r.shadowMap.type = THREE.PCFSoftShadowMap;
     Object.assign(canvas.style, { position: 'fixed', left: '0', top: '0', display: 'block' });
@@ -151,6 +175,19 @@ export class FlightApp {
     window.addEventListener('resize', () => this.syncViewport(true));
     window.visualViewport?.addEventListener('resize', () => this.syncViewport());
     window.addEventListener('orientationchange', () => this.syncViewport());
+  }
+
+  /**
+   * Resizes the canvas's drawing buffer (a graphics preset trading the
+   * full-resolution final pass away); the scene keeps its own ratio under it.
+   */
+  setOutputDpr(dpr: number): void {
+    const next = Math.min(dpr, this.sharpDpr);
+    if (next === this.outputDpr) return;
+    this.outputDpr = next;
+    this.renderer.setPixelRatio(next);
+    this.resolution.setPixelRatio(this.sceneDpr);
+    this.syncViewport(true);
   }
 
   /** The size everything is drawn at (CSS px; src/flight/render/viewport.ts). */
@@ -201,6 +238,8 @@ export class FlightApp {
     console.info(`[flight] game built in ${this.timings.game} ms`);
     await this.step('post', () => {
       this.post = new FlightPost(this.renderer, this.scene, this.camera);
+      this.post.setScale(this.sceneDpr / this.outputDpr);
+      this.post.resize();
       this.hud = new Hud(this.opts.hudCanvas);
       // The helmet's suit diagram: the suit's own panel lines, flattened once
       const palm = (i: number) => this.suit.palms[i].at;
@@ -237,7 +276,7 @@ export class FlightApp {
       helmet: 0,
     };
     this.baseExposure = this.lens.exposure;
-    this.adaptive = createAdaptiveResolution(this.renderer, () => this.post.resize(), { min: 0.7, max: this.maxDpr });
+    this.adaptive = createAdaptiveResolution(this.resolution, () => this.post.resize(), { min: 0.7, max: this.maxDpr });
 
     // ?demo plays the directed reel live; ?capture steps it frame by frame
     if (!this.opts.embedded) {
@@ -340,8 +379,8 @@ export class FlightApp {
    * waited out with a one-pixel read) fit cost = fixed + per-pixel × ratio².
    */
   private gaugeResolution(): void {
-    const r = this.renderer;
-    const gl = r.getContext();
+    const r = this.resolution;
+    const gl = this.renderer.getContext();
     const px = new Uint8Array(4);
     const time = (dpr: number) => {
       r.setPixelRatio(dpr);
@@ -564,6 +603,8 @@ export class FlightApp {
     this.opts.screens.setRefit({
       upgrades,
       gate: () => (combat.lost || game.onPad ? null : 'SET DOWN ON THE PAD TO REFIT'),
+      // (a lost run's house comes back whole with the redeploy: nothing to buy)
+      house: { hp: () => (combat.lost || combat.wave < 0 ? null : combat.houseHp), repair: (share) => void combat.repairHouse(share) },
     });
   }
 

@@ -2,8 +2,9 @@ import type { SimEvent } from './events';
 
 /**
  * R&D: the suit's upgrades. Points are earned in the air (kills, cleared
- * waves, clean pad landings, decoyed seekers) and spent on the pad: eight
- * systems, each fitted a level at a time up to five. Every level costs more
+ * waves, clean pad landings, decoyed seekers) and spent on the pad: ten
+ * systems, each fitted a level at a time up to five (or on patching up the
+ * house: see {@link HOUSE_REPAIR_COST}). Every level costs more
  * than the last, and the higher ones stay locked until the pilot has cleared
  * a deep enough wave.
  *
@@ -45,7 +46,21 @@ export interface SuitSpec {
   /** Aim assist: how far out it takes a target, and the cone it snaps in (×). */
   assistRange: number;
   assistCone: number;
+  /** Share of a jammer's hold on the seekers the suit shrugs off (0–1). */
+  jamResist: number;
+  /** Point defence: seconds between shots (0 = not fitted) and its reach (m). */
+  pdInterval: number;
+  pdRange: number;
+  /** The house: share of each hit it takes, what a cleared wave puts back (0–1), and the odds its own battery stops an inbound round. */
+  houseDamage: number;
+  houseRepair: number;
+  houseIntercept: number;
 }
+
+/** What a cleared wave puts back on the house, by level of its defences (share of the whole). */
+const HOUSE_REPAIR = [0.05, 0.07, 0.09, 0.11, 0.13, 0.15];
+/** R&D to patch up one percent of the house on the pad. */
+export const HOUSE_REPAIR_COST = 4;
 
 export const STOCK_SPEC = (): SuitSpec => ({
   damageTaken: 1,
@@ -69,9 +84,15 @@ export const STOCK_SPEC = (): SuitSpec => ({
   icingLift: 0,
   assistRange: 1,
   assistCone: 1,
+  jamResist: 0,
+  pdInterval: 0,
+  pdRange: 0,
+  houseDamage: 1,
+  houseRepair: HOUSE_REPAIR[0],
+  houseIntercept: 0,
 });
 
-export type UpgradeId = 'armour' | 'reactor' | 'repulsors' | 'missiles' | 'launchers' | 'flares' | 'propulsion' | 'sensors';
+export type UpgradeId = 'armour' | 'reactor' | 'repulsors' | 'missiles' | 'launchers' | 'flares' | 'propulsion' | 'sensors' | 'pointDefence' | 'house';
 
 /** One line of what an upgrade does: its label, and the value at a level (0 = stock). */
 type Stat = [label: string, show: (level: number) => string];
@@ -130,9 +151,16 @@ const thrust = step(1, 1.3);
 const topSpeed = step(1, 1.35);
 const icing = step(0, 3000);
 const assist = step(1, 1.6);
+const eccm = step(0, 0.8);
+/** Point defence, by level: seconds between shots (0 = none) and reach (m). */
+const PD_INTERVAL = [0, 9, 7.5, 6, 4.5, 3];
+const PD_RANGE = [0, 250, 300, 350, 420, 500];
+const houseTaken = step(1, 0.55);
+/** The house's own battery, by level: the odds it stops a round coming in. */
+const HOUSE_INTERCEPT = [0, 0.1, 0.2, 0.3, 0.4, 0.5];
 
 /**
- * The eight systems, five levels each. A first wave buys a first level of
+ * The ten systems, five levels each. A first wave buys a first level of
  * something cheap; maxing the suit takes many long runs and a record of
  * deep waves to show for them.
  */
@@ -253,10 +281,44 @@ export const UPGRADES: readonly Upgrade[] = [
     stats: [
       ['ASSIST RANGE', (l) => km(1.8 * assist(l))],
       ['ASSIST CONE', (l) => `${(4.5 * assist(l)).toFixed(1)}°`],
+      ['JAM RESIST', (l) => (l ? `${Math.round(eccm(l) * 100)}%` : 'NONE')],
     ],
     apply: (s, l) => {
       s.assistRange = assist(l);
       s.assistCone = assist(l);
+      s.jamResist = eccm(l);
+    },
+  },
+  {
+    // A collar laser that burns down a round coming in (a seeker on the
+    // suit, or one bound for the house that passes within its reach)
+    id: 'pointDefence',
+    name: 'POINT DEFENCE',
+    part: 'COLLAR',
+    costs: ladder(350),
+    stats: [
+      ['SHOT EVERY', (l) => (l ? sec(PD_INTERVAL[l]) : 'NOT FITTED')],
+      ['REACH', (l) => (l ? `${PD_RANGE[l]} m` : '—')],
+    ],
+    apply: (s, l) => {
+      s.pdInterval = PD_INTERVAL[l];
+      s.pdRange = PD_RANGE[l];
+    },
+  },
+  {
+    id: 'house',
+    name: 'HOUSE DEFENCES',
+    part: 'MALIBU',
+    costs: ladder(300),
+    stats: [
+      ['DAMAGE TAKEN', (l) => pct(houseTaken(l) - 1)],
+      ['REPAIR / WAVE', (l) => `+${Math.round(HOUSE_REPAIR[l] * 100)}%`],
+      ['INTERCEPTS', (l) => (l ? `${Math.round(HOUSE_INTERCEPT[l] * 100)}%` : 'NONE')],
+    ],
+    apply: (s, l) => {
+      s.houseDamage = houseTaken(l);
+      s.houseRepair = HOUSE_REPAIR[l];
+      s.houseIntercept = HOUSE_INTERCEPT[l];
     },
   },
 ];
@@ -264,10 +326,16 @@ export const UPGRADES: readonly Upgrade[] = [
 /** R&D points for what the pilot does. */
 export const AWARD = {
   drone: 10,
+  interceptor: 20,
+  jammer: 30,
+  bomber: 40,
   sam: 25,
   /** Each part of a frigate shot off it, and the ship going under. */
   ship: 15,
   frigate: 100,
+  /** Each piece shot off the dreadnought, and the thing itself coming down. */
+  boss: 20,
+  dreadnought: 300,
   /** A cleared wave: the base plus this × its number, and half as much again with no hit taken. */
   waveBase: 40,
   wave: 30,
@@ -279,6 +347,8 @@ export const AWARD = {
   /** The first time through the barrier on each flight. */
   sonicBoom: 10,
 } as const;
+/** What the award for a kill is called, where the kind's own name won't do. */
+const DOWNED: Partial<Record<string, string>> = { frigate: 'WARSHIP SUNK', boss: 'DREADNOUGHT SYSTEM OUT', dreadnought: 'DREADNOUGHT DOWN' };
 /** A landing only pays after this long in the air (s): no hopping on the pad for points. */
 export const LANDING_MIN_AIR = 30;
 
@@ -369,6 +439,15 @@ export class Upgrades {
     return this.state.rd < cost ? 'cost' : null;
   }
 
+  /** Takes points off the ledger for something other than a level (house repairs); false when there aren't enough. */
+  spend(points: number): boolean {
+    points = Math.ceil(points);
+    if (points <= 0 || this.state.rd < points) return false;
+    this.state.rd -= points;
+    this.commit();
+    return true;
+  }
+
   earn(points: number, reason: string): void {
     if (points <= 0) return;
     this.state.rd += points;
@@ -383,7 +462,7 @@ export class Upgrades {
       case 'destroyed': {
         const kind = e.text as keyof typeof AWARD;
         const pts = AWARD[kind];
-        if (typeof pts === 'number') this.earn(pts, kind === 'frigate' ? 'WARSHIP SUNK' : `${kind.toUpperCase()} DOWN`);
+        if (typeof pts === 'number') this.earn(pts, DOWNED[kind] ?? `${kind.toUpperCase()} DOWN`);
         break;
       }
       case 'waveStart':

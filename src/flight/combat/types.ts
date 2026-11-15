@@ -1,6 +1,9 @@
 import type * as THREE from 'three';
 
-export type HostileKind = 'drone' | 'sam' | 'ship';
+export type HostileKind = 'drone' | 'interceptor' | 'bomber' | 'jammer' | 'sam' | 'ship' | 'boss';
+
+/** Kinds that fly (the HUD paints them red; the rest are amber). */
+export const isAircraft = (k: HostileKind): boolean => k === 'drone' || k === 'interceptor' || k === 'bomber' || k === 'jammer';
 
 /** Anything the suit can lock, shoot and blow up. */
 export interface Hostile {
@@ -16,6 +19,8 @@ export interface Hostile {
   readonly label?: string;
   /** The whole it's one piece of (a ship's parts share theirs). */
   readonly whole?: object;
+  /** The seekers can't paint it (a jammer): it has to be shot down by hand. */
+  readonly noLock?: boolean;
   hp: number;
   readonly maxHp: number;
   alive: boolean;
@@ -50,5 +55,6 @@ export interface Decoy {
  */
 export interface HouseTarget {
   readonly marks: readonly THREE.Vector3[];
-  struck(at: THREE.Vector3): void;
+  /** `damage`: the share of the house a hit on it takes (0–1; a launcher's round when not given). */
+  struck(at: THREE.Vector3, damage?: number): void;
 }

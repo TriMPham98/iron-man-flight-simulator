@@ -106,6 +106,9 @@ varying float vMorph;
 varying vec3 vMacro;
 uniform float uTexel;
 uniform float uTime;
+uniform float uDetailReach;
+uniform sampler2D uPlantShade;
+uniform vec4 uShadeBox; // centre x, centre z, 1 / span
 ${TERRAIN_SAMPLE_GLSL}
 ${ATMOSPHERE_GLSL}
 float tSunVis;
@@ -122,12 +125,22 @@ const ALBEDO = /* glsl */ `
   vec3 wN = terrainNormal(xz, hgt, slopeDetail);
   float viewD = length(vTerrainPos - cameraPosition);
   // Close-up detail (grain, micro relief, triplanar cliffs) fades out with
-  // distance and is skipped outright beyond it: far pixels stay cheap
-  float near = 1.0 - smoothstep(150.0, 900.0, viewD);
-  float micro = 1.0 - smoothstep(30.0, 260.0, viewD);
+  // distance and is skipped outright beyond it: far pixels stay cheap.
+  // uDetailReach stretches both fades (the graphics preset sets it)
+  float near = 1.0 - smoothstep(150.0 * uDetailReach, 900.0 * uDetailReach, viewD);
+  float micro = 1.0 - smoothstep(30.0 * uDetailReach, 260.0 * uDetailReach, viewD);
   vec4 bake = texture2D(uBake, xz / uWorld + 0.5);
   tSunVis = bake.r;
   tAo = mix(0.55, 1.0, bake.g);
+  // The plants' own shade (world/vegetation.ts): the sky they hide from
+  // the ground under them and the shadows they throw down-sun
+  vec2 shadeUv = (xz - uShadeBox.xy) * uShadeBox.z;
+  float shadeK = 1.0 - smoothstep(0.4, 0.5, max(abs(shadeUv.x), abs(shadeUv.y)));
+  if (shadeK > 0.0) {
+    vec2 plantShade = texture2D(uPlantShade, shadeUv + 0.5).rg * shadeK;
+    tAo *= 1.0 - plantShade.r;
+    tSunVis *= 1.0 - plantShade.g;
+  }
 
   float slope = 1.0 - wN.y;
   float m1 = vMacro.x;
@@ -255,6 +268,9 @@ export class Terrain {
       uRange0: { value: RANGE0 },
       uTexel: { value: TEXEL },
       uTime: { value: 0 },
+      uDetailReach: { value: 1 },
+      uPlantShade: { value: null },
+      uShadeBox: { value: new THREE.Vector4(0, 0, 0, 0) },
     };
     const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0 });
     mat.envMapIntensity = 0.85;
@@ -398,6 +414,30 @@ export class Terrain {
     (this.uniforms.uEye.value as THREE.Vector3).copy(eye);
     this.uniforms.uTime.value = time;
     void this.field;
+  }
+
+  /** The vegetation's shade map and the box it covers (shared, kept current by the vegetation). */
+  setPlantShade(shade: { texture: THREE.Texture | null; box: THREE.Vector4 }): void {
+    this.uniforms.uPlantShade.value = shade.texture;
+    this.uniforms.uShadeBox.value = shade.box;
+  }
+
+  /**
+   * How far the close-up ground detail carries, and how sharp it stays at
+   * grazing angles. `reach` multiplies the fade distances of the grain and
+   * micro relief (1 = 900 m and 260 m); `anisotropy` is the filtering on the
+   * detail textures (clamped to what the GPU offers).
+   */
+  setDetail(reach: number, anisotropy: number, renderer: THREE.WebGLRenderer): void {
+    this.uniforms.uDetailReach.value = reach;
+    const aniso = Math.max(1, Math.min(anisotropy, renderer.capabilities.getMaxAnisotropy()));
+    for (const key of ['uDetail', 'uDetailGrad']) {
+      const tex = this.uniforms[key].value as THREE.Texture;
+      // Anisotropy needs the mip chain (absent without linear float filtering)
+      if (!tex.generateMipmaps || tex.anisotropy === aniso) continue;
+      tex.anisotropy = aniso;
+      tex.needsUpdate = true;
+    }
   }
 
   get patchCount(): number {

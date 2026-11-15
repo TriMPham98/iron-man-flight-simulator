@@ -38,6 +38,7 @@ export class World {
     this.ocean = new Ocean(this.field, this.atmosphere.uniforms, renderer);
     const { group: house, garden } = buildHouse(this.field, drive);
     this.vegetation = new Vegetation(this.field, this.atmosphere.uniforms, renderer, { species: GARDEN, plants: garden });
+    this.terrain.setPlantShade(this.vegetation.shade);
     hazeAll(house, this.atmosphere.uniforms);
     this.pad = new LandingPad();
     hazeAll(this.pad.group, this.atmosphere.uniforms);

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { MINI_ROCKETS } from '../../animation/flightCheck';
 import { RESERVES, type Combat } from '../combat/combat';
 import { LAUNCHER_PER_ARM } from '../combat/playerWeapons';
+import { isAircraft } from '../combat/types';
 import type { SimEvent } from '../sim/events';
 import type { FlightModel } from '../sim/flightModel';
 import { AUTOLAND_LOCK_R, CRUISE_MAX } from '../sim/flightModel';
@@ -304,6 +305,15 @@ export class Hud {
         if (sm) sm.rd = (sm.rd ?? 0) + pts;
         break;
       }
+      case 'intercept':
+        this.showBanner('INTERCEPT', e.text === 'house' ? 'HOUSE BATTERY · ROUND DOWN' : 'POINT DEFENCE · ROUND DOWN', CYAN, true);
+        break;
+      case 'houseHit':
+        this.shake = Math.min(1, this.shake + 0.25);
+        break;
+      case 'houseLost':
+        this.glitch = 1;
+        break;
       case 'redeploy':
         this.bootT = 0;
         this.tally = null;
@@ -431,6 +441,7 @@ export class Hud {
     this.drawTakeoff(g, dt, s);
     this.drawRefitHint(g, dt, s);
     this.drawLines(g, s);
+    this.drawBoss(g, combat, s);
     this.drawBanner(g, s);
     this.drawSummary(g, dt, s);
     this.drawAwards(g, s);
@@ -557,7 +568,7 @@ export class Hud {
       g.scale(pop, pop);
       const name = STREAK_NAME[Math.min(sp.streak, STREAK_NAME.length) - 1];
       this.text(g, name, 0, 0, (13 + Math.min(4, sp.streak - 1) * 1.5) * s, sp.streak > 1 ? AMBER : WHITE, 'center', JARVIS);
-      if (sp.kind) this.text(g, sp.kind === 'SHIP' ? 'WARSHIP  DOWN' : `${sp.kind}  DOWN`, 0, 14 * s, 8 * s, CYAN, 'center', JARVIS);
+      if (sp.kind) this.text(g, sp.kind === 'SHIP' ? 'WARSHIP  DOWN' : sp.kind === 'BOSS' ? 'SYSTEM  OUT' : `${sp.kind}  DOWN`, 0, 14 * s, 8 * s, CYAN, 'center', JARVIS);
       g.restore();
     }
   }
@@ -697,11 +708,40 @@ export class Hud {
     g.restore();
   }
 
+  /** The dreadnought, while it's up: its core under the heading tape, the shield over it, and a pip per engine. */
+  private drawBoss(g: CanvasRenderingContext2D, c: Combat, s: number): void {
+    const b = c.boss;
+    if (!b || b.falling) return;
+    const W = 300 * s;
+    const x0 = this.w / 2 - W / 2;
+    const y = (this.bottomInset > 0 ? 150 : 104) * s;
+    const hp = b.core.hp / b.core.maxHp;
+    g.save();
+    this.glass(g, x0 - 10 * s, y - 16 * s, W + 20 * s, 38 * s, s);
+    this.text(g, 'DREADNOUGHT', x0, y - 6 * s, 8 * s, RED, 'left', JARVIS);
+    const shield = b.shielded;
+    this.text(g, shield ? 'CORE SHIELDED' : 'CORE OPEN', x0 + W, y - 6 * s, 8 * s, shield ? (b.shieldFlash > 0.3 ? WHITE : AMBER) : CYAN, 'right', JARVIS);
+    g.fillStyle = 'rgba(255,255,255,0.14)';
+    g.fillRect(x0, y + 3 * s, W, 4 * s);
+    g.fillStyle = shield ? AMBER : RED;
+    g.fillRect(x0, y + 3 * s, W * hp, 4 * s);
+    // Engines: she falls with the last of them
+    const n = b.enginesUp;
+    for (let i = 0; i < 4; i++) {
+      g.fillStyle = i < n ? RED : 'rgba(255,255,255,0.16)';
+      g.fillRect(x0 + i * 12 * s, y + 12 * s, 9 * s, 3 * s);
+    }
+    this.text(g, 'ENGINES', x0 + 54 * s, y + 14 * s, 7 * s, CYAN_LABEL, 'left', JARVIS);
+    if (b.shelling && Math.sin(this.time * 10) > 0) this.text(g, 'CANNON ON THE HOUSE', x0 + W, y + 14 * s, 7 * s, AMBER, 'right', JARVIS);
+    g.restore();
+  }
+
   /** The suit is lost: the run's tally, then the redeploy prompt. */
   private drawLost(g: CanvasRenderingContext2D, c: Combat, cx: number, cy: number, s: number): void {
     g.save();
     g.globalAlpha = this.alpha * Math.min(1, c.lostT / 0.6);
-    this.text(g, 'SUIT LOST', cx, cy - 70 * s, 26 * s, RED, 'center', JARVIS);
+    this.text(g, c.lostWhy === 'house' ? 'HOUSE LOST' : 'SUIT LOST', cx, cy - 70 * s, 26 * s, RED, 'center', JARVIS);
+    if (c.lostWhy === 'house') this.text(g, 'JARVIS OFFLINE  ·  NO UPLINK', cx, cy - 96 * s, 9 * s, AMBER, 'center', JARVIS);
     this.text(g, `WAVE ${Math.max(1, c.wave + 1)}  ·  KILLS ${c.kills}`, cx, cy - 38 * s, 13 * s, WHITE, 'center');
     if (c.redeployReady) {
       g.globalAlpha *= 0.55 + 0.45 * Math.sin(this.time * 3);
@@ -1657,7 +1697,7 @@ export class Hud {
       const dist = h.pos.distanceTo(cam.position);
       const p = this.project(h.pos, cam);
       const onScreen = p && p.x > 0 && p.x < this.w && p.y > 0 && p.y < this.h;
-      const hostileColor = h.kind === 'drone' ? RED : AMBER;
+      const hostileColor = isAircraft(h.kind) ? RED : AMBER;
       if (!onScreen) {
         this.seenAt.delete(h.id);
         if (dist > 7000) continue;
@@ -2235,7 +2275,7 @@ export class Hud {
       g.closePath();
       g.stroke();
     }
-    for (const h of c.hostiles) if (h.alive) plot(h.pos, h.kind === 'drone' ? RED : AMBER, 4 * s, h.kind !== 'drone');
+    for (const h of c.hostiles) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
     for (const ms of c.missiles.threats()) plot(ms.pos, WHITE, 3 * s);
     for (const ms of c.missiles.strikes()) plot(ms.pos, AMBER, 2.5 * s);
     g.fillStyle = WHITE;
@@ -2251,8 +2291,21 @@ export class Hud {
     plate.addColorStop(0, GLASS);
     plate.addColorStop(1, 'rgba(2, 14, 24, 0)');
     g.fillStyle = plate;
-    g.fillRect(x - R, y + R + 6 * s, 2 * R, 58 * s);
+    g.fillRect(x - R, y + R + 6 * s, 2 * R, 84 * s);
     g.restore();
+    // What's left of the house, once a run is going: a bar that whitens on a hit
+    if (c.wave >= 0) {
+      const hp = c.houseHp;
+      const col = c.houseFlash > 0.5 ? WHITE : hp < 0.3 ? RED : hp < 0.6 ? AMBER : CYAN;
+      const by = y + R + 70 * s;
+      const hot = hp < 0.3 && Math.sin(this.time * 8) > 0;
+      this.text(g, 'HOUSE', x - R + 4 * s, by, 8 * s, hot ? RED : CYAN_LABEL, 'left', JARVIS);
+      this.text(g, `${Math.ceil(hp * 100)}%`, x + R - 4 * s, by, 9 * s, col, 'right');
+      g.fillStyle = CYAN_FAINT;
+      g.fillRect(x - R + 4 * s, by + 8 * s, 2 * R - 8 * s, 2.5 * s);
+      g.fillStyle = col;
+      g.fillRect(x - R + 4 * s, by + 8 * s, (2 * R - 8 * s) * hp, 2.5 * s);
+    }
     this.text(g, c.wave >= 0 ? `WAVE ${c.wave + 1}` : 'FREE FLIGHT', x, y + R + 14 * s, 8 * s, CYAN_LABEL, 'center', JARVIS);
     // The tally pops on a kill
     g.save();
@@ -2361,6 +2414,8 @@ export class Hud {
       }
     }
     if (m.pos.y > m.icingAlt && blink) this.text(g, 'ICE ON THE AIRFOILS', cx, cy - 64 * s, 11 * s, AMBER, 'center', JARVIS);
+    // A jammer has the seekers: it can't be painted, so it has to be found and gunned
+    if (c.jam > 0.15 && (blink || c.jam < 0.5)) this.text(g, c.jam > 0.6 ? 'SEEKERS JAMMED — GUN THE EMITTER' : 'JAMMING — LOCKS SLOWED', cx, cy - 110 * s, 10 * s, AMBER, 'center', JARVIS);
     if (c.down > 0 && !c.lost) this.text(g, 'POWER FAILURE — REBOOTING', cx, cy - 40 * s, 14 * s, RED, 'center', JARVIS);
   }
 

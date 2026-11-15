@@ -285,6 +285,19 @@ export class PlayerWeapons {
     this.group.add(this.beam.group, this.muzzleLight, this.impactLight, this.flareLight);
   }
 
+  /** How hard a jammer has the seekers (0–1, set by the fight): painting a target takes up to four times as long. */
+  jam = 0;
+
+  /** Paint time under jamming (×). */
+  private get jamSlow(): number {
+    return 1 + 3 * this.jam;
+  }
+
+  /** What the seekers can paint: not a jammer, which has to be shot down by hand. */
+  private lockable(hostiles: readonly Hostile[]): readonly Hostile[] {
+    return hostiles.some((h) => h.noLock) ? hostiles.filter((h) => !h.noLock) : hostiles;
+  }
+
   /** Rockets left in both pods. */
   get rockets(): number {
     return this.pods[0] + this.pods[1];
@@ -398,10 +411,11 @@ export class PlayerWeapons {
       const cap = Math.min(SALVO_MAX, this.rockets);
       if (A.silos > 0.95) {
         this.lockT += dt;
-        this.lockProgress = this.locks.length >= cap ? 1 : Math.min(1, this.lockT / (LOCK_TIME * this.spec.missileLock));
-        if (this.lockT >= LOCK_TIME * this.spec.missileLock) {
+        const lockTime = LOCK_TIME * this.spec.missileLock * this.jamSlow;
+        this.lockProgress = this.locks.length >= cap ? 1 : Math.min(1, this.lockT / lockTime);
+        if (this.lockT >= lockTime) {
           // One lock per enemy: the paint never doubles up on a target
-          const next = paintLock(this.locks, cap, eye, aim, hostiles, MISSILE_CONE, MISSILE_RANGE * this.spec.missileRange);
+          const next = paintLock(this.locks, cap, eye, aim, this.lockable(hostiles), MISSILE_CONE, MISSILE_RANGE * this.spec.missileRange);
           if (next) this.events.emit(this.locks.length >= cap ? 'lockFull' : 'lockTick', { at: next.pos, value: this.locks.length });
           this.lockT = 0;
         }
@@ -560,9 +574,10 @@ export class PlayerWeapons {
         // The next arm up rides the aim line while the lasers range
         this.launchHold[this.nextReady()] = 0.3;
         this.launcherLockT += dt;
-        this.launcherLockProgress = this.launcherLocks.length >= cap ? 1 : Math.min(1, this.launcherLockT / (LAUNCHER_LOCK_TIME * this.spec.launcherLock));
-        if (this.launcherLockT >= LAUNCHER_LOCK_TIME * this.spec.launcherLock) {
-          const next = paintLock(this.launcherLocks, cap, eye, aim, hostiles, LAUNCHER_CONE, LAUNCHER_RANGE * this.spec.launcherRange);
+        const lockTime = LAUNCHER_LOCK_TIME * this.spec.launcherLock * this.jamSlow;
+        this.launcherLockProgress = this.launcherLocks.length >= cap ? 1 : Math.min(1, this.launcherLockT / lockTime);
+        if (this.launcherLockT >= lockTime) {
+          const next = paintLock(this.launcherLocks, cap, eye, aim, this.lockable(hostiles), LAUNCHER_CONE, LAUNCHER_RANGE * this.spec.launcherRange);
           if (next) this.events.emit(this.launcherLocks.length >= cap ? 'lockFull' : 'lockTick', { at: next.pos, value: this.launcherLocks.length });
           this.launcherLockT = 0;
         }

@@ -7,14 +7,16 @@ import type { Controls } from '../sim/input';
 import type { Suit } from '../../suit/Suit';
 import { HOME, type Heightfield } from '../world/heightfield';
 import { strikeMarks, structureTop } from '../world/house';
-import { Drone, Guns } from './drones';
+import { Dreadnought, type BossPart } from './dreadnought';
+import { Drone, Guns, JAM_RANGE, type DroneType } from './drones';
 import { Explosions, type SurfaceQuery } from './explosions';
 import { Frigate, type ShipPart } from './frigate';
-import { Missiles } from './missiles';
+import { Missiles, type Missile } from './missiles';
 import { PlayerWeapons } from './playerWeapons';
 import { SamSite, samSites } from './sams';
 import type { Hostile, HouseTarget, PlayerTarget } from './types';
 import { STOCK_SPEC, type SuitSpec } from '../sim/upgrades';
+import { waveAt } from './waves';
 import { hazeAll } from '../render/haze';
 
 /**
@@ -27,8 +29,15 @@ import { hazeAll } from '../render/haze';
  * dead for a few seconds and reboots in the air, on its one reserve (a cleared
  * wave earns it back). With that spent the suit is lost:
  * it stays down until the pilot redeploys, back to wave one on the pad.
- * With the suit out of their sight the SAMs shell the house: only for show
- * (a blast, scorch on the roof, smoke), it takes no damage.
+ * Later waves bring faster and stranger aircraft (see ./drones), and every
+ * tenth-odd one the dreadnought (./dreadnought).
+ *
+ * The house is the other thing to lose. With the suit out of their sight the
+ * SAMs shell it, bombers fly runs on it and the dreadnought's cannon is laid
+ * on nothing else; every round that lands takes a piece of it
+ * ({@link Combat.houseHp}), a cleared wave puts a little back, and R&D spent
+ * on the pad the rest. JARVIS runs from the house: when it goes, the suit
+ * goes dark with it and the run is over.
  */
 
 /** The one reboot the suit holds at the start of a run. */
@@ -37,6 +46,12 @@ export const RESERVES = 1;
 export const AUTO_WAVE = 45;
 /** Seconds after the suit is lost before a redeploy is offered (it's seen to fall). */
 const REDEPLOY_AFTER = 2.5;
+/** The share of the house a launcher's round takes (bombs and the dreadnought's shells bring their own). */
+const SAM_DAMAGE = 0.05;
+/** A round counts against the house when it comes down this near one of its roofs (m). */
+const HOUSE_HIT_R = 45;
+/** The house's own battery engages a round this far out (m). */
+const HOUSE_GUARD_R = 420;
 /** Scorch marks the roofs keep before the oldest goes. */
 const MAX_SCORCH = 24;
 
@@ -67,14 +82,6 @@ function scorchMaterial(): THREE.MeshStandardMaterial {
   return scorchMat;
 }
 
-const WAVES: ReadonlyArray<{ drones: number; sams: number; frigate?: boolean; line: string }> = [
-  { drones: 3, sams: 0, line: 'Sir, three bogeys coming over the ridge. Drone signatures.' },
-  { drones: 5, sams: 0, line: 'Five more inbound. They are learning.' },
-  { drones: 4, sams: 2, line: 'Surface-to-air sites are lighting up on the ridgeline. I suggest the flares.' },
-  { drones: 7, sams: 3, line: 'A larger formation, sir. Shall I alert the authorities? No? Very well.' },
-  { drones: 2, sams: 1, frigate: true, line: 'A warship off the coast, sir. Guns fore and aft, a missile launcher on the foredeck. Take the radar first.' },
-];
-
 export class Combat {
   readonly group = new THREE.Group();
   readonly streaks = new Streaks();
@@ -85,6 +92,8 @@ export class Combat {
   readonly drones: Drone[] = [];
   readonly sams: SamSite[] = [];
   readonly ships: Frigate[] = [];
+  /** The dreadnought, while there is one. */
+  boss: Dreadnought | null = null;
   readonly hostiles: Hostile[] = [];
   /** Armour 0–1. */
   armor = 1;
@@ -105,6 +114,19 @@ export class Combat {
   lost = false;
   /** Seconds since the suit was lost. */
   lostT = 0;
+  /** What ended the run: the suit shot out of the sky, or the house brought down. */
+  lostWhy: 'suit' | 'house' = 'suit';
+  /** What's left of the house (0–1), and a flash as it takes a hit. */
+  houseHp = 1;
+  houseFlash = 0;
+  /** How hard a jammer has the seekers right now (0–1, after the suit's own resistance). */
+  jam = 0;
+  /** Seconds to the point defence's next shot. */
+  private pdT = 0;
+  /** Inbound rounds the house's battery has had its try at. */
+  private readonly engaged = new WeakSet<Missile>();
+  /** Interception beams still on screen. */
+  private readonly zaps: { a: THREE.Vector3; b: THREE.Vector3; t: number }[] = [];
   private waveT = 0;
   private readonly samSpots: THREE.Vector3[];
   private readonly player: PlayerTarget;
@@ -129,7 +151,7 @@ export class Combat {
     this.group.add(this.streaks.mesh, this.explosions.group, this.missiles.group, this.weapons.group);
     this.group.name = 'combat';
     this.samSpots = samSites(field, HOME, 6, 3);
-    this.house = { marks: strikeMarks(field), struck: (at) => this.houseStruck(at) };
+    this.house = { marks: strikeMarks(field), struck: (at, damage) => this.houseStruck(at, damage ?? SAM_DAMAGE) };
     const self = this;
     this.player = {
       pos: model.pos,
@@ -154,6 +176,7 @@ export class Combat {
             events.emit('jarvis', { text: `Armour critical. Rerouting power. Hold on, sir.${left}` });
           } else {
             self.lost = true;
+            self.lostWhy = 'suit';
             self.lostT = 0;
             self.down = Infinity;
             events.emit('suitLost', { at: model.pos, value: self.wave + 1 });
@@ -191,6 +214,13 @@ export class Combat {
     for (const d of this.drones) this.group.remove(d.mesh);
     for (const s of this.sams) this.group.remove(s.mesh);
     for (const f of this.ships) this.group.remove(f.mesh);
+    if (this.boss) this.group.remove(this.boss.mesh);
+    this.boss = null;
+    this.houseHp = 1;
+    this.houseFlash = 0;
+    this.jam = this.weapons.jam = 0;
+    this.pdT = 0;
+    this.zaps.length = 0;
     this.drones.length = this.sams.length = this.ships.length = this.hostiles.length = 0;
     this.missiles.clear();
     this.guns.rounds.length = 0;
@@ -215,9 +245,9 @@ export class Combat {
     return RESERVES + this.spec.reserves;
   }
 
-  /** One drone at a point, flying a heading (scripted encounters). */
-  spawnDrone(at: THREE.Vector3, heading: THREE.Vector3): Drone {
-    const d = new Drone(at, heading);
+  /** One drone at a point, flying a heading (scripted encounters, the dreadnought's hangar). */
+  spawnDrone(at: THREE.Vector3, heading: THREE.Vector3, type: DroneType = 'drone'): Drone {
+    const d = new Drone(at, heading, type);
     d.mode = 'attack';
     this.drones.push(d);
     this.hostiles.push(d);
@@ -236,29 +266,57 @@ export class Combat {
     return f;
   }
 
+  /** The dreadnought, in off the sea toward the house (one at a time). */
+  spawnBoss(): Dreadnought {
+    if (this.boss) return this.boss;
+    const b = new Dreadnought(HOME, (at, heading) => this.spawnDrone(at, heading));
+    this.boss = b;
+    this.hostiles.push(...b.parts);
+    hazeAll(b.mesh, this.hazeUniforms);
+    this.group.add(b.mesh);
+    return b;
+  }
+
+  /** The house is whole again by `share` (0–1) of itself; returns what that actually put back. */
+  repairHouse(share: number): number {
+    const before = this.houseHp;
+    this.houseHp = Math.min(1, this.houseHp + Math.max(0, share));
+    return this.houseHp - before;
+  }
+
   /** Start the next wave, if one is on offer. */
   callWave(): void {
     if (!this.waveReady) return;
     this.waveT = 0;
     this.wave++;
-    const w = WAVES[Math.min(this.wave, WAVES.length - 1)];
-    const extra = Math.max(0, this.wave - (WAVES.length - 1));
-    const n = w.drones + extra * 2;
-    if (w.frigate || (extra > 0 && extra % 3 === 0)) this.spawnFrigate();
+    const w = waveAt(this.wave);
+    if (w.frigate) this.spawnFrigate();
+    if (w.boss) this.spawnBoss();
     // From inland, over the ridges, 2.6–3.5 km out (a few seconds' dash, not half a minute's wait)
     const base = Math.atan2(-1, 0.2) + (Math.random() - 0.5) * 1.2;
-    for (let i = 0; i < n; i++) {
+    const flight: DroneType[] = [
+      ...Array<DroneType>(w.drones).fill('drone'),
+      ...Array<DroneType>(w.interceptors ?? 0).fill('interceptor'),
+      ...Array<DroneType>(w.jammers ?? 0).fill('jammer'),
+    ];
+    const n = flight.length;
+    flight.forEach((type, i) => {
       const a = base + (i - n / 2) * 0.12;
-      const r = 2600 + Math.random() * 900;
+      // (the fast ones start further back, so they arrive with the rest, not before)
+      const r = (type === 'interceptor' ? 4200 : 2600) + Math.random() * 900;
       const at = new THREE.Vector3(this.model.pos.x + Math.cos(a) * r, 0, this.model.pos.z + Math.sin(a) * r);
       at.y = Math.max(this.field.surfaceAt(at.x, at.z), 0) + 450 + Math.random() * 400;
-      const d = new Drone(at, this.model.pos.clone().sub(at).setY(0));
-      this.drones.push(d);
-      this.hostiles.push(d);
-      hazeAll(d.mesh, this.hazeUniforms);
-      this.group.add(d.mesh);
+      this.addDrone(new Drone(at, this.model.pos.clone().sub(at).setY(0), type));
+    });
+    // Bombers: from far inland of the house, strung out so the runs come one after another
+    for (let i = 0; i < (w.bombers ?? 0); i++) {
+      const a = Math.atan2(-1, 0.2) + (Math.random() - 0.5) * 1.6;
+      const r = 6000 + i * 1800 + Math.random() * 800;
+      const at = new THREE.Vector3(HOME.x + Math.cos(a) * r, 0, HOME.y + Math.sin(a) * r);
+      at.y = Math.max(this.field.surfaceAt(at.x, at.z), 0) + 600;
+      this.addDrone(new Drone(at, new THREE.Vector3(HOME.x - at.x, 0, HOME.y - at.z), 'bomber'));
     }
-    for (let i = 0; i < w.sams + extra; i++) {
+    for (let i = 0; i < w.sams; i++) {
       const spot = this.samSpots.find((p) => !this.sams.some((s) => s.alive && s.pos.distanceTo(p) < 20));
       if (!spot) break;
       const s = new SamSite(spot, HOME);
@@ -271,10 +329,18 @@ export class Combat {
     this.events.emit('jarvis', { text: w.line });
   }
 
+  private addDrone(d: Drone): void {
+    this.drones.push(d);
+    this.hostiles.push(d);
+    hazeAll(d.mesh, this.hazeUniforms);
+    this.group.add(d.mesh);
+  }
+
   update(dt: number, t: number, c: Controls, aim: THREE.Vector3, eye: THREE.Vector3): void {
     this.sinceHit += dt;
     this.shellCallT += dt;
     this.damageFlash = Math.max(0, this.damageFlash - dt * 1.6);
+    this.houseFlash = Math.max(0, this.houseFlash - dt * 1.2);
     if (this.lost) this.lostT += dt;
     else if (this.down > 0) {
       this.down -= dt;
@@ -295,17 +361,23 @@ export class Combat {
       if (this.waveT > 1.5 && this.waveT - dt <= 1.5) {
         const earned = this.reserves < this.maxReserves;
         if (earned) this.reserves++;
+        // (the bots get a little of the house back up between waves)
+        this.repairHouse(this.spec.houseRepair);
         this.events.emit('waveClear', { value: this.wave + 1 });
-        const home = this.refitDue() ? ' R&D has a refit ready — bring her down on the pad.' : '';
+        const home = this.refitDue() ? ' R&D has a refit ready — bring her down on the pad.' : this.houseHp < 0.6 ? ' The house needs work, sir: R&D can patch it from the pad.' : '';
         this.events.emit('jarvis', { text: `Area clear, sir.${earned ? ' A reserve is back online.' : ''}${home} Next formation in forty-five seconds.` });
       }
       if (this.waveT >= AUTO_WAVE) this.callWave();
     }
 
     this.streaks.begin();
+    // A jammer in reach has the seekers (less whatever the suit's sensors shrug off)
+    const jammed = this.drones.some((d) => d.alive && d.type === 'jammer' && d.pos.distanceToSquared(this.model.pos) < JAM_RANGE * JAM_RANGE);
+    this.jam += ((jammed ? 1 - this.spec.jamResist : 0) - this.jam) * Math.min(1, dt * 3);
+    this.weapons.jam = this.jam;
     this.weapons.update(dt, c, aim, eye, this.hostiles, this.down <= 0);
     for (const d of this.drones) {
-      d.update(dt, t, this.player, this.ground, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events);
+      d.update(dt, t, this.player, this.ground, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
       if (!d.flybyDone && d.alive && d.pos.distanceTo(this.model.pos) < 120) {
         d.flybyDone = true;
         this.events.emit('droneFlyby', { at: d.pos, value: d.vel.length() });
@@ -317,6 +389,11 @@ export class Combat {
       f.update(dt, t, this.player, this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events);
       f.collide(this.model.pos, this.model.vel);
     }
+    if (this.boss) {
+      this.boss.update(dt, t, this.player, this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
+      this.boss.collide(this.model.pos, this.model.vel);
+    }
+    this.intercept(dt);
     this.guns.update(dt, this.player, this.ground, this.particles, this.streaks, this.events);
     this.missiles.update(dt, this.hostiles, this.player);
     // Kills: count, blow the SAMs (drones crash on their own)
@@ -324,6 +401,8 @@ export class Combat {
       const h = this.hostiles[i];
       if (!h.alive && !this.counted.has(h.id)) {
         this.counted.add(h.id);
+        // (what was still on the dreadnought when it fell isn't a kill of its own)
+        if (h.kind === 'boss' && (h as BossPart).scuttled) continue;
         this.kills++;
         this.events.emit('destroyed', { at: h.pos, text: h.kind });
         if (h.kind === 'sam') {
@@ -333,6 +412,9 @@ export class Combat {
         } else if (h.kind === 'ship') {
           const part = h as ShipPart;
           part.ship.partDestroyed(part, this.explosions, this.events);
+        } else if (h.kind === 'boss') {
+          const part = h as BossPart;
+          part.owner.partDestroyed(part, this.explosions, this.events);
         } else {
           this.explosions.blast(h.pos, 4, { debris: 5, vel: h.vel.clone().multiplyScalar(0.3) });
         }
@@ -355,7 +437,15 @@ export class Combat {
       }
     }
     // Ship parts leave the target list as they go; the ship stays until it's under
-    for (let i = this.hostiles.length - 1; i >= 0; i--) if (this.hostiles[i].kind === 'ship' && !this.hostiles[i].alive) this.hostiles.splice(i, 1);
+    for (let i = this.hostiles.length - 1; i >= 0; i--) {
+      const h = this.hostiles[i];
+      if ((h.kind === 'ship' || h.kind === 'boss') && !h.alive) this.hostiles.splice(i, 1);
+    }
+    if (this.boss?.gone) {
+      this.events.emit('destroyed', { at: this.boss.pos, text: 'dreadnought' });
+      this.group.remove(this.boss.mesh);
+      this.boss = null;
+    }
     for (let i = this.ships.length - 1; i >= 0; i--) {
       const f = this.ships[i];
       if (f.sunk) {
@@ -385,18 +475,77 @@ export class Combat {
     return this.missiles.threats().length;
   }
 
-  /** Where the launchers shelling the house are. */
+  /** Where whatever is going for the house is: launchers laid on it, bombers running in, the dreadnought's cannon. */
   *shellers(): Generator<THREE.Vector3> {
     for (const s of this.sams) if (s.shelling) yield s.pos;
+    for (const d of this.drones) if (d.alive && d.type === 'bomber') yield d.pos;
+    if (this.boss?.shelling) yield this.boss.cannon.pos;
   }
 
-  /** The house is being shelled: a launcher is laid on it or a round is on its way. */
+  /** The house is under attack: something is laid on it or a round is on its way. */
   get houseUnderFire(): boolean {
-    return this.sams.some((s) => s.shelling) || this.missiles.strikes().length > 0;
+    return this.sams.some((s) => s.shelling) || !!this.boss?.shelling || this.missiles.strikes().length > 0;
   }
 
-  /** A round came down on (or short of) the house: fire and smoke, and soot where it hit the roof. */
-  private houseStruck(at: THREE.Vector3): void {
+  /**
+   * Rounds burned out of the air before they land: the suit's point defence
+   * takes the nearest one inside its reach every few seconds (a seeker on the
+   * suit, or a strike on its way past to the house), and the house's own
+   * battery has one try at each round that comes in on it.
+   */
+  private intercept(dt: number): void {
+    const S = this.spec;
+    this.pdT = Math.max(0, this.pdT - dt);
+    const inbound = S.pdInterval > 0 || S.houseIntercept > 0 ? this.missiles.inbound() : [];
+    if (S.pdInterval > 0 && this.pdT <= 0 && this.down <= 0) {
+      let best: Missile | null = null;
+      let bestD = S.pdRange * S.pdRange;
+      for (const m of inbound) {
+        const d = m.pos.distanceToSquared(this.model.pos);
+        // (not the instant it leaves the rail: there has to be something to see)
+        if (m.age > 0.4 && d < bestD) {
+          bestD = d;
+          best = m;
+        }
+      }
+      if (best) {
+        this.pdT = S.pdInterval;
+        this.zap(this.model.pos.clone().add(new THREE.Vector3(0, 0.45, 0)), best, 'suit');
+      }
+    }
+    if (S.houseIntercept > 0 && !this.lost) {
+      for (const m of inbound) {
+        if (m.onImpact === null || this.engaged.has(m)) continue;
+        if (Math.hypot(m.pos.x - HOME.x, m.pos.z - HOME.y) > HOUSE_GUARD_R) continue;
+        this.engaged.add(m);
+        if (Math.random() < S.houseIntercept) {
+          const from = this.house.marks.length ? this.house.marks[0].clone().add(new THREE.Vector3(0, 3, 0)) : new THREE.Vector3(HOME.x, m.pos.y - 100, HOME.y);
+          this.zap(from, m, 'house');
+        }
+      }
+    }
+    // The beams: a white-hot line for a few frames
+    for (let i = this.zaps.length - 1; i >= 0; i--) {
+      const z = this.zaps[i];
+      z.t -= dt;
+      if (z.t <= 0) {
+        this.zaps.splice(i, 1);
+        continue;
+      }
+      const k = z.t / 0.16;
+      this.streaks.add(z.a, z.b, 6 * k, 9 * k, 14 * k, k, 0.1, 0.22);
+    }
+  }
+
+  private zap(from: THREE.Vector3, m: Missile, by: 'suit' | 'house'): void {
+    this.zaps.push({ a: from, b: m.pos.clone(), t: 0.16 });
+    this.events.emit('intercept', { at: m.pos, text: by });
+    this.missiles.shootDown(m);
+  }
+
+  /** A round came down on (or short of) the house: fire and smoke, soot where it hit the roof, and a piece of the house gone. */
+  private houseStruck(at: THREE.Vector3, damage: number): void {
+    this.houseDamaged(at, damage);
     this.explosions.burn(at, 30, 4);
     const top = structureTop(this.field, at.x, at.z);
     if (top > -Infinity && at.y < top + 3) {
@@ -409,15 +558,49 @@ export class Combat {
       this.scorch.push(m);
       if (this.scorch.length > MAX_SCORCH) this.group.remove(this.scorch.shift()!);
     }
-    if (this.shellCallT > 30) {
+    if (this.shellCallT > 30 && !this.lost) {
       this.shellCallT = 0;
       this.events.emit('jarvis', { text: 'They’re shelling the house, sir. Show them the suit and they’ll turn back on you.' });
     }
   }
 
-  /** Where the radars holding the suit right now are (SAM trucks, the frigate's gun directors). */
+  /** What a round on the house costs it. Nothing in a scripted run, or once the run is over; at nothing left, the run ends. */
+  private houseDamaged(at: THREE.Vector3, damage: number): void {
+    if (!this.wavesEnabled || this.lost || this.houseHp <= 0) return;
+    if (!this.house.marks.some((p) => p.distanceToSquared(at) < HOUSE_HIT_R * HOUSE_HIT_R)) return;
+    const before = this.houseHp;
+    this.houseHp = Math.max(0, this.houseHp - damage * this.spec.houseDamage);
+    this.houseFlash = 1;
+    this.events.emit('houseHit', { at, value: this.houseHp });
+    // The worse off it is, the longer each hit burns
+    this.explosions.burn(at, 40 + 160 * (1 - this.houseHp), 5);
+    for (const [mark, line] of [
+      [0.75, 'The house is taking hits, sir.'],
+      [0.5, 'Half the house is gone, sir. I would rather like to keep the other half.'],
+      [0.25, 'The house will not take much more of this. Nor will I.'],
+    ] as const) {
+      if (before > mark && this.houseHp <= mark) {
+        this.shellCallT = 0;
+        this.events.emit('jarvis', { text: line });
+      }
+    }
+    if (this.houseHp > 0) return;
+    // JARVIS runs from the house: with it gone the suit goes dark, and that's the run
+    for (const p of this.house.marks) this.explosions.blast(p, 14, { debris: 16, burn: true });
+    this.lost = true;
+    this.lostWhy = 'house';
+    this.lostT = 0;
+    this.down = Infinity;
+    this.events.emit('houseLost', { at });
+    this.events.emit('suitCritical', { at: this.model.pos });
+    this.events.emit('suitLost', { at: this.model.pos, value: this.wave + 1, text: 'house' });
+    this.events.emit('jarvis', { text: 'The house is gone, sir. My servers with it. I am losing y—' });
+  }
+
+  /** Where the radars holding the suit right now are (SAM trucks, the frigate's gun directors, the dreadnought's turrets). */
   *trackers(): Generator<THREE.Vector3> {
     for (const s of this.sams) if (s.alive && s.track > 0.5) yield s.pos;
     for (const f of this.ships) if (!f.sinking) yield* f.trackers();
+    if (this.boss && !this.boss.falling) yield* this.boss.trackers();
   }
 }

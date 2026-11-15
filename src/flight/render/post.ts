@@ -9,6 +9,12 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
  * full-screen pass for the camera: lens flare off the sun, a touch of
  * chromatic fringe at speed, vignette, damage and cloud white-out, ACES and
  * dithered output.
+ *
+ * The scene target may be smaller than the canvas (the adaptive resolution
+ * sheds scene pixels, never the canvas's): the final pass then rebuilds the
+ * picture at the canvas's size with a Catmull-Rom filter, sharper than the
+ * browser's own bilinear stretch of a small canvas, and the lens work
+ * (grain, vignette, flare) is done at full resolution.
  */
 export interface LensState {
   /** Sun position in UV (0–1) and how visible it is (0–1). */
@@ -31,6 +37,8 @@ precision highp float;
 uniform sampler2D tScene;
 uniform sampler2D tBloom;
 uniform vec2 uRes;
+uniform vec2 uSrcRes;
+uniform float uUpscale;
 uniform float uTime;
 uniform vec2 uSunUv;
 uniform float uSunVis;
@@ -59,6 +67,34 @@ vec3 toSrgb(vec3 c) {
 }
 float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
+// Catmull-Rom upscale of the scene (five bilinear taps: the corner taps,
+// a few percent of the weight, are dropped and the rest renormalised), in a
+// tone-compressed space so an HDR glint can't ring a dark halo round itself
+vec3 squash(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
+vec3 sceneTap(vec2 uv) { return squash(max(texture2D(tScene, uv).rgb, 0.0)); }
+vec3 sceneSharp(vec2 uv) {
+  vec2 p = uv * uSrcRes;
+  vec2 tc = floor(p - 0.5) + 0.5;
+  vec2 f = p - tc;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 t0 = (tc - 1.0) / uSrcRes;
+  vec2 t3 = (tc + 2.0) / uSrcRes;
+  vec2 t12 = (tc + w2 / w12) / uSrcRes;
+  float wU = w12.x * w0.y;
+  float wL = w0.x * w12.y;
+  float wC = w12.x * w12.y;
+  float wR = w3.x * w12.y;
+  float wD = w12.x * w3.y;
+  vec3 r = sceneTap(vec2(t12.x, t0.y)) * wU + sceneTap(vec2(t0.x, t12.y)) * wL + sceneTap(vec2(t12.x, t12.y)) * wC
+         + sceneTap(vec2(t3.x, t12.y)) * wR + sceneTap(vec2(t12.x, t3.y)) * wD;
+  r = clamp(r / (wU + wL + wC + wR + wD), 0.0, 0.9995);
+  return r / (1.0 - max(r.r, max(r.g, r.b)));
+}
+
 // Soft disc ghost at a point along the flare axis
 vec3 ghost(vec2 uv, vec2 at, float size, vec3 tint) {
   vec2 d = (uv - at) * vec2(uAspect, 1.0);
@@ -72,9 +108,17 @@ void main() {
   // Chromatic fringe toward the edges at speed (and in the visor)
   float fr = (uSpeed * 0.0035 + uHelmet * 0.0012) * dot(c, c) * 4.0;
   vec3 hdr;
-  hdr.r = texture2D(tScene, uv - c * fr).r;
-  hdr.g = texture2D(tScene, uv).g;
-  hdr.b = texture2D(tScene, uv + c * fr).b;
+  if (uUpscale > 0.5) {
+    hdr = sceneSharp(uv);
+    if (fr > 1e-5) {
+      hdr.r = texture2D(tScene, uv - c * fr).r;
+      hdr.b = texture2D(tScene, uv + c * fr).b;
+    }
+  } else {
+    hdr.r = texture2D(tScene, uv - c * fr).r;
+    hdr.g = texture2D(tScene, uv).g;
+    hdr.b = texture2D(tScene, uv + c * fr).b;
+  }
   hdr += texture2D(tBloom, uv).rgb;
 
   // Lens flare: ghosts strung through the centre opposite the sun
@@ -156,6 +200,8 @@ export class FlightPost {
   private readonly final: FullScreenQuad;
   private readonly uniforms: Record<string, THREE.IUniform>;
   private time = 0;
+  /** Scene target size as a fraction of the canvas's drawing buffer (≤ 1). */
+  private scale = 1;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -196,6 +242,8 @@ export class FlightPost {
       tScene: { value: this.rt.texture },
       tBloom: { value: this.bloom.renderTargetsHorizontal[0].texture },
       uRes: { value: new THREE.Vector2(1, 1) },
+      uSrcRes: { value: new THREE.Vector2(1, 1) },
+      uUpscale: { value: 0 },
       uTime: { value: 0 },
       uSunUv: { value: new THREE.Vector2() },
       uSunVis: { value: 0 },
@@ -218,13 +266,21 @@ export class FlightPost {
     this.resize();
   }
 
+  /** The scene's share of the canvas resolution; takes hold at the next {@link resize}. */
+  setScale(scale: number): void {
+    this.scale = THREE.MathUtils.clamp(scale, 0.1, 1);
+  }
+
   resize(): void {
-    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const out = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const size = new THREE.Vector2(Math.max(1, Math.round(out.x * this.scale)), Math.max(1, Math.round(out.y * this.scale)));
     this.rt.setSize(size.x, size.y);
     // UnrealBloomPass halves again internally: quarter-resolution glow
     this.bloom.setSize(Math.round(size.x / 2), Math.round(size.y / 2));
-    (this.uniforms.uRes.value as THREE.Vector2).copy(size);
-    this.uniforms.uAspect.value = size.x / Math.max(1, size.y);
+    (this.uniforms.uRes.value as THREE.Vector2).copy(out);
+    (this.uniforms.uSrcRes.value as THREE.Vector2).copy(size);
+    this.uniforms.uUpscale.value = size.x < out.x || size.y < out.y ? 1 : 0;
+    this.uniforms.uAspect.value = out.x / Math.max(1, out.y);
   }
 
   render(dt: number, lens: LensState): void {

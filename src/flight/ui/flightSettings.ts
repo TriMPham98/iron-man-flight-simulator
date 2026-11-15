@@ -11,18 +11,33 @@ import type { Quality, Settings } from './screens';
 /** Ceiling on the drawing-buffer pixel ratio per preset (on top of the adaptive guard). */
 export const QUALITY_DPR: Record<Quality, number> = { low: 0.7, medium: 1, high: 1.25, ultra: Infinity };
 
+/**
+ * Ground detail per preset: how far the terrain's close-up grain and micro
+ * relief carry (× the base 900 m / 260 m) and the anisotropic filtering on
+ * its detail textures. Per-pixel cost only, so the adaptive resolution
+ * still answers for the frame time.
+ */
+export const QUALITY_GROUND: Record<Quality, { reach: number; anisotropy: number }> = {
+  low: { reach: 1, anisotropy: 1 },
+  medium: { reach: 1, anisotropy: 4 },
+  high: { reach: 1.6, anisotropy: 8 },
+  ultra: { reach: 2.6, anisotropy: 16 },
+};
+
 export function bindFlightSettings(app: FlightApp): void {
-  const { screens, game, audio, renderer } = app;
+  const { screens, game, audio, renderer, resolution } = app;
   // ── Graphics preset: cap whatever the adaptive resolution asks for ──
   let cap = Infinity;
-  const setPixelRatio = renderer.setPixelRatio.bind(renderer);
-  renderer.setPixelRatio = (v: number) => setPixelRatio(Math.min(v, cap));
+  const setPixelRatio = resolution.setPixelRatio;
+  resolution.setPixelRatio = (v: number) => setPixelRatio(Math.min(v, cap));
   let quality: Quality | null = null;
   const applyQuality = (q: Quality) => {
     if (q === quality) return;
     const first = quality === null;
     quality = q;
     cap = QUALITY_DPR[q];
+    const ground = QUALITY_GROUND[q];
+    app.world.terrain.setDetail(ground.reach, ground.anisotropy, renderer);
     const shadows = q !== 'low';
     if (renderer.shadowMap.enabled !== shadows) {
       renderer.shadowMap.enabled = shadows;
@@ -32,6 +47,9 @@ export function bindFlightSettings(app: FlightApp): void {
         for (const mat of Array.isArray(m) ? m : m ? [m] : []) mat.needsUpdate = true;
       });
     }
+    // LOW gives up the full-resolution final pass too: the canvas itself
+    // drops to the scene's ratio and the browser stretches it
+    app.setOutputDpr(q === 'low' ? Math.min(app.maxDpr, cap) : app.sharpDpr);
     // Down at once (through the cap); back up as the adaptive guard allows
     const want = q === 'ultra' ? app.maxDpr : Math.min(app.maxDpr, cap);
     if (!first || q !== 'ultra') {

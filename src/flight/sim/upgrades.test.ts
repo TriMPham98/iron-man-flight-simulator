@@ -137,4 +137,39 @@ describe('Upgrades', () => {
     u.event(ev('sonicBoom'));
     expect(u.state.rd).toBe(AWARD.sonicBoom);
   });
+  it('fits the point defence and the house defences from nothing', () => {
+    const u = rich();
+    expect(u.spec.pdInterval).toBe(0);
+    expect(u.spec.houseIntercept).toBe(0);
+    expect(u.buy('pointDefence')).toBeNull();
+    expect(u.spec.pdInterval).toBeGreaterThan(0);
+    expect(u.spec.pdRange).toBeGreaterThan(0);
+    const repair = u.spec.houseRepair;
+    expect(u.buy('house')).toBeNull();
+    expect(u.spec.houseDamage).toBeLessThan(1);
+    expect(u.spec.houseRepair).toBeGreaterThan(repair);
+    expect(u.spec.houseIntercept).toBeGreaterThan(0);
+    expect(u.buy('sensors')).toBeNull();
+    expect(u.spec.jamResist).toBeGreaterThan(0);
+    expect(u.spec.jamResist).toBeLessThan(1);
+  });
+
+  it('spends on repairs only what is there, and keeps what was earned on the record', () => {
+    const u = rich(100);
+    expect(u.spend(101)).toBe(false);
+    expect(u.spend(0)).toBe(false);
+    expect(u.state.rd).toBe(100);
+    expect(u.spend(40)).toBe(true);
+    expect(u.state.rd).toBe(60);
+    expect(u.state.earned).toBe(100);
+  });
+
+  it('pays for the new aircraft and for the dreadnought, piece by piece and whole', () => {
+    const u = new Upgrades(memory());
+    const got: string[] = [];
+    u.onAward = (_p, why) => got.push(why);
+    for (const text of ['interceptor', 'jammer', 'bomber', 'boss', 'dreadnought']) u.event(ev('destroyed', 0, { text }));
+    expect(u.state.rd).toBe(AWARD.interceptor + AWARD.jammer + AWARD.bomber + AWARD.boss + AWARD.dreadnought);
+    expect(got).toEqual(['INTERCEPTOR DOWN', 'JAMMER DOWN', 'BOMBER DOWN', 'DREADNOUGHT SYSTEM OUT', 'DREADNOUGHT DOWN']);
+  });
 });

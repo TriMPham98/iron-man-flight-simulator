@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { ATMOSPHERE_GLSL } from './atmosphere';
 import { Felling } from './felling';
+import { SUN_DIR } from './config';
 import { HOME, coastZ, type Heightfield } from './heightfield';
 import { rockOver } from './houseCliff';
 
@@ -768,7 +769,12 @@ const CARD_MAP_GLSL = /* glsl */ `
   vec2 leafPx = vLeafUv * ${LEAF_ATLAS}.0;
   float leafLod = max(0.0, 0.5 * log2(max(dot(dFdx(leafPx), dFdx(leafPx)), dot(dFdy(leafPx), dFdy(leafPx)))));
   float leafCut = mix(${LEAF_CUT}, 1.01, smoothstep(uCardFade.x, uCardFade.y, distance(vInstWorld, cameraPosition)));
-  if (leaf.a * (1.0 + 0.3 * leafLod) < leafCut) discard;
+  // The cut as coverage (the scene target is multisampled): a leaf's edge
+  // is a gradient of samples, not a staircase of whole pixels
+  float leafEdge = leaf.a * (1.0 + 0.3 * leafLod) - leafCut;
+  float leafCov = clamp(leafEdge / max(fwidth(leafEdge), 1e-4) + 0.5, 0.0, 1.0);
+  if (leafCov <= 0.0) discard;
+  diffuseColor.a = leafCov;
   diffuseColor.rgb *= leaf.rgb * 1.25;
 `;
 
@@ -1053,6 +1059,68 @@ function bakeAtlas(renderer: THREE.WebGLRenderer, geos: THREE.BufferGeometry[]):
   return { color: color.texture, normal: normal.texture, kinds };
 }
 
+// ── Plant shade ──────────────────────────────────────────────────────────
+
+/** Side (m) of the ground the plant-shade map covers, centred near the eye: the models' range. */
+const SHADE_SPAN = 2 * (LOD_FAR + 28);
+const SHADE_RES = 2048;
+/** A cast shadow runs this many plant heights down-sun (the sun is ~7° up: 8 would be true), to this cap (m). */
+const SHADE_REACH = 5;
+const SHADE_MAX = 45;
+
+/**
+ * One plant's mark on the shade map, drawn from its mesh's own instance
+ * matrices: a soft disc under it (red: sky light it hides from the ground)
+ * and a tapering streak down-sun (green: its cast shadow). Two quads, told
+ * apart by position.z.
+ */
+function shadeGeometry(): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  const quad = [-1, -1, 1, -1, 1, 1, -1, 1];
+  const pos: number[] = [];
+  for (let part = 0; part < 2; part++) for (let i = 0; i < 4; i++) pos.push(quad[i * 2], quad[i * 2 + 1], part);
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+  return g;
+}
+
+const SHADE_VERT = /* glsl */ `
+uniform vec4 uShadeBox; // centre x, centre z, 1 / span
+uniform vec4 uPlant; // crown radius, height (model units), disc strength, streak strength
+uniform vec2 uAway; // unit, on the ground, away from the sun
+varying vec3 vShade; // quad coords, part
+void main() {
+  vec3 origin = (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+  float sx = length(instanceMatrix[0].xyz);
+  float sy = length(instanceMatrix[1].xyz);
+  float r = uPlant.x * sx;
+  vec2 at;
+  if (position.z < 0.5) {
+    at = origin.xz + position.xy * r * 1.3;
+  } else {
+    float len = min(uPlant.y * sy * ${SHADE_REACH.toFixed(1)}, ${SHADE_MAX.toFixed(1)});
+    float t = position.y * 0.5 + 0.5;
+    at = origin.xz + vec2(-uAway.y, uAway.x) * (position.x * r) + uAway * (t * (len + r) - r);
+  }
+  vShade = position;
+  gl_Position = vec4((at - uShadeBox.xy) * uShadeBox.z * 2.0, 0.0, 1.0);
+}`;
+const SHADE_FRAG = /* glsl */ `
+uniform vec4 uPlant;
+varying vec3 vShade;
+void main() {
+  if (vShade.z < 0.5) {
+    float d = length(vShade.xy);
+    gl_FragColor = vec4(uPlant.z * (1.0 - smoothstep(0.3, 1.0, d)), 0.0, 0.0, 1.0);
+  } else {
+    float t = vShade.y * 0.5 + 0.5;
+    // Sharp by the plant, soft and thin toward the tip
+    float across = 1.0 - smoothstep(mix(0.55, 0.1, t), 1.0, abs(vShade.x));
+    float along = smoothstep(0.0, 0.06, t) * (1.0 - smoothstep(0.45, 1.0, t));
+    gl_FragColor = vec4(0.0, uPlant.w * across * along, 0.0, 1.0);
+  }
+}`;
+
 // ── Placement ────────────────────────────────────────────────────────────
 
 interface CellData {
@@ -1158,13 +1226,23 @@ export class Vegetation {
   /** Leaf cards over a close build: (mesh, its cards), drawn from the mesh's own instances. */
   private readonly cards: [THREE.InstancedMesh, THREE.InstancedMesh][] = [];
   private cardMesh!: (owner: THREE.InstancedMesh, cards: THREE.BufferGeometry | null, fadeEnd: number) => void;
+  /**
+   * The plants' shade on the ground, for the terrain shader: a map over the
+   * models' range (red: sky light hidden under a plant, green: its cast
+   * shadow), redrawn with the lists. `box` is (centre x, centre z, 1 / span).
+   */
+  readonly shade: { texture: THREE.Texture | null; box: THREE.Vector4 } = { texture: null, box: new THREE.Vector4(0, 0, 0, 0) };
+  private shadeRt: THREE.WebGLRenderTarget | null = null;
+  private readonly shadeScene = new THREE.Scene();
+  private readonly shadeCam = new THREE.Camera();
+  private readonly shadeMarks: [THREE.InstancedMesh, THREE.InstancedMesh][] = [];
   /** Cells and instances put in the lists at the last rebuild (stats). */
   stats = { cells: 0, near: 0, imp: 0, tuft: 0, rebuilds: 0, buildMs: 0 };
 
   constructor(
     private readonly field: Heightfield,
     atmosphere: Record<string, THREE.IUniform>,
-    renderer?: THREE.WebGLRenderer,
+    private readonly renderer?: THREE.WebGLRenderer,
     garden?: { species: Record<string, Species>; plants: GardenPlant[] },
   ) {
     this.uniforms = {
@@ -1234,7 +1312,7 @@ export class Vegetation {
     const cardMat = (fadeEnd: number) => {
       let mat = cardMats.get(fadeEnd);
       if (mat) return mat;
-      const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0, side: THREE.DoubleSide });
+      const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0, side: THREE.DoubleSide, alphaToCoverage: true });
       m.envMapIntensity = 0.7;
       const u = { ...this.uniforms, uFade: { value: new THREE.Vector4(1e6, 1e6 + 1, 1e6, 1e6 + 1) }, uLeaf: { value: leafTex }, uCardFade: { value: new THREE.Vector2(fadeEnd - REBUILD_MOVE - 36, fadeEnd - REBUILD_MOVE - 2) } };
       m.onBeforeCompile = (shader) => {
@@ -1271,6 +1349,58 @@ export class Vegetation {
     this.tuftHi = make(hiBuild.bush.model, CAP.tuftHi, tuftMat);
     this.cardMesh(this.tuftHi, hiBuild.bush.cards, TUFT_HI);
     this.grass = make(grassGeometry(), CAP.grass, tuftMat);
+
+    // Plant shade: every modelled plant marks the map from its own instances
+    if (renderer) {
+      this.shadeRt = new THREE.WebGLRenderTarget(SHADE_RES, SHADE_RES, {
+        type: THREE.UnsignedByteType,
+        minFilter: THREE.LinearMipmapLinearFilter,
+        magFilter: THREE.LinearFilter,
+        generateMipmaps: true,
+        depthBuffer: false,
+      });
+      this.shade.texture = this.shadeRt.texture;
+      const away = new THREE.Vector2(-SUN_DIR.x, -SUN_DIR.z).normalize();
+      const markGeo = shadeGeometry();
+      const mark = (owner: THREE.InstancedMesh, model: THREE.BufferGeometry) => {
+        model.computeBoundingBox();
+        const b = model.boundingBox!;
+        const radius = Math.max(-b.min.x, b.max.x, -b.min.z, b.max.z);
+        const height = Math.max(b.max.y, 0.1);
+        // A low wide shrub sits on its shade; a palm's crown is far above its foot
+        const squat = THREE.MathUtils.clamp((radius * 2.2) / height, 0.3, 1);
+        const mat = new THREE.ShaderMaterial({
+          vertexShader: SHADE_VERT,
+          fragmentShader: SHADE_FRAG,
+          uniforms: {
+            uShadeBox: { value: this.shade.box },
+            uPlant: { value: new THREE.Vector4(radius, height, 0.62 * squat, 0.8 * Math.sqrt(squat)) },
+            uAway: { value: away },
+          },
+          side: THREE.DoubleSide,
+          depthTest: false,
+          depthWrite: false,
+          // Overlapping plants don't stack: the darkest mark wins
+          blending: THREE.CustomBlending,
+          blendEquation: THREE.MaxEquation,
+          blendSrc: THREE.OneFactor,
+          blendDst: THREE.OneFactor,
+        });
+        const m = new THREE.InstancedMesh(markGeo, mat, 1);
+        m.instanceMatrix = owner.instanceMatrix;
+        m.count = 0;
+        m.frustumCulled = false;
+        m.matrixAutoUpdate = false;
+        this.shadeScene.add(m);
+        this.shadeMarks.push([owner, m]);
+      };
+      for (const k of this.kinds) {
+        mark(this.near[k], lo[k]);
+        mark(this.close[k], lo[k]);
+      }
+      mark(this.tuft, lo.bush);
+      mark(this.tuftHi, lo.bush);
+    }
 
     // Felled trees: both sides drawn (the cut's inside shows), clipped at the cut
     const fellMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0, side: THREE.DoubleSide });
@@ -1754,6 +1884,7 @@ export class Vegetation {
     upload(this.grass.instanceMatrix, grassN);
     upload(this.grass.instanceColor!, grassN);
     for (const [owner, cards] of this.cards) cards.count = owner.count;
+    this.drawShade(eye);
     this.imp.geometry.instanceCount = impN;
     upload(this.impA, impN);
     upload(this.impB, impN);
@@ -1761,6 +1892,28 @@ export class Vegetation {
     this.pending = pending;
     const nearN = this.kinds.reduce((s, k) => s + nearCount[k] + hiCount[k], 0);
     this.stats = { cells, near: nearN, imp: impN, tuft: tuftN + tuftHiN + grassN, rebuilds: this.stats.rebuilds + 1, buildMs: +(performance.now() - t0).toFixed(2) };
+  }
+
+  /** The shade map redrawn round the eye from the lists just built. */
+  private drawShade(eye: THREE.Vector3): void {
+    const r = this.renderer;
+    if (!r || !this.shadeRt) return;
+    // Centred on a whole texel: the map doesn't swim as the eye moves
+    const texel = SHADE_SPAN / SHADE_RES;
+    this.shade.box.set(Math.round(eye.x / texel) * texel, Math.round(eye.z / texel) * texel, 1 / SHADE_SPAN, 0);
+    for (const [owner, m] of this.shadeMarks) m.count = owner.count;
+    const prevTarget = r.getRenderTarget();
+    const prevClear = r.getClearColor(new THREE.Color());
+    const prevAlpha = r.getClearAlpha();
+    const prevAutoClear = r.autoClear;
+    r.autoClear = false;
+    r.setRenderTarget(this.shadeRt);
+    r.setClearColor(0x000000, 0);
+    r.clear();
+    r.render(this.shadeScene, this.shadeCam);
+    r.setRenderTarget(prevTarget);
+    r.setClearColor(prevClear, prevAlpha);
+    r.autoClear = prevAutoClear;
   }
 
   get instanceCount(): number {
