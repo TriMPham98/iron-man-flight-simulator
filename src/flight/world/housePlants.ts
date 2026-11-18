@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { BARK, SHRUB_HI, SPECIES, TREE_HI, V, bare, clump, foliage, limb, paint, seeded, type Detail, type Species } from './vegetation';
+import { BARK, SHRUB_HI, SPECIES, TREE_HI, V, bare, buildingCards, cardQuads, clump, foliage, limb, paint, seeded, type Detail, type Species } from './vegetation';
 
 /**
  * Planting round the house, built the way the coast cover is (leaf
@@ -26,17 +26,36 @@ function cypressGeometry(d: Detail): THREE.BufferGeometry {
   const trunk = paint(limb(V(0, 0, 0), V(0, 1.6, 0), 0.2, 0.14, hi ? 6 : 4), BARK[0], BARK[1], 0, 2);
   const width = (t: number) => 0.92 * Math.sin(Math.PI * Math.min(1, t * 0.88 + 0.1)) * (1 - 0.42 * t);
   const Y0 = 0.9;
+  // With leaf cards: the lighter build's column (the hand-over shows
+  // nothing), the sprays standing round it
+  const cards = hi && buildingCards();
   const core = new THREE.CylinderGeometry(1, 1, 1, hi ? 12 : 8, hi ? 22 : 12, false);
   const cp = core.getAttribute('position');
   for (let i = 0; i < cp.count; i++) {
     const t = cp.getY(i) + 0.5;
     const a = Math.atan2(cp.getZ(i), cp.getX(i));
     // Gently tufted: lobes round the column, wandering up it
-    const r = width(t) * (1 + 0.07 * Math.sin(a * 5 + t * 19) * Math.sin(t * 27 + a * 2)) * (hi ? 0.84 : 1);
+    const r = width(t) * (1 + 0.07 * Math.sin(a * 5 + t * 19) * Math.sin(t * 27 + a * 2)) * (hi && !cards ? 0.84 : 1);
     cp.setXYZ(i, cp.getX(i) * r, Y0 + t * (H - Y0), cp.getZ(i) * r);
   }
   const parts: THREE.BufferGeometry[] = [bare(core)];
-  if (hi) {
+  if (cards) {
+    // Small upswept sprays shingled over the column, from just inside it
+    // to a little proud, so its outline breaks up into foliage
+    parts[0].userData.cards = cardQuads(900, (_, p, up, face, nrm) => {
+      let t = rnd();
+      while (rnd() > width(t) / 0.75) t = rnd();
+      const a = rnd() * Math.PI * 2;
+      const r = width(t) * (0.9 + rnd() * 0.22);
+      const ox = Math.cos(a);
+      const oz = Math.sin(a);
+      p.set(ox * r, Y0 + t * (H - Y0), oz * r);
+      up.set((rnd() - 0.5) * 0.5 - oz * (rnd() - 0.5) * 0.6, 1, (rnd() - 0.5) * 0.5 + ox * (rnd() - 0.5) * 0.6).addScaledVector(V(ox, 0, oz), 0.3 + rnd() * 0.3);
+      face.set(ox + (rnd() - 0.5) * 0.8, (rnd() - 0.5) * 0.5, oz + (rnd() - 0.5) * 0.8).normalize();
+      nrm.set(ox, 0.3, oz).normalize();
+      return 0.26 + rnd() * 0.1;
+    });
+  } else if (hi) {
     const n = 1400;
     const pos = new Float32Array(n * 9);
     const nrm = new Float32Array(n * 9);
@@ -105,7 +124,7 @@ function oliveGeometry(d: Detail): THREE.BufferGeometry {
     const a = (s / stems) * Math.PI * 2 + rnd() * 0.5;
     const knee = V(Math.cos(a) * 0.45, 1.1 + rnd() * 0.3, Math.sin(a) * 0.45);
     const top = V(Math.cos(a) * 1.2, 2.3 + rnd() * 0.4, Math.sin(a) * 1.2);
-    wood.push(limb(V(Math.cos(a) * 0.1, 0, Math.sin(a) * 0.1), knee, 0.24, 0.18, hi ? 7 : 5), limb(knee, top, 0.18, 0.1, hi ? 6 : 4));
+    wood.push(limb(V(Math.cos(a) * 0.1, 0, Math.sin(a) * 0.1), knee, 0.24, 0.18, hi ? 11 : 5), limb(knee, top, 0.18, 0.1, hi ? 9 : 4));
     for (let t = 0; t < 3; t++) {
       const b = a + (t - 1) * 0.8 + (rnd() - 0.5) * 0.3;
       const out = 1.3 + rnd() * 0.7;

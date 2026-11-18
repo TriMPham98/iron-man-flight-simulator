@@ -207,6 +207,41 @@ let cardSink: THREE.BufferGeometry[] | null = null;
 /** Vertices per leaf card (two triangles, in a fixed corner order). */
 const CARD_CORNERS = [0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1];
 
+/** Whether the model being built is {@link withCards}' close build (so wants cards, not leaf triangles). */
+export const buildingCards = (): boolean => cardSink !== null;
+
+/**
+ * `n` free-standing leaf cards: `place` sets each one's centre, the way
+ * its spray runs (the atlas's stalk-to-tip, `up`), the side it faces
+ * (`face`; `up` is squared off against it) and the normal it lights
+ * with, and returns its half size. Hang the result on a crown part's
+ * `userData.cards` and {@link foliage} lights it with the crown.
+ */
+export function cardQuads(n: number, place: (k: number, p: THREE.Vector3, up: THREE.Vector3, face: THREE.Vector3, nrm: THREE.Vector3) => number): THREE.BufferGeometry {
+  const pos = new Float32Array(n * 18);
+  const nrmA = new Float32Array(n * 18);
+  const p = new THREE.Vector3();
+  const up = new THREE.Vector3();
+  const face = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+  const side = new THREE.Vector3();
+  for (let k = 0; k < n; k++) {
+    const s = place(k, p, up, face, nrm);
+    side.crossVectors(up, face).normalize();
+    up.crossVectors(face, side).normalize();
+    for (let j = 0; j < 6; j++) {
+      const cu = (CARD_CORNERS[j * 2] * 2 - 1) * s;
+      const cv = (CARD_CORNERS[j * 2 + 1] * 2 - 1) * s;
+      pos.set([p.x + side.x * cu + up.x * cv, p.y + side.y * cu + up.y * cv, p.z + side.z * cu + up.z * cv], k * 18 + j * 3);
+      nrmA.set([nrm.x, nrm.y, nrm.z], k * 18 + j * 3);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nrmA, 3));
+  return g;
+}
+
 /**
  * Leaf cards over a clump's surface: on it to a little proud of it (they
  * lace its outline into leaves and cover its face), facing out at up to
@@ -370,8 +405,15 @@ export function limb(a: THREE.Vector3, b: THREE.Vector3, r0: number, r1: number,
   const g = new THREE.CylinderGeometry(r1, r0, len, sides, 1, true).translate(0, len / 2, 0);
   const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
   g.applyQuaternion(q).translate(a.x, a.y, a.z);
+  // Wood is tagged by its normals' length (the shaders normalise them
+  // anyway): the near shader finds bark by it and draws it in (BARK_GLSL)
+  const n = g.getAttribute('normal');
+  for (let i = 0; i < n.count; i++) n.setXYZ(i, n.getX(i) * BARK_TAG, n.getY(i) * BARK_TAG, n.getZ(i) * BARK_TAG);
   return g;
 }
+
+/** The length of a wood vertex's normal (see {@link limb}). */
+const BARK_TAG = 2;
 
 export const BARK = [new THREE.Color(0.075, 0.062, 0.05), new THREE.Color(0.045, 0.037, 0.03)] as const;
 export const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
@@ -452,7 +494,7 @@ function oakGeometry(d: Detail): THREE.BufferGeometry {
   const hi = d === 'hi';
   const rnd = seeded(11, 5);
   const fork = V(0.1, 1.7, 0);
-  const wood = [limb(V(0, 0, 0), fork, 0.38, 0.3, hi ? 8 : 5)];
+  const wood = [limb(V(0, 0, 0), fork, 0.38, 0.3, hi ? 14 : 5)];
   const clumps: THREE.BufferGeometry[] = [];
   const lf = 0.3;
   const N = 6;
@@ -460,7 +502,7 @@ function oakGeometry(d: Detail): THREE.BufferGeometry {
     const ang = (i / N) * Math.PI * 2 + rnd() * 0.5;
     const reach = 1.4 + rnd() * 0.9;
     const end = V(Math.cos(ang) * reach, 3.0 + rnd() * 0.8, Math.sin(ang) * reach);
-    wood.push(limb(fork, end, 0.2, 0.11, hi ? 6 : 4));
+    wood.push(limb(fork, end, 0.2, 0.11, hi ? 10 : 4));
     const nt = 2 + (rnd() < 0.5 ? 1 : 0);
     for (let t = 0; t < nt; t++) {
       const a2 = ang + (t - (nt - 1) / 2) * 0.6 + (rnd() - 0.5) * 0.3;
@@ -468,7 +510,7 @@ function oakGeometry(d: Detail): THREE.BufferGeometry {
       // The farthest-flung twigs sag lowest: the dome's skirt
       const tip = V(Math.cos(a2) * (reach + out), end.y + 1.1 - out * 0.6 + rnd() * 0.5, Math.sin(a2) * (reach + out));
       // Twigs only show close up, under the crown's edge
-      if (hi) wood.push(limb(end, tip, 0.1, 0.035, 4));
+      if (hi) wood.push(limb(end, tip, 0.1, 0.035, 6));
       clumps.push(clump(1.0 + rnd() * 0.45, 0.8, tip, i * 3 + t, hi, lf));
     }
   }
@@ -539,7 +581,7 @@ function tier(r: number, h: number, y: number, seed: number, hi: boolean): THREE
 function pineGeometry(d: Detail): THREE.BufferGeometry {
   const hi = d === 'hi';
   const rnd = seeded(7, 3);
-  const trunk = paint(limb(V(0, 0, 0), V(0, 9.5, 0), 0.26, 0.05, hi ? 7 : 5), BARK[0], BARK[1], 0, 2);
+  const trunk = paint(limb(V(0, 0, 0), V(0, 9.5, 0), 0.26, 0.05, hi ? 10 : 5), BARK[0], BARK[1], 0, 2);
   const tiers: THREE.BufferGeometry[] = [];
   const T = 8;
   for (let i = 0; i < T; i++) {
@@ -567,7 +609,7 @@ function palmGeometry(d: Detail): THREE.BufferGeometry {
     pts.push(V(0.9 * t * t, H * t, 0.25 * t * t));
   }
   const rad = (t: number) => 0.2 - 0.05 * t + 0.16 * (1 - t) ** 8;
-  const trunk = mergeGeometries(pts.slice(1).map((p, i) => bare(limb(pts[i], p, rad(i / SEG), rad((i + 1) / SEG), hi ? 7 : 5))));
+  const trunk = mergeGeometries(pts.slice(1).map((p, i) => bare(limb(pts[i], p, rad(i / SEG), rad((i + 1) / SEG), hi ? 10 : 5))));
   const trunkP = paint(trunk, new THREE.Color(0.13, 0.11, 0.09), new THREE.Color(0.075, 0.065, 0.055), 0, H);
   const top = pts[pts.length - 1];
   // Old fronds: a dead brown skirt under the crown. Close up, a thatch of
@@ -578,33 +620,41 @@ function palmGeometry(d: Detail): THREE.BufferGeometry {
   if (hi) {
     const rs = seeded(9, 21);
     const thatch: THREE.BufferGeometry[] = [];
-    for (let k = 0; k < 22; k++) {
-      const a = (k / 22) * Math.PI * 2 + rs() * 0.25;
+    for (let k = 0; k < 40; k++) {
+      const a = (k / 40) * Math.PI * 2 + rs() * 0.3;
       const out = V(Math.cos(a), 0, Math.sin(a));
       const side = V(-out.z, 0, out.x);
       const y0 = top.y - 0.1 - rs() * 0.4;
       const len = 1.6 + rs() * 0.9;
-      // Hangs from the crown, bellying out, then in toward the trunk at the hem
-      const p0 = top.clone().setY(y0).addScaledVector(out, 0.35);
-      const p1 = top.clone().setY(y0 - len * 0.5).addScaledVector(out, 0.78 + rs() * 0.15);
-      const p2 = top.clone().setY(y0 - len).addScaledVector(out, 0.5 + rs() * 0.2);
-      const w = 0.24 + rs() * 0.12;
-      const tris: number[] = [];
-      for (const [a0, a1, w0, w1] of [
-        [p0, p1, w, w * 1.1],
-        [p1, p2, w * 1.1, w * 0.5],
-      ] as const) {
-        const q = [a0.clone().addScaledVector(side, -w0), a0.clone().addScaledVector(side, w0), a1.clone().addScaledVector(side, w1), a1.clone().addScaledVector(side, -w1)];
-        for (const i of [0, 2, 1, 0, 3, 2]) tris.push(q[i].x, q[i].y, q[i].z);
+      // A dead fan hangs from the crown, bellying out then in toward the
+      // trunk at the hem, frayed into strands that part toward their ends
+      const strands = 4;
+      for (let st = 0; st < strands; st++) {
+        const o = (st / (strands - 1) - 0.5) * 2;
+        const fray = rs();
+        const sl = len * (0.75 + rs() * 0.3);
+        const p0 = top.clone().setY(y0).addScaledVector(out, 0.35).addScaledVector(side, o * 0.1);
+        const p1 = top.clone().setY(y0 - sl * 0.5).addScaledVector(out, 0.78 + rs() * 0.15).addScaledVector(side, o * 0.2);
+        const p2 = top.clone().setY(y0 - sl).addScaledVector(out, 0.45 + rs() * 0.3).addScaledVector(side, o * (0.25 + fray * 0.25));
+        const w = 0.045 + rs() * 0.03;
+        const tris: number[] = [];
+        for (const [a0, a1, w0, w1] of [
+          [p0, p1, w, w * 1.1],
+          [p1, p2, w * 1.1, w * 0.2],
+        ] as const) {
+          const q = [a0.clone().addScaledVector(side, -w0), a0.clone().addScaledVector(side, w0), a1.clone().addScaledVector(side, w1), a1.clone().addScaledVector(side, -w1)];
+          for (const i of [0, 2, 1, 0, 3, 2]) tris.push(q[i].x, q[i].y, q[i].z);
+        }
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(tris, 3));
+        const n = new Float32Array(tris.length);
+        const nl = 0.7 + rs() * 0.6;
+        for (let i = 0; i < n.length; i += 3) n.set([out.x * nl, 0.35, out.z * nl], i);
+        g.setAttribute('normal', new THREE.BufferAttribute(n, 3));
+        thatch.push(g);
       }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(tris, 3));
-      const n = new Float32Array(tris.length);
-      for (let i = 0; i < n.length; i += 3) n.set([out.x, 0.35, out.z], i);
-      g.setAttribute('normal', new THREE.BufferAttribute(n, 3));
-      thatch.push(g);
     }
-    skirt = mergeGeometries([skirt, paint(mergeGeometries(thatch), skirtTop.clone().multiplyScalar(1.15), skirtFoot, H - 2.8, H)]);
+    skirt = mergeGeometries([skirt, paint(mergeGeometries(thatch), skirtTop, skirtFoot, H - 2.8, H)]);
   }
 
   const rnd = seeded(5, 13);
@@ -628,8 +678,10 @@ function palmGeometry(d: Detail): THREE.BufferGeometry {
   };
   const UPV = V(0, 1, 0);
   const N = hi ? 16 : 10;
-  const L = hi ? 9 : 5;
-  const LS = hi ? 3 : 2;
+  // Close up: twice the leaflets, each folded down its midrib and bent in
+  // more segments (the outline reads as a fan, not a starburst of blades)
+  const L = hi ? 18 : 5;
+  const LS = hi ? 4 : 2;
   for (let f = 0; f < N; f++) {
     const a = (f / N) * Math.PI * 2 + (rnd() - 0.5) * 0.5;
     // Young fans stand up; the oldest hang, browning, toward the skirt
@@ -654,21 +706,38 @@ function palmGeometry(d: Detail): THREE.BufferGeometry {
       const ld = fwd.clone().multiplyScalar(Math.cos(th)).addScaledVector(side, Math.sin(th));
       const pw = fwd.clone().multiplyScalar(-Math.sin(th)).addScaledVector(side, Math.cos(th));
       const len = 1.9 * (1 - 0.22 * Math.abs(th)) * (0.9 + rnd() * 0.2);
-      const droop = len * (0.45 + 0.35 * Math.abs(th) + 0.3 * age);
+      // (the split tips of a close fan hang further)
+      const droop = len * (0.45 + 0.35 * Math.abs(th) + 0.3 * age) * (hi ? 1 + rnd() * 0.35 : 1);
       const at = (t: number, w: number) => hub.clone().addScaledVector(ld, len * t).addScaledVector(UPV, -droop * t * t).addScaledVector(pw, w);
-      const width = (t: number) => (0.2 * (1 - t) + 0.02) * (hi ? 1 : 1.3);
+      const width = (t: number) => (0.2 * (1 - t) + 0.02) * (hi ? 0.55 : 1.3);
       const n = nUp.clone().addScaledVector(ld, 0.3).normalize();
+      // Each leaflet its own shade, a little lighter or darker
+      const tone = hi ? 0.82 + rnd() * 0.36 : 1;
+      const nl = n.clone().addScaledVector(pw, 0.5).normalize();
+      const nr = n.clone().addScaledVector(pw, -0.5).normalize();
       for (let s = 0; s < LS; s++) {
         const t0 = s / LS;
         const t1 = (s + 1) / LS;
-        const c0 = c.copy(rootC).lerp(tipC, Math.sqrt(t0)).clone();
-        const c1 = c.copy(rootC).lerp(tipC, Math.sqrt(t1)).clone();
+        const c0 = c.copy(rootC).lerp(tipC, Math.sqrt(t0)).multiplyScalar(tone).clone();
+        const c1 = c.copy(rootC).lerp(tipC, Math.sqrt(t1)).multiplyScalar(tone).clone();
         const a0 = at(t0, -width(t0));
         const b0 = at(t0, width(t0));
         const a1 = at(t1, -width(t1));
         const b1 = at(t1, width(t1));
-        tri(a0, a1, b0, n, c0, c1, c0);
-        tri(b0, a1, b1, n, c0, c1, c1);
+        if (!hi) {
+          tri(a0, a1, b0, n, c0, c1, c0);
+          tri(b0, a1, b1, n, c0, c1, c1);
+          continue;
+        }
+        // Folded: the midrib sunk below the edges (a shallow V), each half lit its own way
+        const m0 = at(t0, 0).addScaledVector(n, -width(t0) * 0.5);
+        const m1 = at(t1, 0).addScaledVector(n, -width(t1) * 0.5);
+        const cm0 = c0.clone().multiplyScalar(0.8);
+        const cm1 = c1.clone().multiplyScalar(0.8);
+        tri(a0, a1, m0, nl, c0, c1, cm0);
+        tri(m0, a1, m1, nl, cm0, c1, cm1);
+        tri(m0, m1, b0, nr, cm0, cm1, c0);
+        tri(b0, m1, b1, nr, c0, cm1, c1);
       }
     }
   }
@@ -716,9 +785,17 @@ uniform float uTime;
 uniform vec3 uEye;
 uniform vec4 uFade; // (unused, unused), shrink band (inner, outer)
 varying vec3 vInstWorld;
+varying float vBark;
+varying vec3 vBarkP;
+varying vec3 vBarkAxis;
 `;
 const NEAR_VERT_BEGIN = /* glsl */ `
   vec3 transformed = vec3(position);
+  vBark = step(1.5, length(normal));
+  vBarkP = position;
+  // Up the limb, near enough: the surface's steepest way up (a limb's axis on a cylinder that isn't lying flat)
+  vec3 barkN = normalize(normal);
+  vBarkAxis = normalize(vec3(0.0, 1.0, 0.0) - barkN * barkN.y + vec3(1e-4, 0.0, 0.0));
   vec3 origin = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
   vInstWorld = origin;
   // Wind: gusts roll across the hills; crowns sway, bases stay planted
@@ -736,6 +813,61 @@ uniform float uWorld;
 varying vec3 vInstWorld;
 ${ATMOSPHERE_GLSL}
 `;
+// Bark on the wood close up: fissured ridges running up the limb, mottled,
+// as colour and as relief (a bump from the screen-space derivatives, so no
+// tangents are needed). Only within the close build's reach; fades out.
+const BARK_FRAG_PARS = /* glsl */ `
+varying float vBark;
+varying vec3 vBarkP;
+varying vec3 vBarkAxis;
+float barkH;
+float barkK;
+float barkHash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float barkNoise(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(barkHash(i), barkHash(i + vec3(1, 0, 0)), f.x), mix(barkHash(i + vec3(0, 1, 0)), barkHash(i + vec3(1, 1, 0)), f.x), f.y),
+             mix(mix(barkHash(i + vec3(0, 0, 1)), barkHash(i + vec3(1, 0, 1)), f.x), mix(barkHash(i + vec3(0, 1, 1)), barkHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
+}
+`;
+const BARK_COLOR_GLSL = /* glsl */ `
+  #include <color_fragment>
+  barkH = 0.0;
+  barkK = vBark * (1.0 - smoothstep(25.0, 60.0, length(vViewPosition)));
+  if (barkK > 0.0) {
+    // Squashed up the limb's axis, so the noise runs in long ridges along
+    // it: plates of bark split by dark fissures, the plates crossed by cracks
+    vec3 ax = normalize(vBarkAxis);
+    vec3 bp = vBarkP * 14.0;
+    bp -= ax * dot(bp, ax) * 0.88;
+    // (fading out as the ridges near a pixel across, before they alias)
+    barkK *= 1.0 - smoothstep(0.25, 0.6, length(fwidth(bp)));
+    float ridge = barkNoise(bp + barkNoise(bp * 0.45 + 3.1) * 1.2);
+    float fissure = 1.0 - smoothstep(0.03, 0.16, abs(ridge - 0.5));
+    // A finer second network inside the plates, and their rough surface,
+    // so the bark still has grain an arm's length away
+    float ridge2 = barkNoise(bp * 2.7 + 5.3 + barkNoise(bp * 1.3) * 0.8);
+    float fissure2 = 1.0 - smoothstep(0.02, 0.1, abs(ridge2 - 0.5));
+    float crack = smoothstep(0.8, 0.95, barkNoise(vBarkP * 7.0 + 11.0));
+    float mottle = barkNoise(vBarkP * 1.7 + 7.0);
+    barkH = (1.0 - fissure) * (1.0 - 0.45 * fissure2) * (1.0 - 0.5 * crack) * (0.8 + 0.2 * barkNoise(bp * 6.0));
+    diffuseColor.rgb *= mix(1.0, (0.3 + 0.9 * barkH) * (0.75 + 0.5 * mottle), barkK);
+  }
+`;
+const BARK_NORMAL_GLSL = /* glsl */ `
+  #include <normal_fragment_begin>
+  if (barkK > 0.0) {
+    vec3 dpdx = dFdx(-vViewPosition);
+    vec3 dpdy = dFdy(-vViewPosition);
+    float h = barkH * 0.01 * barkK;
+    vec3 r1 = cross(dpdy, normal);
+    vec3 r2 = cross(normal, dpdx);
+    float det = dot(dpdx, r1);
+    vec3 g = sign(det) * (dFdx(h) * r1 + dFdy(h) * r2);
+    normal = normalize(abs(det) * normal - g);
+  }
+`;
 const SHADE_GLSL = /* glsl */ `
   vec4 vegBake = texture2D(uBake, vInstWorld.xz / uWorld + 0.5);
   reflectedLight.directDiffuse *= vegBake.r;
@@ -748,8 +880,14 @@ const SHADE_GLSL = /* glsl */ `
 `;
 
 // Leaf cards: cut out of the atlas, fading by shrinking every leaf
-/** Leaf atlas size (px). */
-const LEAF_ATLAS = 512;
+/**
+ * Leaf atlas size (px). Big enough that a leaf right by the eye still has
+ * texels to spare for its veins; the mips carry it everywhere else, so it
+ * costs memory (~5 MB) and a moment at boot, nothing a frame.
+ */
+const LEAF_ATLAS = 1024;
+/** Leaves within this (m) of the eye shrink away, so a crown it backs into doesn't fill the screen. */
+const CARD_NEAR = new THREE.Vector2(0.5, 1.6);
 /** Alpha cut-off at full size: each leaf's cone of alpha crosses it at the leaf's edge. */
 const LEAF_CUT = 0.35;
 
@@ -761,6 +899,7 @@ const CARD_FRAG_PARS = /* glsl */ `
 ${NEAR_FRAG_PARS}
 uniform sampler2D uLeaf;
 uniform vec2 uCardFade; // leaves shrink away between (start, end) m
+uniform vec2 uCardNear; // ...and by the eye, gone at .x, whole by .y (m)
 varying vec2 vLeafUv;
 `;
 const CARD_MAP_GLSL = /* glsl */ `
@@ -769,6 +908,7 @@ const CARD_MAP_GLSL = /* glsl */ `
   vec2 leafPx = vLeafUv * ${LEAF_ATLAS}.0;
   float leafLod = max(0.0, 0.5 * log2(max(dot(dFdx(leafPx), dFdx(leafPx)), dot(dFdy(leafPx), dFdy(leafPx)))));
   float leafCut = mix(${LEAF_CUT}, 1.01, smoothstep(uCardFade.x, uCardFade.y, distance(vInstWorld, cameraPosition)));
+  leafCut = max(leafCut, mix(1.01, ${LEAF_CUT}, smoothstep(uCardNear.x, uCardNear.y, length(vViewPosition))));
   // The cut as coverage (the scene target is multisampled): a leaf's edge
   // is a gradient of samples, not a staircase of whole pixels
   float leafEdge = leaf.a * (1.0 + 0.3 * leafLod) - leafCut;
@@ -869,6 +1009,11 @@ ${ATMOSPHERE_GLSL}
 function leafAtlas(): THREE.DataTexture {
   const N = LEAF_ATLAS;
   const Q = N / 2;
+  /** Texels per texel of the 512 the sprays were laid out at. */
+  const S = N / 512;
+  /** Margin round each quadrant, so the mips don't bleed sprays together. */
+  const M = Math.round(4 * S);
+  const smoothstep = (a: number, b: number, x: number) => THREE.MathUtils.smoothstep(x, a, b);
   const px = new Uint8Array(N * N * 4);
   const rnd = seeded(41, 17);
   const put = (x: number, y: number, a: number, r: number, g: number, b: number) => {
@@ -879,23 +1024,48 @@ function leafAtlas(): THREE.DataTexture {
     px[i + 2] = Math.min(255, b * 255);
     px[i + 3] = a * 255;
   };
-  /** A pointed oval, `len` × `wid` px, centred at (cx, cy) in quadrant (qx, qy). */
-  const shape = (qx: number, qy: number, cx: number, cy: number, ang: number, len: number, wid: number, tone: readonly number[], taper: number) => {
+  /**
+   * A pointed oval, `len` × `wid` px, centred at (cx, cy) in quadrant (qx,
+   * qy). A leaf (`veined`) gets a pale midrib, side veins running out to
+   * the tip, one half a shade darker across the fold, a darker rim and a
+   * little grain, so it still reads as a leaf filling the screen.
+   */
+  const shape = (qx: number, qy: number, cx: number, cy: number, ang: number, len: number, wid: number, tone: readonly number[], taper: number, veined = false) => {
     const ex = len / 2 / (1 - LEAF_CUT);
     const ey = wid / 2 / (1 - LEAF_CUT);
-    const R = Math.ceil(ex);
     const co = Math.cos(ang);
     const si = Math.sin(ang);
-    // A few texels' margin round each quadrant, so the mips don't bleed sprays together
-    for (let y = Math.max(4, Math.floor(cy - R)); y <= Math.min(Q - 5, Math.ceil(cy + R)); y++) {
-      for (let x = Math.max(4, Math.floor(cx - R)); x <= Math.min(Q - 5, Math.ceil(cx + R)); x++) {
+    // The oval's own box (widest at the stalk end), not a square round its length: a twig is long and thin
+    const ew = ey * (1 + taper);
+    const Rx = Math.hypot(ex * co, ew * si);
+    const Ry = Math.hypot(ex * si, ew * co);
+    const V0 = 1 - LEAF_CUT;
+    // Veins about every 6 px of the leaf's length (finer just greys out)
+    const veins = Math.min(5, len / (6 * S) / 2);
+    for (let y = Math.max(M, Math.floor(cy - Ry)); y <= Math.min(Q - 1 - M, Math.ceil(cy + Ry)); y++) {
+      for (let x = Math.max(M, Math.floor(cx - Rx)); x <= Math.min(Q - 1 - M, Math.ceil(cx + Rx)); x++) {
         const dx = x + 0.5 - cx;
         const dy = y + 0.5 - cy;
         const u = (dx * co + dy * si) / ex;
         const v = (-dx * si + dy * co) / ey;
-        const e = Math.hypot(u, v / Math.max(0.2, 1 - taper * u));
-        if (e >= 1) continue;
-        const k = 0.8 + 0.2 * (u * 0.5 + 0.5);
+        const vt = v / Math.max(0.2, 1 - taper * u);
+        const e = Math.sqrt(u * u + vt * vt);
+        // (under a leaf already laid more opaquely: skip the shading)
+        if (e >= 1 || (1 - e) * 255 <= px[((qy + y) * N + qx + x) * 4 + 3]) continue;
+        let k = 0.8 + 0.2 * (u * 0.5 + 0.5);
+        if (veined) {
+          // In the visible leaf's own terms: along −1 (stalk) … 1 (tip), across −1 … 1
+          const un = u / V0;
+          const vn = vt / V0;
+          const av = Math.abs(vn);
+          const rib = (1 - smoothstep(0.035, 0.1, av)) * (1 - smoothstep(0.75, 1, un));
+          const ph = (un * 0.5 + 0.5) * veins - av * 0.9;
+          const vein = (1 - smoothstep(0.04, 0.13, Math.abs(ph - Math.round(ph)))) * smoothstep(0.08, 0.2, av) * (1 - smoothstep(0.55, 0.85, av));
+          const fold = vn > 0 ? 0.93 : 1.04;
+          const rim = 1 - 0.2 * smoothstep(0.7, 1, e / V0);
+          const grain = 0.97 + 0.06 * (((Math.imul(qx + x, 73856093) ^ Math.imul(qy + y, 19349663)) >>> 0) / 4294967296);
+          k *= (1 + 0.22 * rib + 0.12 * vein) * fold * rim * grain;
+        }
         put(qx + x, qy + y, 1 - e, tone[0] * k, tone[1] * k, tone[2] * k);
       }
     }
@@ -903,7 +1073,7 @@ function leafAtlas(): THREE.DataTexture {
   const TWIG = [0.42, 0.34, 0.24];
   const twig = (qx: number, qy: number, x0: number, y0: number, x1: number, y1: number) => {
     const len = Math.hypot(x1 - x0, y1 - y0);
-    shape(qx, qy, (x0 + x1) / 2, (y0 + y1) / 2, Math.atan2(y1 - y0, x1 - x0), len, 2.6, TWIG, 0.3);
+    shape(qx, qy, (x0 + x1) / 2, (y0 + y1) / 2, Math.atan2(y1 - y0, x1 - x0), len, 2.6 * S, TWIG, 0.3);
   };
   const leafTone = (): number[] => {
     const v = 0.62 + rnd() * 0.38;
@@ -918,7 +1088,7 @@ function leafAtlas(): THREE.DataTexture {
     const leafLen = () => Q * (0.095 + rnd() * 0.045);
     const leaf = (x: number, y: number, ang: number) => {
       const l = leafLen();
-      shape(qx, qy, x + Math.cos(ang) * l * 0.45, y + Math.sin(ang) * l * 0.45, ang, l, l * (0.42 + rnd() * 0.14), leafTone(), 0.35);
+      shape(qx, qy, x + Math.cos(ang) * l * 0.45, y + Math.sin(ang) * l * 0.45, ang, l, l * (0.42 + rnd() * 0.14), leafTone(), 0.35, true);
     };
     // The main stem up the card, twigs off it alternately, leaves along both
     const sx = Q * (0.5 + (rnd() - 0.5) * 0.1);
@@ -960,7 +1130,7 @@ function leafAtlas(): THREE.DataTexture {
       leaf(Q * 0.5 + Math.cos(a) * d, Q * 0.5 + Math.sin(a) * d, rnd() * Math.PI * 2);
     }
     const [tx, ty] = stem(1);
-    leaf(tx, ty - 2, Math.PI / 2 + (rnd() - 0.5) * 0.3);
+    leaf(tx, ty - 2 * S, Math.PI / 2 + (rnd() - 0.5) * 0.3);
   }
   const tex = new THREE.DataTexture(px, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
   tex.minFilter = THREE.LinearMipmapLinearFilter;
@@ -1270,7 +1440,9 @@ export class Vegetation {
         Object.assign(shader.uniforms, u);
         shader.vertexShader = shader.vertexShader.replace('#include <common>', `#include <common>\n${NEAR_VERT_PARS}`).replace('#include <begin_vertex>', NEAR_VERT_BEGIN);
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', `#include <common>\n${NEAR_FRAG_PARS}`)
+          .replace('#include <common>', `#include <common>\n${NEAR_FRAG_PARS}\n${BARK_FRAG_PARS}`)
+          .replace('#include <color_fragment>', BARK_COLOR_GLSL)
+          .replace('#include <normal_fragment_begin>', BARK_NORMAL_GLSL)
           .replace('#include <aomap_fragment>', SHADE_GLSL)
           .replace('#include <fog_fragment>', 'gl_FragColor.rgb = applyHaze(gl_FragColor.rgb, cameraPosition, vInstWorld, vegBake.r);');
       };
@@ -1314,7 +1486,7 @@ export class Vegetation {
       if (mat) return mat;
       const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0, side: THREE.DoubleSide, alphaToCoverage: true });
       m.envMapIntensity = 0.7;
-      const u = { ...this.uniforms, uFade: { value: new THREE.Vector4(1e6, 1e6 + 1, 1e6, 1e6 + 1) }, uLeaf: { value: leafTex }, uCardFade: { value: new THREE.Vector2(fadeEnd - REBUILD_MOVE - 36, fadeEnd - REBUILD_MOVE - 2) } };
+      const u = { ...this.uniforms, uFade: { value: new THREE.Vector4(1e6, 1e6 + 1, 1e6, 1e6 + 1) }, uLeaf: { value: leafTex }, uCardFade: { value: new THREE.Vector2(fadeEnd - REBUILD_MOVE - 36, fadeEnd - REBUILD_MOVE - 2) }, uCardNear: { value: CARD_NEAR } };
       m.onBeforeCompile = (shader) => {
         Object.assign(shader.uniforms, u);
         shader.vertexShader = shader.vertexShader.replace('#include <common>', `#include <common>\n${CARD_VERT_PARS}`).replace('#include <begin_vertex>', `${NEAR_VERT_BEGIN}\n  vLeafUv = uv;`);

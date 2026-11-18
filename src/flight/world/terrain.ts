@@ -216,6 +216,22 @@ const ALBEDO = /* glsl */ `
   // Sea floor: sand and weed, dimmed (the water shades it from above)
   col = mix(col, mix(vec3(0.32, 0.28, 0.2), vec3(0.08, 0.1, 0.06), mid), smoothstep(0.0, -3.0, hgt));
 
+  // Underfoot: two finer octaves of tone (clods, pebbles, dry litter) so
+  // the ground still has grain at a few metres, not a flat wash. Fades in
+  // only within the micro relief's reach, so it costs nothing further out
+  float underfoot = 1.0 - smoothstep(20.0 * uDetailReach, 160.0 * uDetailReach, viewD);
+  if (underfoot > 0.0) {
+    float clod = tone(xz + 0.53, 3.1);
+    float speck = tone(xz * 1.07 + 0.21, 1.1);
+    float bit = tone(xz.yx * 0.93 + 0.67, 0.6);
+    col *= mix(1.0, (0.72 + 0.56 * clod) * (0.8 + 0.4 * speck), underfoot * (1.0 - 0.6 * tWet));
+    // Pale stones and dry litter scattered through the cover, dark gaps between
+    float litter = smoothstep(0.66, 0.74, speck * 0.6 + bit * 0.4) * (1.0 - beach * 0.6);
+    float gap = smoothstep(0.42, 0.26, speck * 0.5 + bit * 0.5);
+    col = mix(col, col * vec3(1.6, 1.5, 1.3), litter * underfoot * 0.7);
+    col *= 1.0 - gap * underfoot * 0.22;
+  }
+
   // Micro relief (normal detail, not geometry) near the eye: rough rock,
   // lumpy brush, smoother sand. Triplanar on the faces
   if (micro > 0.0) {
@@ -223,6 +239,11 @@ const ALBEDO = /* glsl */ `
     vec2 gA = texture2D(uDetailGrad, xz / (uDetailSpan * 0.032)).rg / 0.032;
     vec2 gB = texture2D(uDetailGrad, xz / (uDetailSpan * 0.011) + 0.37).rg / 0.011;
     vec2 gT = (gA * 0.05 + gB * 0.012) * amp;
+    if (underfoot > 0.0) {
+      // ...and the clods' own relief, a finer octave again
+      vec2 gC = texture2D(uDetailGrad, xz / (uDetailSpan * 0.0035) + 0.71).rg / 0.0035;
+      gT += gC * 0.0035 * amp * underfoot;
+    }
     vec3 p = vec3(gT.x, 0.0, gT.y) * tw.y;
     if (steep > 0.0) {
       vec2 sx = texture2D(uDetailGrad, vTerrainPos.zy / (uDetailSpan * 0.032)).rg / 0.032 * 0.05 * amp;
