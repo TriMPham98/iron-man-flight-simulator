@@ -35,7 +35,16 @@ void main() {
   dir = l > 1e-5 ? dir / l : vec3(0.0, 1.0, 0.0);
   float t = aT;
   vec3 mid = mix(a, b, t);
-  vec3 side = normalize(cross(dir, normalize(mid)));
+  // Turned to face the eye. Seen dead end-on that cross product runs to
+  // zero and normalize() makes a NaN corner: fall back to any side square
+  // to the beam
+  vec3 side = cross(dir, mid);
+  float sl = length(side);
+  if (sl < 1e-4 * max(length(mid), 1e-3)) {
+    side = cross(dir, abs(dir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0));
+    sl = length(side);
+  }
+  side /= sl;
   float w = mix(uWidth.x, uWidth.y, mix(ta, 1.0, t));
   // Round the far end off by pushing it out half a width
   vec3 p = mid + side * aSide * w + dir * step(0.999, t) * w * 0.6;
@@ -79,6 +88,10 @@ void main() {
            + vec3(0.3, 0.6, 1.0) * haze;
   // Hottest at the reactor, settling down the beam
   col *= 1.0 + 0.5 * exp(-vLen / 4.0);
+  // From the helmet the reactor is just under the chin: the beam's root
+  // would sweep a wide white sheet across the visor, so it fades in a
+  // few metres out instead
+  col *= smoothstep(0.6, 4.0, vView);
   gl_FragColor = vec4(col * uPower, 1.0);
 }
 `;
@@ -156,6 +169,8 @@ export class UnibeamFx {
   private scorchNext = 0;
   private readonly lastScorch = new THREE.Vector3(Infinity, 0, 0);
   private time = 0;
+  /** The splash's size eased between landing (1) and running out in the air (0). */
+  private splashHit = 0;
 
   constructor() {
     this.group.name = 'unibeam';
@@ -277,10 +292,14 @@ export class UnibeamFx {
 
     // Reactor glare: a pulse that tightens as it charges, a wide halo and
     // an anamorphic streak across it once it fires
-    const glow = Math.max(charge * charge, power);
+    // Seen from inside the helmet the reactor sits a hand's width under the
+    // eye: a sprite that close fills the visor and strobes as the head bobs
+    // through it, so the glare gives way as the eye closes in
+    const eyeGap = THREE.MathUtils.smoothstep(from.distanceTo(camPos), 1.2, 4);
+    const glow = Math.max(charge * charge, power) * eyeGap;
     const show = glow > 0.01;
     this.glare.visible = this.halo.visible = show;
-    this.streak.visible = power > 0.01;
+    this.streak.visible = power * eyeGap > 0.01;
     if (show) {
       const pulse = power > 0 ? 1 : 0.8 + 0.2 * Math.sin(T * (10 + 30 * charge));
       const seen = Math.max(1, from.distanceTo(camPos) / 12);
@@ -292,7 +311,7 @@ export class UnibeamFx {
       this.halo.material.color.setRGB(0.45, 1.1, 1.8).multiplyScalar(glow * (0.6 + 0.4 * flick));
       this.streak.position.copy(from);
       this.streak.scale.set(5 * power * seen, 0.16 * power * seen, 1);
-      this.streak.material.color.setRGB(1, 2, 3).multiplyScalar(power * flick);
+      this.streak.material.color.setRGB(1, 2, 3).multiplyScalar(power * eyeGap * flick);
     }
 
     // The beam
@@ -312,12 +331,17 @@ export class UnibeamFx {
     this.splash.visible = this.splashHalo.visible = power > 0.01;
     if (this.splash.visible) {
       const seen = Math.max(1, to.distanceTo(camPos) / 40);
-      const jit = 0.8 + 0.4 * Math.random();
+      // It boils rather than strobes: a fresh random size every frame
+      // blinked the whole splash (and its bloom) at the frame rate, and
+      // a beam grazing the ground flipped it between the two sizes
+      const jit = 0.9 + 0.1 * Math.sin(T * 23) * Math.sin(T * 37 + 2);
+      const boil = 0.92 + 0.08 * Math.sin(T * 17 + 1) * Math.sin(T * 29);
+      this.splashHit += ((hit ? 1 : 0) - this.splashHit) * (1 - Math.exp(-dt / 0.08));
       this.splash.position.copy(to);
-      this.splash.scale.setScalar((hit ? 2.4 : 1.2) * jit * seen * power);
+      this.splash.scale.setScalar((1.2 + 1.2 * this.splashHit) * jit * seen * power);
       this.splash.material.color.setRGB(5, 5, 5);
       this.splashHalo.position.copy(to);
-      this.splashHalo.scale.setScalar((hit ? 9 : 4) * (0.85 + 0.3 * Math.random()) * seen * power);
+      this.splashHalo.scale.setScalar((4 + 5 * this.splashHit) * boil * seen * power);
       this.splashHalo.material.color.setRGB(0.8, 1.8, 3);
     }
 

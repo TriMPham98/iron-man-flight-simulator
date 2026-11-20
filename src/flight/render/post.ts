@@ -178,6 +178,11 @@ uniform float smoothWidth;
 varying vec2 vUv;
 vec3 tap(vec2 uv, inout float wsum) {
   vec3 c = texture2D(tDiffuse, uv).rgb;
+  // A single NaN or overflowed pixel would be blurred over the whole
+  // frame by the mips and black it out: drop it here (NaN fails every
+  // comparison, so it lands in the else)
+  float l = luminance(c);
+  if (!(l >= 0.0 && l < 60000.0)) c = vec3(0.0);
   float w = 1.0 / (1.0 + luminance(c));
   wsum += w;
   return c * w;
