@@ -42,6 +42,10 @@ export type SimEventKind =
   | 'flarePop'
   | 'weaponDeploy'
   | 'weaponStow'
+  | 'laserCutterFire'
+  // Reactor power routing
+  | 'reactorMode'
+  | 'reactorOvercharge'
   // World
   | 'explosion'
   | 'bigExplosion'

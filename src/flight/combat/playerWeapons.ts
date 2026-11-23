@@ -9,10 +9,20 @@ import type { FlightModel } from '../sim/flightModel';
 import type { Controls } from '../sim/input';
 import { IDLE_ARMS, type ArmsState } from '../sim/suitDriver';
 import { STOCK_SPEC, type SuitSpec } from '../sim/upgrades';
+import {
+  LASER_CUTTER_COOLDOWN,
+  LASER_CUTTER_HEAT_COST,
+  LASER_CUTTER_MAX_HEAT,
+  LASER_CUTTER_OVERCHARGE_COOLDOWN,
+  REACTOR_KEYS,
+  STOCK_REACTOR_MODIFIERS,
+  type ReactorPower,
+} from '../sim/reactorPower';
 import { GRAVITY } from '../world/config';
 import type { Heightfield } from '../world/heightfield';
 import type { Explosions } from './explosions';
 import { segmentToCore } from './hitShape';
+import { LaserCutterFx } from './laserCutterFx';
 import { paintLock } from './locks';
 import type { Missiles } from './missiles';
 import type { Decoy, Hostile } from './types';
@@ -78,7 +88,8 @@ type Shot =
   | { kind: 'bolt'; side: 'L' | 'R' }
   | { kind: 'rocket'; target: Hostile | null }
   | { kind: 'launcher'; side: 0 | 1; target: Hostile | null }
-  | { kind: 'flare'; side: 'L' | 'R'; sweep: number };
+  | { kind: 'flare'; side: 'L' | 'R'; sweep: number }
+  | { kind: 'laserCutter' };
 
 const BOLT_SPEED = 780;
 /** The aim snaps to a target this close to the sight line or its lead pip (deg), keeps it out to ASSIST_KEEP, within ASSIST_RANGE (m). */
@@ -205,6 +216,11 @@ export class PlayerWeapons {
   assist: Hostile | null = null;
   /** The suit's upgrades (shared with the combat; stock until the app hands over the live one). */
   spec: SuitSpec = STOCK_SPEC();
+  /** Live Arc Reactor power manager (shared with Combat; null falls back to stock multipliers). */
+  reactor: ReactorPower | null = null;
+  /** Iron Man 2 sweeping wrist laser cutter visual & hit solver. */
+  readonly laserCutter = new LaserCutterFx();
+  private readonly fallbackReactor = STOCK_REACTOR_MODIFIERS();
 
   private readonly bolts: Bolt[] = [];
   private readonly flareList: Flare[] = [];
@@ -282,7 +298,7 @@ export class PlayerWeapons {
     private readonly events: EventBus,
   ) {
     this.group.name = 'player-weapons';
-    this.group.add(this.beam.group, this.muzzleLight, this.impactLight, this.flareLight);
+    this.group.add(this.beam.group, this.laserCutter.group, this.muzzleLight, this.impactLight, this.flareLight);
   }
 
   /** How hard a jammer has the seekers (0–1, set by the fight): painting a target takes up to four times as long. */
@@ -332,6 +348,24 @@ export class PlayerWeapons {
     return this.holdL > 0 || this.holdR > 0;
   }
 
+  private get reactorMods() {
+    return this.reactor ? this.reactor.modifiers : this.fallbackReactor;
+  }
+
+  /** True when the wrist laser cutter can fire right now. */
+  get laserCutterReady(): boolean {
+    if (this.reactor) return this.reactor.canFireLaserCutter(this.unibeamHeat, this.unibeamOverheat, this.laserCutter.cooldown);
+    return !this.unibeamOverheat && this.unibeamHeat < LASER_CUTTER_MAX_HEAT && this.laserCutter.cooldown <= 0;
+  }
+
+  get laserCutterActive(): boolean {
+    return this.laserCutter.active;
+  }
+
+  get laserCutterCooldown(): number {
+    return this.laserCutter.cooldown;
+  }
+
   /** The seeker as the pilot hears it: 0 off, 1 searching, 2 painting (some locks), 3 every round locked. */
   get seeker(): 0 | 1 | 2 | 3 {
     const A = this.arms;
@@ -356,6 +390,8 @@ export class PlayerWeapons {
     this.aimDir.copy(aim);
     this.findAim(aim, eye, hostiles);
 
+    const mods = this.reactorMods;
+
     // ── Repulsors ───────────────────────────────────────────────────
     this.repulsorT -= dt;
     const fire = enabled && c.fire && !this.unibeamOn;
@@ -365,7 +401,7 @@ export class PlayerWeapons {
       this.chargeSide = A.aimSide > 0 ? 'L' : A.aimSide < 0 ? 'R' : this.nextSide;
       this.chargeT = 0;
       this.nextSide = this.chargeSide === 'L' ? 'R' : 'L';
-      this.repulsorT = REPULSOR_INTERVAL * this.spec.repulsorInterval;
+      this.repulsorT = REPULSOR_INTERVAL * this.spec.repulsorInterval * mods.repulsorInterval;
       this.events.emit('repulsorCharge', { side: this.chargeSide });
     }
     if (this.chargeSide) {
@@ -450,13 +486,18 @@ export class PlayerWeapons {
     A.siloArmed = this.siloArming;
     if (this.rockets < this.rocketCapacity && this.siloOpen < 0.05) {
       this.reloadT += dt;
-      if (this.reloadT > 1.2 * this.spec.rocketReload) {
+      if (this.reloadT > 1.2 * this.spec.rocketReload * mods.weaponReload) {
         this.pods[this.pods[0] <= this.pods[1] ? 0 : 1]++;
         this.reloadT = 0;
       }
     }
 
     // ── Unibeam ─────────────────────────────────────────────────────
+    const overcharged = !!this.reactor?.overchargeActive;
+    if (overcharged) {
+      this.unibeamHeat = 0;
+      this.unibeamOverheat = false;
+    }
     const canBeam = enabled && !this.unibeamOverheat;
     const wantBeam = canBeam && c.unibeam;
     if (wantBeam) {
@@ -464,7 +505,7 @@ export class PlayerWeapons {
       this.unibeamHold = 0.3;
     }
     this.unibeamHold = Math.max(0, this.unibeamHold - dt);
-    if (wantBeam) this.unibeamCharge = Math.min(1, this.unibeamCharge + dt / UNIBEAM_CHARGE);
+    if (wantBeam) this.unibeamCharge = Math.min(1, this.unibeamCharge + dt / (UNIBEAM_CHARGE * mods.unibeamCharge));
     else this.unibeamCharge = Math.max(0, this.unibeamCharge - dt * 2.5);
     const beamNow = wantBeam && this.unibeamCharge >= 1;
     if (beamNow && !this.unibeamOn) {
@@ -474,19 +515,31 @@ export class PlayerWeapons {
     if (!beamNow && this.unibeamOn) this.events.emit('unibeamEnd', { at: this.model.pos });
     this.unibeamOn = beamNow;
     if (this.unibeamOn) {
-      this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (UNIBEAM_MAX * this.spec.unibeamTime));
-      if (this.unibeamHeat >= 1) {
-        // Overheat: the beam cuts, the chest vents, locked out until it cools
-        this.unibeamOverheat = true;
-        this.unibeamOn = false;
-        this.unibeamCharge = 0;
-        this.ventT = 1.4;
-        this.events.emit('unibeamEnd', { at: this.model.pos, value: 1 });
-        this.events.emit('jarvis', { text: 'Unibeam overheated, sir. Venting.' });
+      if (!overcharged) {
+        this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (UNIBEAM_MAX * this.spec.unibeamTime));
+        if (this.unibeamHeat >= 1) {
+          // Overheat: the beam cuts, the chest vents, locked out until it cools
+          this.unibeamOverheat = true;
+          this.unibeamOn = false;
+          this.unibeamCharge = 0;
+          this.ventT = 1.4;
+          this.events.emit('unibeamEnd', { at: this.model.pos, value: 1 });
+          this.events.emit('jarvis', { text: 'Unibeam overheated, sir. Venting.' });
+        }
       }
-    } else {
-      this.unibeamHeat = Math.max(0, this.unibeamHeat - dt / (UNIBEAM_COOL * this.spec.unibeamCool));
+    } else if (!overcharged) {
+      this.unibeamHeat = Math.max(0, this.unibeamHeat - dt / (UNIBEAM_COOL * this.spec.unibeamCool * mods.unibeamCool));
       if (this.unibeamOverheat && this.unibeamHeat <= UNIBEAM_RESET) this.unibeamOverheat = false;
+    }
+
+    // ── Sweeping Wrist Laser Cutter (KeyC) ──────────────────────────
+    if (enabled && c.pressed.has(REACTOR_KEYS.LASER_CUTTER) && !this.unibeamOn && !this.laserCutter.active && this.laserCutterReady) {
+      this.holdR = Math.max(this.holdR, 0.72);
+      if (!overcharged) {
+        this.unibeamHeat = Math.min(1, this.unibeamHeat + LASER_CUTTER_HEAT_COST);
+      }
+      this.pending.push({ kind: 'laserCutter' });
+      this.events.emit('laserCutterFire', { at: this.model.pos });
     }
     // The beam swells in over a few frames and collapses as fast
     this.unibeamPower += ((this.unibeamOn ? 1 : 0) - this.unibeamPower) * (1 - Math.exp(-dt / (this.unibeamOn ? 0.05 : 0.04)));
@@ -605,7 +658,7 @@ export class PlayerWeapons {
           const target = this.launcherQueue.shift() ?? null;
           this.pending.push({ kind: 'launcher', side, target: target && target.alive ? target : null });
           this.launcherRounds[side]--;
-          this.bayEmpty[side] = BAY_RELOAD * this.spec.launcherReload;
+          this.bayEmpty[side] = BAY_RELOAD * this.spec.launcherReload * this.reactorMods.weaponReload;
           this.nextLauncher = side === 0 ? 1 : 0;
           this.launcherT = LAUNCHER_INTERVAL;
           if (!this.launcherQueue.length) this.launcherHold = 0.9;
@@ -628,7 +681,7 @@ export class PlayerWeapons {
     // Rounds come back up from the forearm magazine while stowed
     if (this.launcherAmmo < LAUNCHER_PER_ARM * 2 && this.launcherOut < 0.05) {
       this.launcherReloadT += dt;
-      if (this.launcherReloadT > 3 * this.spec.launcherReload) {
+      if (this.launcherReloadT > 3 * this.spec.launcherReload * this.reactorMods.weaponReload) {
         this.launcherRounds[this.launcherRounds[0] <= this.launcherRounds[1] ? 0 : 1]++;
         this.launcherReloadT = 0;
       }
@@ -653,10 +706,25 @@ export class PlayerWeapons {
       if (s.kind === 'bolt') this.fireBolt(s.side, this.aimDir);
       else if (s.kind === 'rocket') this.fireRocket(s.target);
       else if (s.kind === 'flare') this.popFlare(s.side, s.sweep);
-      else this.fireLauncher(s.side, s.target);
+      else if (s.kind === 'laserCutter') {
+        const wrist = this.palmMuzzle('R', this._a);
+        const cd = this.reactor?.overchargeActive ? LASER_CUTTER_OVERCHARGE_COOLDOWN : LASER_CUTTER_COOLDOWN;
+        this.laserCutter.trigger(wrist, this.aimDir, this.model.up(this._n), this.reactorMods.laserCutterDamage, cd);
+      } else this.fireLauncher(s.side, s.target);
     }
     this.pending.length = 0;
     this.updateBeam(this.lastDt, this.hostiles);
+    this.laserCutter.step(
+      this.lastDt,
+      this.palmMuzzle('R', this._a),
+      this.field,
+      this.hostiles,
+      this.missiles,
+      this.particles,
+      this.streaks,
+      this.events,
+      (h) => this.onKill(h),
+    );
     this.drawStreaks();
   }
 
@@ -793,7 +861,7 @@ export class PlayerWeapons {
           // A repulsor hits like a ram: the target is shoved off its line
           h.vel.addScaledVector(seg, REPULSOR_KNOCK / Math.sqrt(Math.max(len2, 1e-6)));
           struck = h;
-          const killed = h.damage(REPULSOR_DAMAGE * this.spec.repulsorDamage, hit, 'repulsor');
+          const killed = h.damage(REPULSOR_DAMAGE * this.spec.repulsorDamage * this.reactorMods.repulsorDamage, hit, 'repulsor');
           if (killed) this.onKill(h);
           break;
         }
@@ -936,7 +1004,10 @@ export class PlayerWeapons {
         const t = this._v.distanceTo(from);
         if (d2 < (h.radius + 1.2 + t * 0.002) ** 2) {
           const at = this._w.copy(from).addScaledVector(dir, Math.max(0, t - h.radius * 0.6));
-          if (h.damage(UNIBEAM_DPS * dt * power, at, 'unibeam')) this.onKill(h);
+          if (h.damage(UNIBEAM_DPS * this.reactorMods.unibeamDps * dt * power, at, 'unibeam')) {
+            this.onKill(h);
+            this.reactor?.feedOvercharge(0.22, 'unibeamKill', h.pos);
+          }
           if (Math.random() < 0.8) P.burst('spark', at, 3, 22, this._n.copy(dir).negate(), 1.2);
           P.emit('plasma', at, h.vel, { scale: 3 });
         }

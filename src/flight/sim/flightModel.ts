@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GRAVITY, SPEED_OF_SOUND } from '../world/config';
 import { BACK_SPEED, Gait, STRAFE_SPEED, WALK_SPEED } from './walkCycle';
 import { STOCK_SPEC, type SuitSpec } from './upgrades';
+import { STOCK_REACTOR_MODIFIERS, type ReactorModifiers } from './reactorPower';
 
 /**
  * Flight dynamics of the suit. A point mass with a body attitude: the boots
@@ -452,6 +453,8 @@ export class FlightModel {
   icing = 0;
   /** The suit's upgrades (the app shares the live one; stock until then). */
   spec: SuitSpec = STOCK_SPEC();
+  /** Live Arc Reactor power-routing modifiers (shared from Combat.reactor). */
+  reactor: ReactorModifiers = STOCK_REACTOR_MODIFIERS();
   /** Suit power 0–1 (0 = rebooting: no thrust, the suit falls). */
   power = 1;
   /** The legs: gait, planted boots and footfalls while on the ground. */
@@ -547,7 +550,11 @@ export class FlightModel {
   }
   /** Airspeed the boots are flying to: the boost's, a boost still bleeding off, or the throttle's. */
   get speedTarget(): number {
-    return this.boosting ? BOOST_SPEED * this.spec.boostSpeed : Math.max(this.speedCmd, this.boostCarry);
+    return this.boosting ? BOOST_SPEED * this.spec.boostSpeed * this.reactor.boostSpeed : Math.max(this.speedCmd, this.boostCarry);
+  }
+  /** Effective turn G-limit including Arc Reactor THRUST / OVERCHARGE headroom. */
+  get gLimit(): number {
+    return G_LIMIT + this.reactor.gLimitBonus;
   }
   /** Height the airfoils start to ice at (m): de-icing lifts it toward the ceiling. */
   get icingAlt(): number {
@@ -695,7 +702,8 @@ export class FlightModel {
         const offUp = Math.atan2((aim.y - ahead * vDir.y) / flatK, ahead);
         // (no steeper than the pull it's building to: banked past the g,
         // the lift can't hold it up and it sinks into the turn)
-        const pulling = Math.min(G_LIMIT, Math.max(ROLL_PULL_G, (Math.abs(this.pitchCmd) * speed) / GRAVITY + 1.5)) * GRAVITY;
+        const gLimit = this.gLimit;
+        const pulling = Math.min(gLimit, Math.max(ROLL_PULL_G, (Math.abs(this.pitchCmd) * speed) / GRAVITY + 1.5)) * GRAVITY;
         // (a nudge of a few degrees the boots' skid takes, wings level: banked
         // for it, a roll-out a hair past the heading rolled hard the other way)
         const skid = SKID_G * GRAVITY * 0.5;
@@ -736,10 +744,11 @@ export class FlightModel {
     // a couple of g — roll, then pull
     const flTurn = input.stance ? 0 : fl * (1 - this.swing);
     const rolled = smooth(0.2, 0.7, Math.abs(bankGoal - bank) * flTurn);
-    const gRate = (THREE.MathUtils.lerp(G_LIMIT, ROLL_PULL_G, rolled) * GRAVITY) / Math.max(60, speed);
+    const gLimit = this.gLimit;
+    const gRate = (THREE.MathUtils.lerp(gLimit, ROLL_PULL_G, rolled) * GRAVITY) / Math.max(60, speed);
     const maxPitch = THREE.MathUtils.lerp(2.6, Math.min(2.4, gRate), flTurn);
     const minPitch = THREE.MathUtils.lerp(2.6, Math.min(2.4, (G_PUSH * GRAVITY) / Math.max(60, speed)), flTurn);
-    const skidYaw = THREE.MathUtils.lerp(SKID_G, G_LIMIT * 0.8, vectored);
+    const skidYaw = THREE.MathUtils.lerp(SKID_G, gLimit * 0.8, vectored);
     const maxYaw = THREE.MathUtils.lerp(3.2, Math.min(1.6, (skidYaw * GRAVITY) / Math.max(60, speed)), flTurn);
     // (in the stance the body stands upright whatever the aim: the beam
     // swings, not the suit)
@@ -921,7 +930,7 @@ export class FlightModel {
     const boostOn = this.boosting || carrying;
     this.spool += ((boostOn ? 1 : 0) - this.spool) * approach(dt, BOOST_SPOOL);
     const tFrom = boostOn ? Math.min(this.thrust, THRUST_MAX) : THRUST_MAX;
-    const tMax = THREE.MathUtils.lerp(tFrom, THRUST_BOOST * this.spec.boostThrust, this.spool) * ceilingK;
+    const tMax = THREE.MathUtils.lerp(tFrom, THRUST_BOOST * this.spec.boostThrust * this.reactor.boostThrust, this.spool) * ceilingK;
     const flightThrust = clamp(need, 0, tMax);
 
     // Blend the regimes
@@ -1051,7 +1060,7 @@ export class FlightModel {
       lift.addScaledVector(this.vel, -lift.dot(this.vel) / (speed * speed));
       // (and swinging, the wing hands its share of the g to the carve: the
       // two never stack past the swing's limit)
-      const gCap = THREE.MathUtils.lerp(G_LIMIT, 1, Math.min(1, this.liftSpill * 2)) * GRAVITY * (1 - this.swing);
+      const gCap = THREE.MathUtils.lerp(this.gLimit, 1, Math.min(1, this.liftSpill * 2)) * GRAVITY * (1 - this.swing);
       const ll = lift.length();
       if (ll > gCap) lift.multiplyScalar(gCap / ll);
       acc.add(lift);

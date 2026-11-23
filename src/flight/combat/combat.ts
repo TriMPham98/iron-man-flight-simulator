@@ -16,6 +16,8 @@ import { PlayerWeapons } from './playerWeapons';
 import { SamSite, samSites } from './sams';
 import type { Hostile, HouseTarget, PlayerTarget } from './types';
 import { STOCK_SPEC, type SuitSpec } from '../sim/upgrades';
+import { ReactorPower } from '../sim/reactorPower';
+import { emitOverchargeArcs } from './laserCutterFx';
 import { waveAt } from './waves';
 import { hazeAll } from '../render/haze';
 
@@ -89,6 +91,8 @@ export class Combat {
   readonly missiles: Missiles;
   readonly guns = new Guns();
   readonly weapons: PlayerWeapons;
+  /** Live Arc Reactor 3-way power allocation & 400% overcharge manager. */
+  readonly reactor: ReactorPower;
   readonly drones: Drone[] = [];
   readonly sams: SamSite[] = [];
   readonly ships: Frigate[] = [];
@@ -148,6 +152,9 @@ export class Combat {
     this.explosions = new Explosions(particles, ground, events);
     this.missiles = new Missiles(particles, this.explosions, ground, events);
     this.weapons = new PlayerWeapons(suit, model, field, particles, this.streaks, this.missiles, this.explosions, events);
+    this.reactor = new ReactorPower(events);
+    this.weapons.reactor = this.reactor;
+    this.model.reactor = this.reactor.modifiers;
     this.group.add(this.streaks.mesh, this.explosions.group, this.missiles.group, this.weapons.group);
     this.group.name = 'combat';
     this.samSpots = samSites(field, HOME, 6, 3);
@@ -161,7 +168,8 @@ export class Combat {
       },
       hit(amount: number, at: THREE.Vector3, kind: 'bullet' | 'missile') {
         if (self.down > 0) return;
-        self.armor = Math.max(0, self.armor - (amount * self.spec.damageTaken) / 100);
+        self.armor = Math.max(0, self.armor - (amount * self.spec.damageTaken * self.reactor.modifiers.damageTaken) / 100);
+        self.reactor.onArmorHit(amount, at);
         self.sinceHit = 0;
         self.damageFlash = Math.min(1, self.damageFlash + (kind === 'missile' ? 0.9 : 0.25));
         onHit(amount, at);
@@ -235,6 +243,8 @@ export class Combat {
     this.lost = false;
     this.lostT = 0;
     this.waveT = 0;
+    this.reactor.reset();
+    this.weapons.laserCutter.reset();
     for (const m of this.scorch) this.group.remove(m);
     this.scorch.length = 0;
     this.events.emit('redeploy', { at: this.model.pos });
@@ -341,6 +351,8 @@ export class Combat {
     this.shellCallT += dt;
     this.damageFlash = Math.max(0, this.damageFlash - dt * 1.6);
     this.houseFlash = Math.max(0, this.houseFlash - dt * 1.2);
+    if (this.down <= 0 && !this.lost) this.reactor.handleInput(c.pressed, this.model.pos);
+    this.reactor.update(dt, this.down > 0 || this.lost);
     if (this.lost) this.lostT += dt;
     else if (this.down > 0) {
       this.down -= dt;
@@ -349,8 +361,8 @@ export class Combat {
         this.events.emit('reboot', { at: this.model.pos });
         this.events.emit('jarvis', { text: 'Systems restored. Fifty percent armour.' });
       }
-    } else if (this.sinceHit > 6 * this.spec.regenDelay) {
-      this.armor = Math.min(1, this.armor + dt * 0.035 * this.spec.regenRate);
+    } else if (this.sinceHit > 6 * this.spec.regenDelay * this.reactor.modifiers.regenDelay) {
+      this.armor = Math.min(1, this.armor + dt * 0.035 * this.spec.regenRate * this.reactor.modifiers.regenRate);
     }
 
     // A clear sky gets announced (and a cleared wave earns back a reserve);
@@ -392,6 +404,13 @@ export class Combat {
     if (this.boss) {
       this.boss.update(dt, t, this.player, this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
       this.boss.collide(this.model.pos, this.model.vel);
+      // Flying close to an exposed Dreadnought reactor core siphons energy into overcharge
+      if (!this.boss.falling && !this.boss.shielded && this.boss.core.alive && this.down <= 0) {
+        const dCore = this.model.pos.distanceTo(this.boss.core.pos);
+        if (dCore < 180) {
+          this.reactor.feedOvercharge(dt * 0.25 * (1 - dCore / 180), 'bossCore', this.boss.core.pos);
+        }
+      }
     }
     this.intercept(dt);
     this.guns.update(dt, this.player, this.ground, this.particles, this.streaks, this.events);
@@ -412,9 +431,15 @@ export class Combat {
         } else if (h.kind === 'ship') {
           const part = h as ShipPart;
           part.ship.partDestroyed(part, this.explosions, this.events);
+          if (part.role === 'hull' && this.model.pos.distanceTo(part.pos) < 550) {
+            this.reactor.feedOvercharge(0.45, 'frigateExplosion', part.pos);
+          }
         } else if (h.kind === 'boss') {
           const part = h as BossPart;
           part.owner.partDestroyed(part, this.explosions, this.events);
+          if ((part.role === 'core' || part.role === 'engine') && this.model.pos.distanceTo(part.pos) < 550) {
+            this.reactor.feedOvercharge(part.role === 'core' ? 0.65 : 0.2, 'bossExplosion', part.pos);
+          }
         } else {
           this.explosions.blast(h.pos, 4, { debris: 5, vel: h.vel.clone().multiplyScalar(0.3) });
         }
@@ -453,6 +478,9 @@ export class Combat {
         this.group.remove(f.mesh);
         this.ships.splice(i, 1);
       }
+    }
+    if (this.reactor.overchargeActive && this.down <= 0) {
+      emitOverchargeArcs(dt, this.model.pos, this.model.vel, this.particles, this.streaks);
     }
     this.explosions.update(dt);
     this.streaks.end();
