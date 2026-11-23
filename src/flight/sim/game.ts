@@ -108,6 +108,10 @@ export class Game {
       this.rig.shake += amount > 15 ? 1.4 : 0.25;
       this.particles.burst('spark', at, 6, 10, undefined, 1);
     }, world.atmosphere.uniforms);
+    this.events.on((e) => {
+      if (e.kind === 'reactorOvercharge' && e.value) this.rig.shake += 1.25;
+      else if (e.kind === 'laserCutterFire') this.rig.shake += 0.35;
+    });
     this.neck.visible = false;
     this.neck.receiveShadow = true;
     scene.add(suit.group, this.neck, this.particles.group, this.jets.group, this.combat.group);

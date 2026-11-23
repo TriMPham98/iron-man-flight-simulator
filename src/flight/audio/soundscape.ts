@@ -436,6 +436,24 @@ export class Soundscape {
       case 'weaponStow':
         A.play(SFX.weaponStow, { at: m.pos, gain: 0.55, ref: 6 });
         break;
+      case 'laserCutterFire':
+        A.play(SFX.repulsorZap, { at: at ?? m.pos, gain: 0.9, rate: 1.35, ref: 10 });
+        A.play(SFX.sparkCrackle, { at: at ?? m.pos, gain: 0.8, rate: 1.2, ref: 10 });
+        A.play(SFX.electricMotor, { at: at ?? m.pos, gain: 0.45, rate: 1.8, duration: 0.65, ref: 8 });
+        break;
+      case 'reactorMode':
+        A.play(SFX.lockTick, { ui: true, gain: 0.28, rate: e.text === 'BALANCED' ? 0.9 : 1.25 });
+        A.play(SFX.servoWhir, { at: m.pos, gain: 0.22, rate: 1.3, duration: 0.25, ref: 6 });
+        break;
+      case 'reactorOvercharge':
+        if (e.value) {
+          A.play(SFX.charge, { ui: true, gain: 0.85, rate: 1.15 });
+          A.play(SFX.explosionSub, { at: m.pos, gain: 0.75, ref: 10 });
+          A.play(SFX.sparkCrackle, { at: m.pos, gain: 0.85, ref: 8 });
+        } else {
+          A.play(SFX.steamRelease, { at: m.pos, gain: 0.4, ref: 6, duration: 0.9 });
+        }
+        break;
       case 'unibeamCharge':
         A.play(SFX.charge, { at: m.pos, gain: 0.9, ref: 8, delay: 0.15 });
         break;

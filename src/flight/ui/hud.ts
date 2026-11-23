@@ -319,6 +319,9 @@ export class Hud {
         this.tally = null;
         this.summary = null;
         break;
+      case 'reactorOvercharge':
+        if (e.value) this.showBanner('400% OVERCHARGE', 'ARC REACTOR CAPACITY SURGE', WHITE, true);
+        break;
     }
   }
 
@@ -433,7 +436,10 @@ export class Hud {
     }
     this.panel('tapes', 0, 14 * s, () => this.drawTapes(g, m, ground, s));
     this.panel('heading', 0, -24 * s, () => this.drawHeading(g, cam, s));
-    this.panel('status', -40 * s, 0, () => this.drawStatus(g, m, combat, s));
+    this.panel('status', -40 * s, 0, () => {
+      this.drawStatus(g, m, combat, s);
+      this.drawReactor(g, combat, s);
+    });
     this.panel('weapons', 40 * s, 0, () => this.drawWeapons(g, combat, s));
     this.panel('radar', 30 * s, -30 * s, () => this.drawRadar(g, cam, m, combat, s));
     this.drawScope(g, dt, cam, m, s);
@@ -2091,8 +2097,94 @@ export class Hud {
     }
     const cmd = m.boosting ? 'BOOST' : m.grounded ? 'GROUND' : m.flightness < 0.5 ? 'HOVER' : `CRUISE ${Math.round((m.speedCmd / CRUISE_MAX) * 100)}%`;
     this.text(g, cmd, bx, y + 36 * s, 12 * s, m.boosting ? AMBER : WHITE);
-    this.text(g, `REACTOR ${c.lost ? 'OFFLINE' : c.down > 0 ? 'REBOOT' : 'NOMINAL'}`, bx, y + 54 * s, 9 * s, c.down > 0 ? RED : CYAN_LABEL);
+    this.text(g, `REACTOR ${c.lost ? 'OFFLINE' : c.down > 0 ? 'REBOOT' : c.reactor.overchargeActive ? '400%' : c.reactor.displayCode}`, bx, y + 54 * s, 9 * s, c.down > 0 ? RED : c.reactor.overchargeActive ? WHITE : CYAN_LABEL);
     if (m.icing > 0.01) this.text(g, `ICING ${Math.round(m.icing * 100)}%`, bx, y + 70 * s, 9 * s, AMBER);
+  }
+
+  /**
+   * Diegetic Arc Reactor power-allocation widget: active mode badge
+   * (`BAL` / `THR` / `WPN` / `SHD` / `400%`), 3-way routing bars, sweeping
+   * wrist laser cutter readiness, and the 400% overcharge capacitor meter.
+   */
+  private drawReactor(g: CanvasRenderingContext2D, c: Combat, s: number): void {
+    const R = c.reactor;
+    const W = c.weapons;
+    const x0 = 286 * s;
+    const y0 = this.h - 142 * s - this.bottomInset;
+    const panelW = 176 * s;
+    const panelH = 112 * s;
+    this.glass(g, x0, y0, panelW, panelH, s);
+
+    const oc = R.overchargeActive;
+    const pulse = oc ? 0.65 + 0.35 * Math.sin(this.time * 16) : 1;
+    const modeCol = oc
+      ? WHITE
+      : R.mode === 'THRUST'
+        ? CYAN
+        : R.mode === 'WEAPONS'
+          ? RED
+          : R.mode === 'SHIELDS'
+            ? AMBER
+            : CYAN;
+
+    // Mode flash highlight on switch or overcharge surge
+    const flash = Math.max(R.modePulse * 0.35, R.overchargePulse * 0.65);
+    if (flash > 0.01) {
+      g.save();
+      g.shadowBlur = 0;
+      g.fillStyle = oc ? `rgba(180, 240, 255, ${flash * 0.35})` : `rgba(126, 232, 255, ${flash * 0.25})`;
+      g.fillRect(x0 + 2 * s, y0 + 2 * s, panelW - 4 * s, panelH - 4 * s);
+      g.restore();
+    }
+
+    const px = x0 + 10 * s;
+    const rx = x0 + panelW - 10 * s;
+    this.text(g, 'POWER  [4] BAL', px, y0 + 12 * s, 7 * s, CYAN_LABEL, 'left', JARVIS);
+    g.save();
+    g.globalAlpha *= pulse;
+    this.text(g, R.displayCode, rx, y0 + 12 * s, 10 * s, modeCol, 'right', JARVIS);
+    g.restore();
+
+    // 3-way live power allocation bars
+    const levels = R.axisLevels;
+    const axes: ReadonlyArray<{ key: string; label: string; level: number; active: boolean; color: string }> = [
+      { key: '1', label: 'THR', level: levels.thrust, active: oc || R.mode === 'THRUST', color: oc ? WHITE : CYAN },
+      { key: '2', label: 'WPN', level: levels.weapons, active: oc || R.mode === 'WEAPONS', color: oc ? WHITE : RED },
+      { key: '3', label: 'SHD', level: levels.shields, active: oc || R.mode === 'SHIELDS', color: oc ? WHITE : AMBER },
+    ];
+    const barX = px + 44 * s;
+    const barW = panelW - 64 * s;
+    axes.forEach((ax, i) => {
+      const ay = y0 + (28 + i * 14) * s;
+      this.text(g, `${ax.key} ${ax.label}`, px, ay, 8 * s, ax.active ? ax.color : CYAN_DIM, 'left');
+      g.fillStyle = CYAN_FAINT;
+      g.fillRect(barX, ay - 2.5 * s, barW, 5 * s);
+      g.fillStyle = ax.active ? ax.color : ax.level < 0.5 ? CYAN_DIM : CYAN;
+      g.fillRect(barX, ay - 2.5 * s, barW * ax.level, 5 * s);
+    });
+
+    // Wrist laser cutter readiness ([C])
+    const cy = y0 + 73 * s;
+    const cutStatus = W.laserCutterActive
+      ? 'SLICING'
+      : W.laserCutterReady
+        ? 'READY'
+        : W.laserCutterCooldown > 0
+          ? `COOL ${W.laserCutterCooldown.toFixed(1)}s`
+          : 'HOT';
+    const cutCol = W.laserCutterActive ? WHITE : W.laserCutterReady ? RED : W.laserCutterCooldown > 0 ? CYAN_DIM : AMBER;
+    this.text(g, 'C · LASER', px, cy, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+    this.text(g, cutStatus, rx, cy, 8.5 * s, cutCol, 'right');
+
+    // Overcharge capacitor bar (0–100% -> 400% surge countdown)
+    const oy = y0 + 91 * s;
+    const ocLabel = oc ? `400%  ${R.overchargeRemaining.toFixed(1)}s` : `${Math.round(R.overcharge * 100)}%`;
+    this.text(g, 'OVERCHARGE', px, oy, 7 * s, oc ? WHITE : CYAN_LABEL, 'left', JARVIS);
+    this.text(g, ocLabel, rx, oy, 8.5 * s, oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN, 'right');
+    g.fillStyle = CYAN_FAINT;
+    g.fillRect(px, oy + 9 * s, panelW - 20 * s, 4 * s);
+    g.fillStyle = oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN;
+    g.fillRect(px, oy + 9 * s, (panelW - 20 * s) * THREE.MathUtils.clamp(R.overcharge, 0, 1), 4 * s);
   }
 
   private drawWeapons(g: CanvasRenderingContext2D, c: Combat, s: number): void {

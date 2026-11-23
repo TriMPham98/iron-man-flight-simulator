@@ -10,7 +10,9 @@ import { applyTouch, TouchState } from './touchMath';
  * steers toward where you look), W/S set the throttle, A/D roll in flight
  * and strafe in a hover, E climbs, Q cuts the boots (free fall), Shift
  * boosts, X fires the palms forward to brake. LMB repulsors, RMB missile lock
- * (release to fire), Space unibeam, F flares, G forearm launchers.
+ * (release to fire), Space unibeam, C sweeping wrist laser cutter, F flares,
+ * G forearm launchers, 1/2/3/4 reactor power allocation (Thrust / Weapons /
+ * Shields / Balanced), B manual overcharge trigger.
  * On a pad: right stick aims, left stick strafes / rolls (and moves in a
  * hover), triggers are throttle and brake, A/X climb/descend, L3 boost,
  * RB repulsors, LB missiles, Y unibeam, B flares, R3 camera, D-pad down
@@ -138,7 +140,7 @@ export class Input {
       aimPitch: -this.mouseDY * sens * (this.invertY ? -1 : 1),
       throttle: k('KeyW', 'KeyS'),
       lateral: k('KeyD', 'KeyA'),
-      vertical: k('KeyE', 'KeyQ') + (this.key('KeyC') || this.key('ControlLeft') ? -1 : 0),
+      vertical: k('KeyE', 'KeyQ') + (this.key('ControlLeft') ? -1 : 0),
       forward: 0,
       boost: this.key('ShiftLeft', 'ShiftRight'),
       brake: this.key('KeyX'),
