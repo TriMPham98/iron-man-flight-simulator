@@ -12,6 +12,7 @@ export interface Wave {
   jammers?: number;
   frigate?: boolean;
   boss?: boolean;
+  rival?: boolean;
   line: string;
 }
 
@@ -23,7 +24,7 @@ const WAVES: readonly Wave[] = [
   { drones: 2, sams: 1, frigate: true, line: 'A warship off the coast, sir. Guns fore and aft, a missile launcher on the foredeck. Take the radar first.' },
   { drones: 4, sams: 2, bombers: 1, line: 'A bomber, sir, and it is not here for you. It is lining up on the house.' },
   { drones: 3, interceptors: 2, jammers: 1, sams: 2, line: 'Something out there is jamming the seekers. Find the emitter and shoot it down by hand.' },
-  { drones: 4, interceptors: 3, bombers: 2, sams: 3, line: 'A larger formation, sir. Shall I alert the authorities? No? Very well.' },
+  { drones: 2, interceptors: 1, sams: 1, rival: true, line: 'Sir — single supersonic contact matching our own arc-reactor signature. Rogue powered armour inbound at Mach 1.' },
   { drones: 2, interceptors: 2, bombers: 1, jammers: 1, sams: 1, frigate: true, line: 'The warship is back, sir, and it has brought friends.' },
   { drones: 0, interceptors: 2, sams: 0, boss: true, line: 'Sir, that is not a drone. Something very large is coming in off the sea, and it is heading for the house.' },
 ];
@@ -34,6 +35,7 @@ export function waveAt(n: number): Wave {
   const extra = n - WAVES.length + 1;
   const boss = extra % 5 === 0;
   const frigate = !boss && extra % 3 === 0;
+  const rival = !boss && !frigate && extra % 5 === 1;
   return {
     drones: 4 + extra,
     interceptors: 2 + Math.floor(extra / 2),
@@ -42,6 +44,13 @@ export function waveAt(n: number): Wave {
     sams: boss ? 1 : Math.min(6, 3 + Math.floor(extra / 2)),
     frigate,
     boss,
-    line: boss ? 'Another dreadnought, sir. They do seem to have a budget.' : frigate ? 'Formation inbound, sir, and a warship standing in behind it.' : 'More of them, sir. Rather a lot more.',
+    rival,
+    line: boss
+      ? 'Another dreadnought, sir. They do seem to have a budget.'
+      : rival
+        ? 'Another rogue suit on scope, sir. Supersonic powered armour — watch his chest reactor.'
+        : frigate
+          ? 'Formation inbound, sir, and a warship standing in behind it.'
+          : 'More of them, sir. Rather a lot more.',
   };
 }

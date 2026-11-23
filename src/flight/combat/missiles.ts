@@ -211,6 +211,21 @@ export class Missiles {
     }
   }
 
+  /** Offer a hostile countermeasure flare to player seekers tracking that hostile. */
+  offerHostileDecoy(decoy: Decoy, fromPos: THREE.Vector3, hostile: Hostile, chance = 0.65): number {
+    let pulled = 0;
+    for (const m of this.live) {
+      if (m.team !== 'player' || m.decoyed || m.target !== hostile) continue;
+      if (m.pos.distanceTo(fromPos) > 1100) continue;
+      if (Math.random() < chance) {
+        m.target = decoy;
+        m.decoyed = true;
+        pulled++;
+      }
+    }
+    return pulled;
+  }
+
   /** Enemy seekers currently chasing the player (for the warning). */
   threats(): Missile[] {
     return this.live.filter((m) => m.team === 'enemy' && isPlayer(m.target));
@@ -321,15 +336,22 @@ export class Missiles {
       // Hits: proximity fuse on the target, anything hostile in reach, or the ground
       let boom = false;
       if (m.team === 'player') {
+        if (isDecoy(m.target) && segDistSq(m.target.pos, prev, m.pos) < 4 ** 2) {
+          m.pos.copy(m.target.pos);
+          m.target.eaten = true;
+          boom = true;
+        }
         // A seeker sent for one piece of a ship flies past the rest of it
         // (the hull's capsule swallows the deck) to the piece it was sent for
-        const whole = isHostile(m.target) && m.target.alive ? m.target.whole : undefined;
-        for (const h of hostiles) {
-          if (!h.alive || (whole && h.whole === whole && h !== m.target)) continue;
-          if (coreDistance(h, m.pos) < h.radius + 3.5) {
-            h.damage(m.damage, m.pos, m.heavy ? 'launcher' : 'missile');
-            boom = true;
-            break;
+        if (!boom) {
+          const whole = isHostile(m.target) && m.target.alive ? m.target.whole : undefined;
+          for (const h of hostiles) {
+            if (!h.alive || (whole && h.whole === whole && h !== m.target)) continue;
+            if (coreDistance(h, m.pos) < h.radius + 3.5) {
+              h.damage(m.damage, m.pos, m.heavy ? 'launcher' : 'missile');
+              boom = true;
+              break;
+            }
           }
         }
         if (isHostile(m.target) && m.target.alive) m.target.threatened = 1;
