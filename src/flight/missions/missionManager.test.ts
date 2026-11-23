@@ -148,8 +148,10 @@ function makeHarness(opts: { withRival?: boolean } = {}) {
     },
     ...(opts.withRival
       ? {
-          spawnRival: () => {
-            mockRival = {
+          spawnRival: (): Hostile => {
+            const rivalMesh = new THREE.Group();
+            group.add(rivalMesh);
+            const rival: Hostile & { mode: string; crashed: boolean; mesh: THREE.Object3D } = {
               id: 7777,
               kind: 'boss',
               label: 'RIVAL ACE',
@@ -160,18 +162,22 @@ function makeHarness(opts: { withRival?: boolean } = {}) {
               maxHp: 900,
               alive: true,
               threatened: 0,
+              mode: 'attack',
+              crashed: false,
+              mesh: rivalMesh,
               damage(amt: number) {
-                this.hp -= amt;
-                if (this.hp <= 0) {
-                  this.hp = 0;
-                  this.alive = false;
+                rival.hp -= amt;
+                if (rival.hp <= 0) {
+                  rival.hp = 0;
+                  rival.alive = false;
                   return true;
                 }
                 return false;
               },
             };
-            hostiles.push(mockRival);
-            return mockRival;
+            mockRival = rival;
+            hostiles.push(rival);
+            return rival;
           },
         }
       : {}),
@@ -255,6 +261,28 @@ describe('MissionManager architecture & Rival adapter', () => {
     expect(h.manager.completed.has('rival')).toBe(true);
     expect(h.combat.wavesEnabled).toBe(true);
     expect(h.awards.some((a) => a.points === RIVAL_CLEAR_REWARD)).toBe(true);
+  });
+
+  it('cleanly tears down a living Rival Ace on abort/switch (crashed=true, mode=dying, mesh hidden/removed) and supports silent reset cleanup', () => {
+    const h = makeHarness({ withRival: true });
+    expect(h.manager.startMission('rival')).toBe(true);
+    const rival = h.getRival() as Hostile & { crashed: boolean; mode: string; mesh: THREE.Object3D };
+    expect(rival.alive).toBe(true);
+    expect(h.combat.hostiles).toContain(rival);
+
+    const linesBefore = h.jarvisLines.length;
+    h.manager.abortMission(true);
+
+    expect(rival.alive).toBe(false);
+    expect(rival.crashed).toBe(true);
+    expect(rival.mode).toBe('dying');
+    expect(rival.mesh.visible).toBe(false);
+    expect(h.combat.hostiles).not.toContain(rival);
+    expect(h.combat.group.children).not.toContain(rival.mesh);
+    expect(h.combat.wavesEnabled).toBe(true);
+    expect(h.manager.activeId).toBeNull();
+    // Silent reset/redeploy abort does not emit extra JARVIS abort chatter
+    expect(h.jarvisLines.length).toBe(linesBefore);
   });
 });
 

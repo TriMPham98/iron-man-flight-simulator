@@ -536,7 +536,10 @@ export class FlightApp {
         if (code === 'KeyU') this.refitMenu();
         continue;
       }
-      if (code === 'KeyR') game.reset();
+      if (code === 'KeyR') {
+        this.missions.abortMission(true);
+        game.reset();
+      }
       if (code === 'KeyN') game.combat.callWave();
       if (code === 'KeyU' && game.onPad) this.refitMenu();
       if (code === 'KeyJ' && !director && !this.autopilot) this.openMissionsMenu();
@@ -672,6 +675,14 @@ export class FlightApp {
       onAbort: () => this.missions.abortMission(),
     });
     screens.actions.openMissions = () => this.openMissionsMenu();
+    const prevRestart = screens.actions.restart;
+    screens.actions.restart = () => {
+      this.missions.abortMission(true);
+      prevRestart?.();
+    };
+    game.events.on((e) => {
+      if (e.kind === 'redeploy') this.missions.abortMission(true);
+    });
   }
 
   /** Opens the JARVIS Mission Selector drawer, holding the sim without stacking the pause screen. */

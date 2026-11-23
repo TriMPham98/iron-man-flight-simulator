@@ -148,7 +148,18 @@ export class RivalDuelMission implements MissionInstance {
 
   cleanup(ctx: MissionContext): void {
     if (this.rival && this.rival.alive) {
-      this.rival.alive = false;
+      const r = this.rival as Hostile & {
+        crashed?: boolean;
+        mode?: string;
+        mesh?: THREE.Object3D;
+      };
+      r.alive = false;
+      r.mode = 'dying';
+      r.crashed = true;
+      if (r.mesh) {
+        r.mesh.visible = false;
+        ctx.combat.group.remove(r.mesh);
+      }
       unregisterHostile(ctx.combat, this.rival);
     }
     this.rival = null;
