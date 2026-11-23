@@ -400,9 +400,9 @@ export class Drone implements Hostile {
     }
 
     if (this.frozen) {
-      // Iced out: engine stalled, control surfaces locked, tumbling downward
-      this.vel.y -= 9.81 * dt * 1.15;
-      this.vel.multiplyScalar(Math.exp(-0.12 * dt));
+      // Iced out: engine stalled, control surfaces locked, plummeting in a tumble
+      this.vel.y -= 9.81 * dt * 1.45;
+      this.vel.multiplyScalar(Math.exp(-0.04 * dt));
       this.pos.addScaledVector(this.vel, dt);
       this.roll += (this.id % 2 === 0 ? 3.2 : -3.2) * dt;
       this.orient(dt, this.vel.lengthSq() > 1 ? this.vel.clone().normalize() : dir, this.roll);

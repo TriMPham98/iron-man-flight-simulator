@@ -39,8 +39,6 @@ export const ENEMY_ICING_ALT: Record<DroneType, number> = {
   interceptor: 8800,
 };
 
-/** Once frozen, ice must thaw below this level before the aircraft recovers. */
-export const ICING_THAW_RECOVER = 0.35;
 /** Damage multiplier taken by a frozen aircraft (and max partial icing bonus). */
 export const ICING_FROZEN_VULN = 1.8;
 export const ICING_PARTIAL_VULN = 0.5;
@@ -247,7 +245,8 @@ export class PhysicsWeapons {
         const excess = (alt - threshold) / 800;
         const buildRate = 0.2 + Math.min(0.45, excess * 0.25);
         d.icing = Math.min(1, d.icing + buildRate * dt);
-      } else if (alt < threshold - 150) {
+      } else if (!d.frozen && alt < threshold - 150) {
+        // Partial ice thaws once out of the icing layer; a full freeze-out is a fatal flameout tumble
         const warmth = Math.min(1, (threshold - 150 - alt) / 3000);
         const thawRate = 0.08 + 0.16 * warmth;
         d.icing = Math.max(0, d.icing - thawRate * dt);
@@ -262,8 +261,6 @@ export class PhysicsWeapons {
           this.iceCalloutDone = true;
           events.emit('jarvis', { text: ICING_JARVIS_LINE });
         }
-      } else if (d.frozen && d.icing <= ICING_THAW_RECOVER) {
-        d.frozen = false;
       }
 
       // Emit frost/vapor plume as ice builds and while tumbling frozen

@@ -213,19 +213,41 @@ describe('Pillar 1 — Weaponize the Icing Ceiling', () => {
     expect(awards.some((a) => a.why === 'ICING KILL' && a.pts === AWARD.iceKill)).toBe(true);
   });
 
-  it('thaws ice when descending into warm air below threshold', () => {
+  it('thaws partial icing in warm air, while a full freeze-out tumbles all the way from >8,200 m to crash', () => {
     const pw = new PhysicsWeapons();
     const { stub: particles } = makeParticles();
-    const { stub: explosions } = makeExplosions();
-    const { bus } = makeBus();
-    const d = makeDrone(v(0, 5000, 0), 'drone');
-    d.icing = 1;
-    d.frozen = true;
-    for (let i = 0; i < 40; i++) {
-      pw.updateEnemyIcing(0.2, [d], makeGround({ y: 0 }), particles, explosions, bus);
+    const { stub: explosions, blasts } = makeExplosions();
+    const { bus, list } = makeBus();
+    const { u, awards } = makeUpgrades();
+    bus.on((e) => u.event(e));
+    const sea = makeGround({ y: 0, water: true });
+    const ms = new Missiles(particles, explosions, sea, bus);
+    const { target: player } = makePlayer(v(0, 9000, 0));
+
+    // Partial icing (not yet frozen) thaws when descending into warmer air
+    const partial = makeDrone(v(0, 5000, 0), 'drone');
+    partial.icing = 0.7;
+    for (let i = 0; i < 30; i++) {
+      pw.updateEnemyIcing(0.2, [partial], sea, particles, explosions, bus);
     }
-    expect(d.icing).toBeLessThan(0.35);
-    expect(d.frozen).toBe(false);
+    expect(partial.icing).toBe(0);
+    expect(partial.frozen).toBe(false);
+
+    // Full freeze-out above 8,200 m stays frozen through lower altitudes until terrain/water crash
+    const doomed = makeDrone(v(0, 8600, 0), 'drone');
+    let t = 0;
+    const dt = 0.25;
+    for (let i = 0; i < 400 && doomed.alive; i++) {
+      t += dt;
+      doomed.update(dt, t, player, sea, [], ms, particles, explosions, bus);
+      pw.updateEnemyIcing(dt, [doomed], sea, particles, explosions, bus);
+    }
+    expect(doomed.alive).toBe(false);
+    expect(doomed.crashed).toBe(true);
+    expect(doomed.pos.y).toBeLessThanOrEqual(2.5);
+    expect(blasts.length).toBeGreaterThan(0);
+    expect(list.some((e) => e.kind === 'iceKill')).toBe(true);
+    expect(awards.some((a) => a.why === 'ICING KILL' && a.pts === AWARD.iceKill)).toBe(true);
   });
 });
 
