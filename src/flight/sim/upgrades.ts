@@ -346,6 +346,10 @@ export const AWARD = {
   decoy: 5,
   /** The first time through the barrier on each flight. */
   sonicBoom: 10,
+  /** Physics-combat bonuses: hero-landing shockwave kill, high-speed kinetic ram, icing crash kill. */
+  heroSlam: 30,
+  kineticRam: 25,
+  iceKill: 25,
 } as const;
 /** What the award for a kill is called, where the kind's own name won't do. */
 const DOWNED: Partial<Record<string, string>> = { frigate: 'WARSHIP SUNK', boss: 'DREADNOUGHT SYSTEM OUT', dreadnought: 'DREADNOUGHT DOWN' };
@@ -504,6 +508,15 @@ export class Upgrades {
           this.boomPaid = true;
           this.earn(AWARD.sonicBoom, 'MACH 1');
         }
+        break;
+      case 'heroSlam':
+        this.earn(AWARD.heroSlam * Math.max(1, e.value ?? 1), 'SHOCKWAVE SLAM');
+        break;
+      case 'kineticRam':
+        this.earn(AWARD.kineticRam, 'KINETIC RAM');
+        break;
+      case 'iceKill':
+        this.earn(AWARD.iceKill, 'ICING KILL');
         break;
     }
   }

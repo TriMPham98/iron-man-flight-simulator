@@ -12,6 +12,7 @@ import { Drone, Guns, JAM_RANGE, type DroneType } from './drones';
 import { Explosions, type SurfaceQuery } from './explosions';
 import { Frigate, type ShipPart } from './frigate';
 import { Missiles, type Missile } from './missiles';
+import { PhysicsWeapons } from './physicsWeapons';
 import { PlayerWeapons } from './playerWeapons';
 import { SamSite, samSites } from './sams';
 import type { Hostile, HouseTarget, PlayerTarget } from './types';
@@ -89,6 +90,7 @@ export class Combat {
   readonly missiles: Missiles;
   readonly guns = new Guns();
   readonly weapons: PlayerWeapons;
+  readonly physics = new PhysicsWeapons();
   readonly drones: Drone[] = [];
   readonly sams: SamSite[] = [];
   readonly ships: Frigate[] = [];
@@ -148,7 +150,7 @@ export class Combat {
     this.explosions = new Explosions(particles, ground, events);
     this.missiles = new Missiles(particles, this.explosions, ground, events);
     this.weapons = new PlayerWeapons(suit, model, field, particles, this.streaks, this.missiles, this.explosions, events);
-    this.group.add(this.streaks.mesh, this.explosions.group, this.missiles.group, this.weapons.group);
+    this.group.add(this.streaks.mesh, this.explosions.group, this.missiles.group, this.weapons.group, this.physics.group);
     this.group.name = 'combat';
     this.samSpots = samSites(field, HOME, 6, 3);
     this.house = { marks: strikeMarks(field), struck: (at, damage) => this.houseStruck(at, damage ?? SAM_DAMAGE) };
@@ -223,6 +225,7 @@ export class Combat {
     this.zaps.length = 0;
     this.drones.length = this.sams.length = this.ships.length = this.hostiles.length = 0;
     this.missiles.clear();
+    this.physics.reset();
     this.guns.rounds.length = 0;
     this.counted.clear();
     this.wave = -1;
@@ -393,6 +396,7 @@ export class Combat {
       this.boss.update(dt, t, this.player, this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
       this.boss.collide(this.model.pos, this.model.vel);
     }
+    this.physics.update(dt, this.model, this.weapons, this.drones, this.missiles, this.player, this.ground, this.particles, this.explosions, this.events);
     this.intercept(dt);
     this.guns.update(dt, this.player, this.ground, this.particles, this.streaks, this.events);
     this.missiles.update(dt, this.hostiles, this.player);
@@ -466,6 +470,21 @@ export class Combat {
   afterPose(): void {
     this.weapons.afterPose();
     this.streaks.end();
+  }
+
+  /** Hero-landing ground-slam shockwave; returns extra camera shake. */
+  onHeroLanding(at: THREE.Vector3, impactSpeed: number): number {
+    return this.physics.onHeroLanding(at, impactSpeed, this.hostiles, this.ground, this.particles, this.events).shake;
+  }
+
+  /** Mach 1 physical shockwave cone: knocks light aircraft off course & detonates nearby enemy missiles. */
+  onSonicBoom(at: THREE.Vector3, vel: THREE.Vector3): void {
+    this.physics.onSonicBoom(at, vel, this.drones, this.missiles, this.particles);
+  }
+
+  /** Pending camera shake from physics-weapon impacts (e.g. kinetic ram). */
+  consumeShake(): number {
+    return this.physics.consumeShake();
   }
 
   private readonly counted = new Set<number>();
