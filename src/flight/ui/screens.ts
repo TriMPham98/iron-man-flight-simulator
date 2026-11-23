@@ -47,6 +47,7 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
     ['WHEEL', 'camera distance'],
     ['R', 'reset to the house'],
     ['N', 'call a wave (sky clear)'],
+    ['J', 'missions'],
     ['U', 'R&D refit (on the pad)'],
     ['L', 'auto-land (near the pad)'],
     ['ESC', 'pause'],
@@ -105,6 +106,8 @@ export interface PauseActions {
   cameraName?: () => string;
   /** Resume without pointer lock (a pad or a key that can't take the lock). */
   forceResume?: () => void;
+  /** Open the JARVIS Mission Selector drawer. */
+  openMissions?: () => void;
 }
 
 /** The R&D refit bay's ledger and gate (wired by the app). */
@@ -244,6 +247,7 @@ export class Screens {
               <button class="fp-btn primary" data-act="resume">RESUME <kbd>ESC</kbd></button>
               <button class="fp-btn" data-act="restart">RESTART <small>at the house</small></button>
               <button class="fp-btn" data-act="camera">CAMERA <span class="val" data-cam-name></span></button>
+              <button class="fp-btn" data-act="missions" hidden>MISSIONS <kbd>J</kbd></button>
               <button class="fp-btn" data-act="refit" hidden>R&amp;D REFIT <span class="val" data-rd-pts></span></button>
               <div class="fp-sep"></div>
               <button class="fp-btn" data-tab="controls" role="tab" aria-selected="true" aria-controls="fp-controls">CONTROLS</button>
@@ -395,7 +399,10 @@ export class Screens {
       const act = el.dataset.act;
       if (act === 'resume' || act === 'done') this.resume();
       else if (act === 'refit') this.showRefit(true);
-      else if (act === 'restart') {
+      else if (act === 'missions') {
+        this.setPaused(false, () => {});
+        this.actions.openMissions?.();
+      } else if (act === 'restart') {
         this.actions.restart?.();
         this.resume();
       } else if (act === 'camera') {
@@ -679,6 +686,10 @@ export class Screens {
       if (this.mode === 'refit') this.resume();
       else this.showRefit(true);
     }
+    else if (e.code === 'KeyJ' && !e.repeat && this.actions.openMissions) {
+      this.setPaused(false, () => {});
+      this.actions.openMissions();
+    }
     else if (k === 'Enter' || k === ' ') {
       const el = document.activeElement as HTMLElement | null;
       if (el && this.pause.contains(el) && !(el instanceof HTMLInputElement)) el.click();
@@ -798,6 +809,8 @@ export class Screens {
     cancelAnimationFrame(this.padRaf);
     if (paused) {
       this.showCamera();
+      const mBtn = this.pause.querySelector<HTMLElement>('[data-act="missions"]');
+      if (mBtn) mBtn.hidden = !this.actions.openMissions;
       this.syncInputs();
       this.refitMsg = '';
       this.renderRefit();
