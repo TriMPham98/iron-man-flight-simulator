@@ -14,6 +14,8 @@ import { FrigateReel } from './sim/frigateReel';
 import { Input, type Controls } from './sim/input';
 import { Upgrades } from './sim/upgrades';
 import { Hud } from './ui/hud';
+import { MissionManager } from './missions/missionManager';
+import { MissionHud } from './ui/missionHud';
 import { SuitWireframe } from './ui/suitWireframe';
 import { TouchControls } from './ui/touchControls';
 import type { Screens } from './ui/screens';
@@ -83,6 +85,8 @@ export class FlightApp {
   game!: Game;
   post!: FlightPost;
   hud!: Hud;
+  missions!: MissionManager;
+  missionHud!: MissionHud;
   /** The suit's R&D: points earned in the air, upgrades fitted on the pad. */
   readonly upgrades = new Upgrades();
   /** Holds the sim and opens the R&D refit bay (wired by the settings). */
@@ -264,6 +268,7 @@ export class FlightApp {
     screens.onSettings = () => this.applySettings();
     this.applySettings();
     bindFlightSettings(this);
+    this.bindMissions();
 
     const q = this.query;
     this.lens = {
@@ -534,9 +539,19 @@ export class FlightApp {
       if (code === 'KeyR') game.reset();
       if (code === 'KeyN') game.combat.callWave();
       if (code === 'KeyU' && game.onPad) this.refitMenu();
+      if (code === 'KeyJ' && !director && !this.autopilot) this.openMissionsMenu();
     }
     game.applyControls(c);
-    if (!this.paused) game.update(dt);
+    if (!this.paused) {
+      game.update(dt);
+      this.missions.update(dt, {
+        vertical: c.vertical,
+        boost: c.boost,
+        brake: c.brake,
+        pressed: c.pressed,
+        aimY: game.input.aim.y,
+      });
+    }
     this.cameraOverride?.(camera, dt);
     world.update(dt, camera);
     this.updateLens(dt);
@@ -568,6 +583,7 @@ export class FlightApp {
         ? `RETURN TO THE PAD TO REFIT · ${this.upgrades.state.rd} R&D`
         : null;
     hud.draw(dt, camera, game.model, game.combat, game.ground, game.rig.mode === 'helmet');
+    this.missionHud.update(camera, game.model.pos, this.missions.telemetry, this.engaged && !director && !cinematic);
     this.sounds.update(dt, game.model, game.combat, camera, game.rig.mode === 'helmet', game.combat.weapons.unibeamOn);
     this.post.render(dt, this.lens);
   }
@@ -606,6 +622,72 @@ export class FlightApp {
       // (a lost run's house comes back whole with the redeploy: nothing to buy)
       house: { hp: () => (combat.lost || combat.wave < 0 ? null : combat.houseHp), repair: (share) => void combat.repairHouse(share) },
     });
+  }
+
+  /** Wires standalone JARVIS missions + launcher drawer cleanly on top of free flight. */
+  private bindMissions(): void {
+    const { game, world, upgrades, screens } = this;
+    this.missions = new MissionManager({
+      model: game.model,
+      world: {
+        get inCloud() {
+          return world.inCloud;
+        },
+        heightAt: (x, z) => world.field.heightAt(x, z),
+        surface: (x, z) => game.ground.surface(x, z),
+        isWater: (x, z) => game.ground.isWater(x, z),
+      },
+      combat: game.combat,
+      particles: game.particles,
+      events: game.events,
+      padPos: new THREE.Vector3(PAD.x, PAD_Y, PAD.y),
+      hazeUniforms: world.atmosphere.uniforms,
+      awardRd: (points, reason) => {
+        if (!this.director && !this.autopilot) upgrades.earn(points, reason);
+      },
+      playCue: (cue) => {
+        if (cue === 'start') this.cue('waveStart', 0.75);
+        else if (cue === 'warning') this.cue('rwrChirp', 0.55);
+        else if (cue === 'lock') this.cue('rwrPulse', 0.7);
+        else if (cue === 'ping') this.cue('ping2', 0.6);
+        else if (cue === 'success') this.cue('waveClear', 0.8);
+        else if (cue === 'fail') this.cue('deepBoom', 0.7);
+      },
+    });
+    this.scene.add(this.missions.group);
+
+    const closeDrawer = () => {
+      this.missionHud.setOpen(false);
+      this.paused = false;
+      this.audio.setPaused(false);
+      if (!this.touch) this.input?.requestLock();
+    };
+    this.missionHud = new MissionHud(this.missions, {
+      onRequestOpen: () => this.openMissionsMenu(),
+      onClose: closeDrawer,
+      onLaunch: (id) => {
+        this.missions.startMission(id);
+        closeDrawer();
+      },
+      onAbort: () => this.missions.abortMission(),
+    });
+    screens.actions.openMissions = () => this.openMissionsMenu();
+  }
+
+  /** Opens the JARVIS Mission Selector drawer, holding the sim without stacking the pause screen. */
+  openMissionsMenu(): void {
+    if (!this.engaged || this.director || this.autopilot || this.game.combat.lost) return;
+    if (this.missionHud.open) {
+      this.missionHud.setOpen(false);
+      this.paused = false;
+      this.audio.setPaused(false);
+      if (!this.touch) this.input?.requestLock();
+      return;
+    }
+    this.paused = true;
+    this.audio.setPaused(true);
+    this.missionHud.setOpen(true);
+    this.input?.releaseLock();
   }
 
   /** Optional per-frame observer (frame-time stats). */
@@ -666,11 +748,13 @@ export class FlightApp {
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === canvas;
       if (this.engaged && !locked && !this.autopilot && !this.director) {
+        if (this.missionHud?.open) return;
         this.paused = true;
         this.audio.setPaused(true);
         screens.setPaused(true, () => this.input?.requestLock());
       } else if (locked) {
         this.paused = false;
+        this.missionHud?.setOpen(false);
         screens.setPaused(false, () => {});
         this.audio.setPaused(false);
         void this.audio.unlock();
@@ -692,6 +776,7 @@ export class FlightApp {
       game,
       suit: this.suit,
       hud: this.hud,
+      missions: this.missions,
       audio: this.audio,
       lens: this.lens,
       setAutopilot: (fn: FlightApp['autopilot']) => {
