@@ -336,6 +336,8 @@ export const AWARD = {
   /** Each piece shot off the dreadnought, and the thing itself coming down. */
   boss: 20,
   dreadnought: 300,
+  /** Supersonic rival powered-armor ace. */
+  rival: 250,
   /** A cleared wave: the base plus this × its number, and half as much again with no hit taken. */
   waveBase: 40,
   wave: 30,
@@ -348,7 +350,7 @@ export const AWARD = {
   sonicBoom: 10,
 } as const;
 /** What the award for a kill is called, where the kind's own name won't do. */
-const DOWNED: Partial<Record<string, string>> = { frigate: 'WARSHIP SUNK', boss: 'DREADNOUGHT SYSTEM OUT', dreadnought: 'DREADNOUGHT DOWN' };
+const DOWNED: Partial<Record<string, string>> = { frigate: 'WARSHIP SUNK', boss: 'DREADNOUGHT SYSTEM OUT', dreadnought: 'DREADNOUGHT DOWN', rival: 'RIVAL ACE DOWN' };
 /** A landing only pays after this long in the air (s): no hopping on the pad for points. */
 export const LANDING_MIN_AIR = 30;
 

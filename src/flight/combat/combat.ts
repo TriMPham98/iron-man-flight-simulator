@@ -13,6 +13,7 @@ import { Explosions, type SurfaceQuery } from './explosions';
 import { Frigate, type ShipPart } from './frigate';
 import { Missiles, type Missile } from './missiles';
 import { PlayerWeapons } from './playerWeapons';
+import { RivalSuit } from './rivalSuit';
 import { SamSite, samSites } from './sams';
 import type { Hostile, HouseTarget, PlayerTarget } from './types';
 import { STOCK_SPEC, type SuitSpec } from '../sim/upgrades';
@@ -94,6 +95,8 @@ export class Combat {
   readonly ships: Frigate[] = [];
   /** The dreadnought, while there is one. */
   boss: Dreadnought | null = null;
+  /** The supersonic rival powered-armour ace, while there is one. */
+  rival: RivalSuit | null = null;
   readonly hostiles: Hostile[] = [];
   /** Armour 0–1. */
   armor = 1;
@@ -216,6 +219,11 @@ export class Combat {
     for (const f of this.ships) this.group.remove(f.mesh);
     if (this.boss) this.group.remove(this.boss.mesh);
     this.boss = null;
+    if (this.rival) {
+      this.rival.disposeFlares(this.group);
+      this.group.remove(this.rival.mesh);
+      this.rival = null;
+    }
     this.houseHp = 1;
     this.houseFlash = 0;
     this.jam = this.weapons.jam = 0;
@@ -277,6 +285,29 @@ export class Combat {
     return b;
   }
 
+  /** The supersonic Rival Ace powered-armour boss (one at a time). */
+  spawnRival(near: THREE.Vector3 = this.model.pos): RivalSuit {
+    if (this.rival && this.rival.alive) return this.rival;
+    if (this.rival) {
+      this.rival.disposeFlares(this.group);
+      this.group.remove(this.rival.mesh);
+      const idx = this.hostiles.indexOf(this.rival);
+      if (idx >= 0) this.hostiles.splice(idx, 1);
+      this.rival = null;
+    }
+    const angle = Math.atan2(1, -0.3) + (Math.random() - 0.5) * 0.9;
+    const range = 1800 + Math.random() * 500;
+    const at = new THREE.Vector3(near.x + Math.cos(angle) * range, 0, near.z + Math.sin(angle) * range);
+    at.y = Math.max(this.field.surfaceAt(at.x, at.z), near.y, 0) + 550;
+    const heading = near.clone().sub(at).setY(0);
+    const r = new RivalSuit(at, heading);
+    this.rival = r;
+    this.hostiles.push(r);
+    hazeAll(r.mesh, this.hazeUniforms);
+    this.group.add(r.mesh);
+    return r;
+  }
+
   /** The house is whole again by `share` (0–1) of itself; returns what that actually put back. */
   repairHouse(share: number): number {
     const before = this.houseHp;
@@ -292,6 +323,7 @@ export class Combat {
     const w = waveAt(this.wave);
     if (w.frigate) this.spawnFrigate();
     if (w.boss) this.spawnBoss();
+    if (w.rival) this.spawnRival();
     // From inland, over the ridges, 2.6–3.5 km out (a few seconds' dash, not half a minute's wait)
     const base = Math.atan2(-1, 0.2) + (Math.random() - 0.5) * 1.2;
     const flight: DroneType[] = [
@@ -393,6 +425,9 @@ export class Combat {
       this.boss.update(dt, t, this.player, this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
       this.boss.collide(this.model.pos, this.model.vel);
     }
+    if (this.rival) {
+      this.rival.update(dt, t, this.player, this.ground, this.missiles, this.particles, this.streaks, this.explosions, this.events, this.group);
+    }
     this.intercept(dt);
     this.guns.update(dt, this.player, this.ground, this.particles, this.streaks, this.events);
     this.missiles.update(dt, this.hostiles, this.player);
@@ -415,6 +450,8 @@ export class Combat {
         } else if (h.kind === 'boss') {
           const part = h as BossPart;
           part.owner.partDestroyed(part, this.explosions, this.events);
+        } else if (h.kind === 'rival') {
+          (h as RivalSuit).onDestroyed(this.explosions, this.events);
         } else {
           this.explosions.blast(h.pos, 4, { debris: 5, vel: h.vel.clone().multiplyScalar(0.3) });
         }
@@ -445,6 +482,13 @@ export class Combat {
       this.events.emit('destroyed', { at: this.boss.pos, text: 'dreadnought' });
       this.group.remove(this.boss.mesh);
       this.boss = null;
+    }
+    if (this.rival && (this.rival.crashed || this.rival.pos.y < -50)) {
+      this.rival.disposeFlares(this.group);
+      this.group.remove(this.rival.mesh);
+      const idx = this.hostiles.indexOf(this.rival);
+      if (idx >= 0) this.hostiles.splice(idx, 1);
+      this.rival = null;
     }
     for (let i = this.ships.length - 1; i >= 0; i--) {
       const f = this.ships[i];
@@ -602,5 +646,6 @@ export class Combat {
     for (const s of this.sams) if (s.alive && s.track > 0.5) yield s.pos;
     for (const f of this.ships) if (!f.sinking) yield* f.trackers();
     if (this.boss && !this.boss.falling) yield* this.boss.trackers();
+    if (this.rival && this.rival.alive && (this.rival.chargingBeam || this.rival.firingBeam)) yield this.rival.pos;
   }
 }

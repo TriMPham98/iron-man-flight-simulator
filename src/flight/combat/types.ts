@@ -1,9 +1,9 @@
 import type * as THREE from 'three';
 
-export type HostileKind = 'drone' | 'interceptor' | 'bomber' | 'jammer' | 'sam' | 'ship' | 'boss';
+export type HostileKind = 'drone' | 'interceptor' | 'bomber' | 'jammer' | 'sam' | 'ship' | 'boss' | 'rival';
 
 /** Kinds that fly (the HUD paints them red; the rest are amber). */
-export const isAircraft = (k: HostileKind): boolean => k === 'drone' || k === 'interceptor' || k === 'bomber' || k === 'jammer';
+export const isAircraft = (k: HostileKind): boolean => k === 'drone' || k === 'interceptor' || k === 'bomber' || k === 'jammer' || k === 'rival';
 
 /** Anything the suit can lock, shoot and blow up. */
 export interface Hostile {
