@@ -251,7 +251,10 @@ export class Game {
     const aim = this.rig.aim(this._aim);
     // Weapons sight from the pilot's eye; a planted camera isn't where he is
     const eye = this.rig.mode === 'flyby' || this.rig.mode === 'attract' ? this.head : this.rig.camera.position;
-    if (this.controls) this.combat.update(dt, this.time, this.controls, aim, eye);
+    if (this.controls) {
+      this.combat.update(dt, this.time, this.controls, aim, eye);
+      this.rig.shake += this.combat.consumeShake();
+    }
     // The physics runs on a fixed 120 Hz clock, so a rendered frame lands 0,
     // 1, 2 or 3 steps on from the last: drawn raw, the suit (and anything
     // watching it, like the cinematic cameras) judders by whole steps — a
@@ -328,6 +331,7 @@ export class Game {
       // The pilot still doesn't hear his own boom; the shock does jolt the
       // picture, the same kick as the first flight sim
       this.events.emit('sonicBoom', { at: m.pos, value: m.speed });
+      this.combat.onSonicBoom(m.pos, m.vel);
       this.rig.shake += 1.6;
     }
     // Transonic: the vapour cone (SonicBoomFx) clings to the suit; a few
@@ -361,7 +365,7 @@ export class Game {
     if (m.contact === 'heroLanding') {
       // Harder the arrival, the bigger the ring
       const k = THREE.MathUtils.clamp((m.impactSpeed - 7) / 30, 0, 1);
-      this.rig.shake += 1.2;
+      this.rig.shake += 1.2 + this.combat.onHeroLanding(below, m.impactSpeed);
       // A ring of dust blown flat off the impact, low and quick to settle
       for (let i = 0; i < 22; i++) {
         const a = (i / 22) * Math.PI * 2;

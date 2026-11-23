@@ -296,6 +296,10 @@ export class Drone implements Hostile {
   /** Set when it hit the ground dying (the manager removes it). */
   crashed = false;
   flybyDone = false;
+  /** High-altitude icing buildup (0–1), frozen stall state, and Mach shock destabilization (s). */
+  icing = 0;
+  frozen = false;
+  destabilized = 0;
 
   constructor(at: THREE.Vector3, heading: THREE.Vector3, readonly type: DroneType = 'drone') {
     const sp = (this.spec = DRONE_TYPES[type]);
@@ -332,11 +336,13 @@ export class Drone implements Hostile {
 
   damage(amount: number, at: THREE.Vector3, kind: DamageKind): boolean {
     if (!this.alive) return false;
-    this.hp -= amount;
+    const vuln = this.frozen ? 1.8 : 1 + this.icing * 0.5;
+    this.hp -= amount * vuln;
     void at;
     void kind;
     if (this.hp <= 0) {
       this.alive = false;
+      this.frozen = false;
       this.mode = 'dying';
       this.spin = (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 3);
       return true;
@@ -367,6 +373,7 @@ export class Drone implements Hostile {
     const big = spec.scale[2];
     this.modeT += dt;
     this.threatened = Math.max(0, this.threatened - dt);
+    if (this.destabilized > 0) this.destabilized = Math.max(0, this.destabilized - dt);
     const speed = this.vel.length();
     const dir = this._v.copy(this.vel).divideScalar(Math.max(speed, 1));
     const toP = this._w.copy(player.pos).sub(this.pos);
@@ -389,6 +396,17 @@ export class Drone implements Hostile {
         explosions.blast(this.pos, 7 * Math.sqrt(big), { debris: 10, burn: !ground.isWater(this.pos.x, this.pos.z) });
         this.crashed = true;
       }
+      return;
+    }
+
+    if (this.frozen) {
+      // Iced out: engine stalled, control surfaces locked, tumbling downward
+      this.vel.y -= 9.81 * dt * 1.15;
+      this.vel.multiplyScalar(Math.exp(-0.12 * dt));
+      this.pos.addScaledVector(this.vel, dt);
+      this.roll += (this.id % 2 === 0 ? 3.2 : -3.2) * dt;
+      this.orient(dt, this.vel.lengthSq() > 1 ? this.vel.clone().normalize() : dir, this.roll);
+      this.exhaust.material.opacity = 0;
       return;
     }
 
@@ -457,11 +475,13 @@ export class Drone implements Hostile {
       const h = Math.max(Math.hypot(dir.x, dir.z), 1e-3);
       want.set(dir.x / h + 0.3 * want.x, Math.max(want.y, 0.25 + (safe - clearance) / safe), dir.z / h + 0.3 * want.z);
     }
-    if (this.pos.y > 4000) want.y = Math.min(want.y, -0.2);
+    const softCeiling = this.mode === 'attack' && !this.passive ? Math.min(11000, Math.max(4000, player.pos.y + 400)) : 4000;
+    if (this.pos.y > softCeiling) want.y = Math.min(want.y, -0.2);
     want.normalize();
 
     // ── Fly: turn the velocity toward `want` within the g limit ───────
-    const maxRate = (spec.g * 9.81) / Math.max(speed, 80);
+    const turnScale = (1 - this.icing * 0.5) * (this.destabilized > 0 ? 0.25 : 1);
+    const maxRate = ((spec.g * 9.81) / Math.max(speed, 80)) * turnScale;
     const ang = dir.angleTo(want);
     if (ang > 1e-4) {
       const axis = new THREE.Vector3().crossVectors(dir, want).normalize();
@@ -470,19 +490,21 @@ export class Drone implements Hostile {
     // Running in from far out they dash, and settle to cruise for the merge
     const fleeing = spec.role === 'jammer' && dist < JAM_FLEE;
     const dash = fleeing ? 1.3 : spec.role !== 'fighter' ? 1 : this.mode === 'extend' ? 1.25 : this.mode === 'attack' && dist > INGRESS_DIST ? Math.min(spec.dash, INGRESS_DASH) : 1;
-    const sp = speed + (this.cruise * dash - speed) * (1 - Math.exp(-dt * 0.8));
+    const iceThrust = 1 - this.icing * 0.65;
+    const sp = speed + (this.cruise * dash * iceThrust - speed) * (1 - Math.exp(-dt * 0.8));
     // Bank into the turn: roll by the lateral acceleration
     const lateral = new THREE.Vector3().crossVectors(dir, want).y;
     this.roll += (THREE.MathUtils.clamp(-lateral * 4, -1.3, 1.3) - this.roll) * (1 - Math.exp(-dt * 3));
+    if (this.destabilized > 0) this.roll += Math.sin(t * 28 + this.jink) * 4 * dt;
     this.vel.copy(dir).multiplyScalar(sp);
     this.pos.addScaledVector(this.vel, dt);
     this.orient(dt, dir, this.roll);
-    this.exhaust.material.opacity = 0.75 + 0.25 * Math.sin(t * 50 + this.jink);
+    this.exhaust.material.opacity = (0.75 + 0.25 * Math.sin(t * 50 + this.jink)) * Math.max(0.08, 1 - this.icing * 0.85);
 
     // ── Guns: short bursts when the suit is in the cone and in range ──
     this.gunT -= dt;
     const inSights = spec.guns === 'turret' ? dist < 800 : spec.guns === 'nose' && this.mode === 'attack' && dist < 950 && facing > 0.985;
-    if (inSights && !this.passive && player.alive) {
+    if (inSights && !this.passive && this.destabilized <= 0 && player.alive) {
       if (this.gunT <= 0 && this.burst <= 0) {
         this.burst = 4 + Math.floor(Math.random() * 3);
         this.gunT = 0.9 + Math.random() * 0.8;
@@ -507,7 +529,7 @@ export class Drone implements Hostile {
 
     // ── Heat seeker from range ───────────────────────────────────────
     this.missileT -= dt;
-    if (spec.seekers && this.mode === 'attack' && !this.passive && player.alive && dist > 700 && dist < 2800 && facing > 0.9) {
+    if (spec.seekers && this.mode === 'attack' && !this.passive && this.destabilized <= 0 && player.alive && dist > 700 && dist < 2800 && facing > 0.9) {
       this.lockT += dt;
       if (this.lockT > 1.6 && this.missileT <= 0) {
         missiles.launch({ team: 'enemy', from: this.pos.clone().addScaledVector(dir, -0.5).add(new THREE.Vector3(0, -0.5, 0)), vel: this.vel, target: player });

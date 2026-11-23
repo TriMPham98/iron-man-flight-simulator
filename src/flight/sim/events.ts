@@ -74,6 +74,11 @@ export type SimEventKind =
   | 'houseLost'
   /** An inbound round shot out of the air (the suit's point defence, or the house's): text = suit / house. */
   | 'intercept'
+  /** Physics-combat events: hero-landing slam kill, kinetic ram kill, enemy frozen/iced out. */
+  | 'heroSlam'
+  | 'kineticRam'
+  | 'enemyIced'
+  | 'iceKill'
   // Picture (directed reels)
   | 'cameraCut';
 
