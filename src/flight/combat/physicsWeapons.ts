@@ -376,17 +376,21 @@ export class PhysicsWeapons {
   updateWaterAndSplash(
     dt: number,
     model: Pick<FlightModel, 'pos' | 'vel' | 'wetness' | 'immersion' | 'speed' | 'hipHeight'>,
-    weapons: Pick<PlayerWeapons, 'unibeamHeat' | 'unibeamOverheat' | 'unibeamOn' | 'spec'>,
+    weapons: Pick<PlayerWeapons, 'unibeamHeat' | 'unibeamOverheat' | 'unibeamOn' | 'spec'> & {
+      reactor?: PlayerWeapons['reactor'];
+    },
     missiles: Missiles,
     ground: SurfaceQuery,
     particles: Particles,
     events: EventBus,
   ): { cooling: boolean; evaded: number } {
     const cooling = isWaterCooling(model, ground);
+    const overcharged = !!weapons.reactor?.overchargeActive;
+    const reactorCool = weapons.reactor?.modifiers.unibeamCool ?? 1;
     let evaded = 0;
 
-    if (cooling && !weapons.unibeamOn && weapons.unibeamHeat > 0) {
-      const bonusCool = (WATER_COOL_BONUS * dt) / (UNIBEAM_BASE_COOL * weapons.spec.unibeamCool);
+    if (cooling && !overcharged && !weapons.unibeamOn && weapons.unibeamHeat > 0) {
+      const bonusCool = (WATER_COOL_BONUS * dt) / (UNIBEAM_BASE_COOL * weapons.spec.unibeamCool * reactorCool);
       weapons.unibeamHeat = Math.max(0, weapons.unibeamHeat - bonusCool);
       if (weapons.unibeamOverheat && weapons.unibeamHeat <= UNIBEAM_OVERHEAT_RESET) {
         weapons.unibeamOverheat = false;
@@ -394,7 +398,7 @@ export class PhysicsWeapons {
     }
 
     // Steam wisps rising off a hot suit skimming or wet from the sea
-    if (cooling && (weapons.unibeamHeat > 0.02 || weapons.unibeamOverheat)) {
+    if (cooling && !overcharged && (weapons.unibeamHeat > 0.02 || weapons.unibeamOverheat)) {
       this.steamAcc += dt * (12 + 24 * weapons.unibeamHeat);
       while (this.steamAcc >= 1) {
         this.steamAcc -= 1;
@@ -408,7 +412,7 @@ export class PhysicsWeapons {
 
     // Splash-dive underwater: immediately break enemy seekers & rapidly clear overheat
     if (model.immersion > SPLASH_DIVE_IMMERSION) {
-      if (weapons.unibeamHeat > 0 || weapons.unibeamOverheat) {
+      if (!overcharged && (weapons.unibeamHeat > 0 || weapons.unibeamOverheat)) {
         weapons.unibeamHeat = Math.max(0, weapons.unibeamHeat - UNDERWATER_HEAT_DUMP * dt);
         if (weapons.unibeamOverheat && weapons.unibeamHeat <= 0.85) {
           weapons.unibeamOverheat = false;

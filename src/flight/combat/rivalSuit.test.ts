@@ -57,7 +57,7 @@ function makeHarness(surfaceY = 0) {
   const missiles = new Missiles(particles, explosions, ground, events);
   const fxParent = new THREE.Group();
 
-  const hits: Array<{ amount: number; kind: 'bullet' | 'missile' }> = [];
+  const hits: Array<{ amount: number; kind: 'bullet' | 'missile' | 'beam' }> = [];
   const player: PlayerTarget = {
     pos: v(0, 600, 0),
     vel: v(0, 0, 120),

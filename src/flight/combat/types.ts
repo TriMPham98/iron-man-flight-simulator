@@ -38,7 +38,7 @@ export interface PlayerTarget {
   vel: THREE.Vector3;
   alive: boolean;
   /** Apply a hit; `at` is where it struck. */
-  hit(amount: number, at: THREE.Vector3, kind: 'bullet' | 'missile'): void;
+  hit(amount: number, at: THREE.Vector3, kind: 'bullet' | 'missile' | 'beam'): void;
 }
 
 /** Something a heat seeker may chase instead of its target. */

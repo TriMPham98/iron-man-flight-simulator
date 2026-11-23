@@ -85,9 +85,20 @@ export interface MissionWorldView {
   isWater(x: number, z: number): boolean;
 }
 
+/** Typed Rival Ace handle satisfied by `RivalSuit` (and lightweight test mocks). */
+export interface RivalHostile extends Hostile {
+  iced?: boolean;
+  chargingBeam?: boolean;
+  firingBeam?: boolean;
+  crashed?: boolean;
+  mode?: string;
+  mesh?: THREE.Object3D;
+  disposeFlares?(parent: THREE.Object3D): void;
+}
+
 /**
  * Clean typed slice of Combat that missions interact with, including the
- * optional `spawnRival` hook implemented in parallel by `rival-ace`.
+ * integrated `spawnRival` hook from `Combat`.
  */
 export interface MissionCombatAdapter {
   wavesEnabled: boolean;
@@ -100,7 +111,7 @@ export interface MissionCombatAdapter {
   readonly playerTarget: PlayerTarget;
   readonly house: HouseTarget;
   spawnDrone(at: THREE.Vector3, heading: THREE.Vector3, type?: DroneType): Drone;
-  spawnRival?: (near?: THREE.Vector3) => Hostile;
+  spawnRival?: (near?: THREE.Vector3) => RivalHostile;
 }
 
 export type MissionCue = 'start' | 'warning' | 'lock' | 'ping' | 'success' | 'fail';

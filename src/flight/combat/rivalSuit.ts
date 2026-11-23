@@ -966,7 +966,7 @@ export class RivalSuit implements Hostile {
         this.beamHitT -= dt;
         if (this.beamHitT <= 0) {
           this.beamHitT = 0.14;
-          player.hit(BEAM_DPS * 0.14, closest, 'bullet');
+          player.hit(BEAM_DPS * 0.14, closest, 'beam');
           particles.burst('spark', closest, 8, 16, this._v.copy(this.beamDir).negate(), 1.1);
         }
       }

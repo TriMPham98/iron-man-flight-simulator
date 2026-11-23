@@ -79,7 +79,7 @@ function makeGround(opts: { y?: number; water?: boolean } = {}): SurfaceQuery {
 }
 
 function makePlayer(pos = v(0, 100, 0), vel = v(0, 0, 0)) {
-  const hits: Array<{ amount: number; kind: 'bullet' | 'missile' }> = [];
+  const hits: Array<{ amount: number; kind: 'bullet' | 'missile' | 'beam' }> = [];
   const target: PlayerTarget = {
     pos,
     vel,

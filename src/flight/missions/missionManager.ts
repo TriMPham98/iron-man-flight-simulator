@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import type { Hostile } from '../combat/types';
 import { CRUISE_DEF, CruiseMissileMission } from './cruiseMissile';
 import { RESCUE_DEF, RescueMission } from './rescueMission';
 import { STEALTH_DEF, StealthStrikeMission } from './stealthStrike';
@@ -12,13 +11,13 @@ import {
   type MissionId,
   type MissionInstance,
   type MissionTelemetry,
+  type RivalHostile,
 } from './types';
 
 /**
- * Rival Suit Duel adapter:
- * Cleanly hooks into `(combat as { spawnRival?: (near?: THREE.Vector3) => Hostile }).spawnRival?.()`
- * built in parallel by `rival-ace`. If the rival module is not yet integrated,
- * it reports an informative JARVIS standby notice and returns cleanly to free flight.
+ * Rival Suit Duel mission:
+ * Launches the Supersonic Rival Ace directly via `combat.spawnRival()` and
+ * tracks its health, Unibeam charge warnings, and high-altitude icing state.
  */
 export const RIVAL_DEF: MissionDefinition = {
   id: 'rival',
@@ -37,16 +36,16 @@ export const MISSION_DEBRIEF_SECONDS = 4.5;
 
 export const MISSIONS: readonly MissionDefinition[] = [RESCUE_DEF, CRUISE_DEF, STEALTH_DEF, RIVAL_DEF];
 
-/** Whether the optional Rival Ace spawner has been integrated onto `Combat`. */
+/** Whether the Rival Ace spawner is available on `Combat`. */
 export function isRivalAvailable(combat: MissionCombatAdapter): boolean {
-  return typeof (combat as { spawnRival?: unknown }).spawnRival === 'function';
+  return typeof combat.spawnRival === 'function';
 }
 
 export class RivalDuelMission implements MissionInstance {
   readonly def = RIVAL_DEF;
   outcome: 'active' | 'victory' | 'failed' = 'active';
 
-  rival: Hostile | null = null;
+  rival: RivalHostile | null = null;
   unavailable = false;
   private rewardAwarded = 0;
   private resultSummary = '';
@@ -58,8 +57,7 @@ export class RivalDuelMission implements MissionInstance {
     this.rewardAwarded = 0;
     this.resultSummary = '';
 
-    const spawnRival = (ctx.combat as { spawnRival?: (near?: THREE.Vector3) => Hostile }).spawnRival;
-    if (typeof spawnRival !== 'function') {
+    if (typeof ctx.combat.spawnRival !== 'function') {
       this.unavailable = true;
       this.outcome = 'failed';
       this.resultSummary = 'RIVAL ACE MODULE STANDBY — NOT YET INTEGRATED';
@@ -70,7 +68,7 @@ export class RivalDuelMission implements MissionInstance {
       return;
     }
 
-    this.rival = spawnRival.call(ctx.combat, ctx.model.pos);
+    this.rival = ctx.combat.spawnRival(ctx.model.pos);
     ctx.playCue?.('start');
     ctx.events.emit('jarvis', {
       text: 'Rogue powered-armour signature inbound at supersonic speed, sir! Watch for its unibeam — or test its alloy at high altitude.',
@@ -89,8 +87,8 @@ export class RivalDuelMission implements MissionInstance {
     }
 
     const hp01 = r && r.maxHp > 0 ? Math.max(0, r.hp / r.maxHp) : 0;
-    const iced = !!(r as (Hostile & { iced?: boolean }) | null)?.iced;
-    const chargingBeam = !!(r as (Hostile & { chargingBeam?: boolean }) | null)?.chargingBeam;
+    const iced = !!r?.iced;
+    const chargingBeam = !!r?.chargingBeam;
 
     return {
       id: this.def.id,
@@ -148,19 +146,16 @@ export class RivalDuelMission implements MissionInstance {
 
   cleanup(ctx: MissionContext): void {
     if (this.rival && this.rival.alive) {
-      const r = this.rival as Hostile & {
-        crashed?: boolean;
-        mode?: string;
-        mesh?: THREE.Object3D;
-      };
+      const r = this.rival;
       r.alive = false;
       r.mode = 'dying';
       r.crashed = true;
+      r.disposeFlares?.(ctx.combat.group);
       if (r.mesh) {
         r.mesh.visible = false;
         ctx.combat.group.remove(r.mesh);
       }
-      unregisterHostile(ctx.combat, this.rival);
+      unregisterHostile(ctx.combat, r);
     }
     this.rival = null;
   }

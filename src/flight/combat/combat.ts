@@ -171,12 +171,19 @@ export class Combat {
       get alive() {
         return self.down <= 0;
       },
-      hit(amount: number, at: THREE.Vector3, kind: 'bullet' | 'missile') {
+      hit(amount: number, at: THREE.Vector3, kind: 'bullet' | 'missile' | 'beam') {
         if (self.down > 0) return;
         self.armor = Math.max(0, self.armor - (amount * self.spec.damageTaken * self.reactor.modifiers.damageTaken) / 100);
-        self.reactor.onArmorHit(amount, at);
+        if (kind === 'beam') {
+          // Absorbing the Rival Ace's Unibeam in SHIELDS mode rapidly surges the 400% capacitor
+          if (self.reactor.mode === 'SHIELDS') {
+            self.reactor.feedOvercharge(Math.min(0.4, amount * 0.055), 'rivalBeam', at);
+          }
+        } else {
+          self.reactor.onArmorHit(amount, at);
+        }
         self.sinceHit = 0;
-        self.damageFlash = Math.min(1, self.damageFlash + (kind === 'missile' ? 0.9 : 0.25));
+        self.damageFlash = Math.min(1, self.damageFlash + (kind === 'missile' ? 0.9 : kind === 'beam' ? 0.45 : 0.25));
         onHit(amount, at);
         events.emit('hitArmor', { at, value: amount });
         if (self.armor <= 0) {
@@ -481,6 +488,7 @@ export class Combat {
           }
         } else if (h.kind === 'rival') {
           (h as RivalSuit).onDestroyed(this.explosions, this.events);
+          this.reactor.feedOvercharge(0.5, 'rivalDefeated', h.pos);
         } else {
           this.explosions.blast(h.pos, 4, { debris: 5, vel: h.vel.clone().multiplyScalar(0.3) });
         }
