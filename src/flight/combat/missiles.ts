@@ -45,6 +45,10 @@ const MATS = {
     body: new THREE.MeshStandardMaterial({ color: 0x8a1218, metalness: 0.8, roughness: 0.35 }),
     nose: new THREE.MeshStandardMaterial({ color: 0xb8913c, metalness: 1, roughness: 0.25 }),
   },
+  warmachine: {
+    body: new THREE.MeshStandardMaterial({ color: 0x353c46, metalness: 0.82, roughness: 0.34 }),
+    nose: new THREE.MeshStandardMaterial({ color: 0xc42820, metalness: 0.78, roughness: 0.28 }),
+  },
   enemy: {
     body: new THREE.MeshStandardMaterial({ color: 0x2c2f33, metalness: 0.8, roughness: 0.35 }),
     nose: new THREE.MeshStandardMaterial({ color: 0x9aa0a8, metalness: 1, roughness: 0.25 }),
@@ -84,9 +88,9 @@ function mergeGeometries(gs: THREE.BufferGeometry[]): THREE.BufferGeometry {
 }
 
 /** A rocket `caliber` m in radius and `length` m long (nose along +Z). */
-function missileMesh(team: Team, caliber: number, length: number): THREE.Group {
+function missileMesh(team: Team, caliber: number, length: number, style: 'ironman' | 'warmachine' = 'ironman'): THREE.Group {
   const g = new THREE.Group();
-  const { body, nose } = MATS[team];
+  const { body, nose } = team === 'player' && style === 'warmachine' ? MATS.warmachine : MATS[team];
   const a = unitAirframe();
   g.add(new THREE.Mesh(a.body, body), new THREE.Mesh(a.nose, nose), new THREE.Mesh(a.fins, body));
   g.scale.set(caliber, caliber, length / UNIT_LEN);
@@ -160,12 +164,24 @@ export class Missiles {
     /** Airframe radius and length (m): the tube it left. */
     caliber?: number;
     length?: number;
+    /** Visual style for player ordnance (gunmetal/crimson for War Machine). */
+    style?: 'ironman' | 'warmachine';
+    /** Optional damage / blast overrides (e.g. War Machine shoulder pod & Bunker-Buster). */
+    damage?: number;
+    blast?: number;
   }): void {
     const heavy = !!opts.heavy;
+    const wm = opts.style === 'warmachine';
     const caliber = opts.caliber ?? ENEMY_CALIBER;
-    const mesh = missileMesh(opts.team, caliber, opts.length ?? (opts.caliber ? caliber * UNIT_LEN : ENEMY_LENGTH));
+    const mesh = missileMesh(opts.team, caliber, opts.length ?? (opts.caliber ? caliber * UNIT_LEN : ENEMY_LENGTH), opts.style);
     const glow = new THREE.Sprite(
-      new THREE.SpriteMaterial({ map: glowTexture(), color: 0xffd8a0, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }),
+      new THREE.SpriteMaterial({
+        map: glowTexture(),
+        color: wm ? 0xff9a44 : 0xffd8a0,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
     );
     glow.visible = false;
     mesh.position.copy(opts.from);
@@ -188,8 +204,8 @@ export class Missiles {
       target: opts.target,
       aimPoint: opts.aimPoint?.clone() ?? null,
       onImpact: opts.onImpact ?? null,
-      damage: player ? (heavy ? 260 : 120) : 26,
-      blast: player ? (heavy ? 7 : 4.5) : 4,
+      damage: opts.damage ?? (player ? (heavy ? 260 : 120) : 26),
+      blast: opts.blast ?? (player ? (heavy ? 7 : 4.5) : 4),
       mesh,
       glow,
       laid: 0,

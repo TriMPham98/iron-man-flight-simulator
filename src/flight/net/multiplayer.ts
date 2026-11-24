@@ -17,7 +17,7 @@ import {
   type SuitVariant,
 } from './protocol';
 import { RemoteSuit } from './remoteSuit';
-import { applyLocalSuitVariant, type WarMachinePack } from './suitVisuals';
+import { animateWarMachinePack, applyLocalSuitVariant, type WarMachinePack } from './suitVisuals';
 import {
   BroadcastChannelTransport,
   resolveServerBaseUrl,
@@ -82,7 +82,6 @@ export class MultiplayerSession {
   private localPack: WarMachinePack | null = null;
   private readonly _aim = new THREE.Vector3();
   private readonly _invQ = new THREE.Quaternion();
-  private readonly _localAim = new THREE.Vector3();
   private readonly _euler = new THREE.Euler(0, 0, 0, 'YXZ');
   private clockT = 0;
 
@@ -141,13 +140,14 @@ export class MultiplayerSession {
     if (this.suit === suit && this.localPack) return;
     this.suit = suit;
     this.localPack = applyLocalSuitVariant(this.game.suit, suit, this.hazeUniforms);
+    this.game.setSuitVariant?.(suit, this.localPack);
     if (this.status === 'connected') {
       this.transport.sendControl({ type: 'select', suit });
     }
     this.game.events.emit('jarvis', {
       text:
         suit === 'warmachine'
-          ? 'War Machine Mark II chassis online. Shoulder rotary cannon armed, sir.'
+          ? 'War Machine Mark II chassis online. Auto-locking shoulder Vulcan armed on Space, sir.'
           : 'Mark III gold-titanium armour online, sir.',
     });
     this.notify();
@@ -245,27 +245,31 @@ export class MultiplayerSession {
     };
   }
 
-  /** Per-frame update: articulate local War Machine minigun, send 25 Hz state, step RemoteSuit. */
+  /** Per-frame update: fallback-animate local War Machine pack, send 25 Hz state, step RemoteSuit. */
   update(dt: number, firingLocal: boolean): void {
     this.clockT += dt;
 
-    // Articulate local War Machine shoulder minigun toward pilot's aim
-    if (this.suit === 'warmachine' && this.localPack) {
+    // PlayerWeapons drives the full War Machine pack animation in live flights;
+    // keep a lightweight fallback here when running standalone/stubbed sessions.
+    const weapons = this.game.combat?.weapons as { wmPack?: WarMachinePack | null; minigunFiring?: boolean } | undefined;
+    if (this.suit === 'warmachine' && this.localPack && !weapons?.wmPack) {
       const aim = this.game.rig.aim(this._aim);
       const chest = this.game.suit.rig.bones.chest;
-      this._invQ.copy(chest.getWorldQuaternion(this._invQ)).invert();
-      this._localAim.copy(aim).applyQuaternion(this._invQ);
-      const yaw = THREE.MathUtils.clamp(Math.atan2(this._localAim.x, Math.max(0.2, this._localAim.z)), -0.75, 0.75);
-      const pitch = THREE.MathUtils.clamp(-Math.asin(THREE.MathUtils.clamp(this._localAim.y, -0.8, 0.8)), -0.65, 0.65);
-      const k = 1 - Math.exp(-dt * 14);
-      this.localPack.turret.rotation.y = THREE.MathUtils.lerp(this.localPack.turret.rotation.y, yaw, k);
-      this.localPack.turret.rotation.x = THREE.MathUtils.lerp(this.localPack.turret.rotation.x, pitch, k);
-      if (firingLocal) {
-        this.localPack.barrels.rotation.z += dt * 36;
-        this.localPack.muzzleGlow.visible = Math.sin(this.clockT * 90) > -0.15;
-      } else {
-        this.localPack.muzzleGlow.visible = false;
-      }
+      chest.getWorldQuaternion(this._invQ);
+      animateWarMachinePack(this.localPack, dt, {
+        aimWorld: aim,
+        chestWorldQuat: this._invQ,
+        minigunFiring: firingLocal || !!weapons?.minigunFiring,
+        minigunShot: firingLocal || !!weapons?.minigunFiring,
+        podOpen: 0,
+        podArmed: 0,
+        podLoaded: 6,
+        ventOpen: 0,
+        wristDeploy: 0,
+        wristLoaded: [true, true],
+        wristLock: [0, 0],
+        flakSweepActive: false,
+      });
     }
 
     // Stream binary kinematic snapshot at 25 Hz while connected
@@ -273,7 +277,7 @@ export class MultiplayerSession {
       this.sendAcc += dt;
       if (this.sendAcc >= SEND_INTERVAL) {
         this.sendAcc %= SEND_INTERVAL;
-        this.sendLocalState(firingLocal);
+        this.sendLocalState(firingLocal || !!weapons?.minigunFiring);
       }
     }
 

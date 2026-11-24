@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Combat } from '../combat/combat';
+import type { SuitVariant } from '../net/protocol';
 import type { SimEvent } from '../sim/events';
 import { G_LIMIT, type FlightModel } from '../sim/flightModel';
 import type { HudCue } from '../ui/hud';
@@ -35,6 +36,11 @@ export const SFX = {
   electricMotor: `${LIB}electric-motor.mp3`,
   metalResonate: `${LIB}metal-resonate.mp3`,
   unclampDry: `${LIB}unclamp-dry.mp3`,
+  // War Machine heavy mechanical hardware (project library)
+  ratchet: `${LIB}ratchet.mp3`,
+  metalSliding: `${LIB}metal-sliding.mp3`,
+  metalTighten: `${LIB}metal-tighten.mp3`,
+  steamHiss: `${LIB}steam-hiss.mp3`,
   // Combat and air (CC0 kit, picked by eye from their spectrograms)
   explosionNear: `${KIT}explosion-near.mp3`,
   explosionSub: `${KIT}explosion-sub.mp3`,
@@ -168,6 +174,8 @@ const DEBOUNCE: Partial<Record<SimEvent['kind'], number>> = {
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)];
 
 export class Soundscape {
+  /** Active suit chassis: shifts War Machine's weapons & thrusters into a heavier, mechanical-ballistic sibling timbre. */
+  variant: SuitVariant = 'ironman';
   private thrust: Loop | null = null;
   private boost: Loop | null = null;
   private wind: Loop | null = null;
@@ -191,6 +199,9 @@ export class Soundscape {
   /** The last round on the armour: when (sim s), and which take it was. */
   private lastBullet = -99;
   private lastBulletTake = -1;
+  /** War Machine shoulder Vulcan CIWS buzz-saw crossfade & impact throttle timestamps (sim s). */
+  private lastWmCiws = -99;
+  private lastWmHit = -99;
   private readonly _r = new THREE.Vector3();
   private readonly _c = new THREE.Vector3();
   private started = false;
@@ -329,16 +340,18 @@ export class Soundscape {
       if (last !== undefined && e.t >= last && e.t - last < gap) return;
       this.lastAt.set(e.kind, e.t);
     }
+    const wm = this.variant === 'warmachine';
     switch (e.kind) {
       case 'takeoff':
-        A.play(SFX.thrusterIgnite, { at, gain: 0.9, ref: 8 });
+        A.play(SFX.thrusterIgnite, { at, gain: wm ? 1.0 : 0.9, rate: wm ? 0.84 : 1, ref: 8 });
+        if (wm) A.play(SFX.heroThud, { at, gain: 0.35, rate: 0.85, lowpass: 650, ref: 8 });
         break;
       case 'footstep': {
         // On foot: a heavy boot (the CC0 metal thud, lifted) with the
         // library footstep's clank from its loud middle on top
         const k = e.value ?? 0.5;
-        A.play(SFX.heroThud, { at, gain: 0.22 + 0.4 * k, rate: 1.35 - 0.2 * k, vary: 0.06, ref: 6 });
-        A.play(SFX.footstep, { at, gain: 0.12 + 0.2 * k, offset: 0.38, duration: 0.42, vary: 0.08, ref: 6 });
+        A.play(SFX.heroThud, { at, gain: (0.22 + 0.4 * k) * (wm ? 1.18 : 1), rate: (1.35 - 0.2 * k) * (wm ? 0.82 : 1), vary: 0.06, ref: 6 });
+        A.play(SFX.footstep, { at, gain: (0.12 + 0.2 * k) * (wm ? 1.15 : 1), rate: wm ? 0.86 : 1, offset: 0.38, duration: 0.42, vary: 0.08, ref: 6 });
         break;
       }
       case 'landed':
@@ -393,53 +406,160 @@ export class Soundscape {
         }
         break;
       case 'boostStart':
-        A.play(SFX.rocket1, { at, gain: 0.8, rate: 0.7, ref: 10 });
-        A.play(SFX.thrusterIgnite, { at, gain: 0.6, rate: 0.85, ref: 8 });
+        A.play(SFX.rocket1, { at, gain: wm ? 0.92 : 0.8, rate: wm ? 0.6 : 0.7, ref: 10 });
+        A.play(SFX.thrusterIgnite, { at, gain: wm ? 0.72 : 0.6, rate: wm ? 0.76 : 0.85, ref: 8 });
         break;
       case 'repulsorCharge':
         break;
       case 'repulsorFire':
-        A.play(SFX.repulsor, { at, gain: 0.75, vary: 0.07, ref: 10, offset: 0.05 });
-        A.play(SFX.repulsorZap, { at, gain: 0.22, vary: 0.08, ref: 10, rate: 0.85 });
-        // The blast has weight: a short low punch under the whine
-        A.play(SFX.heroThud, { at, gain: 0.3, rate: 1.7, vary: 0.06, lowpass: 900, ref: 10, duration: 0.25 });
+        if (wm) {
+          // War Machine heavy gauntlet repulsors: familiar Stark pulse pitched lower & punchier with metallic snap
+          A.play(SFX.repulsor, { at, gain: 0.82, rate: 0.78, vary: 0.06, ref: 10, offset: 0.04, lowpass: 8500 });
+          A.play(SFX.repulsorZap, { at, gain: 0.28, rate: 0.68, vary: 0.07, ref: 10, lowpass: 5500 });
+          A.play(SFX.heroThud, { at, gain: 0.44, rate: 1.25, vary: 0.06, lowpass: 720, ref: 10, duration: 0.26 });
+        } else {
+          A.play(SFX.repulsor, { at, gain: 0.75, vary: 0.07, ref: 10, offset: 0.05 });
+          A.play(SFX.repulsorZap, { at, gain: 0.22, vary: 0.08, ref: 10, rate: 0.85 });
+          // The blast has weight: a short low punch under the whine
+          A.play(SFX.heroThud, { at, gain: 0.3, rate: 1.7, vary: 0.06, lowpass: 900, ref: 10, duration: 0.25 });
+        }
         break;
       case 'repulsorHit':
-        A.play(SFX.explosionNear, { at, gain: 0.28, rate: 1.5, vary: 0.08, ref: 25, duration: 0.6 });
-        A.play(SFX.sparkCrackle, { at, gain: 0.5, vary: 0.1, ref: 25 });
-        A.play(pick([SFX.ping1, SFX.ping2, SFX.ping3, SFX.ping4]), { at, gain: 0.35, vary: 0.1, ref: 25 });
+        if (wm) {
+          A.play(SFX.explosionNear, { at, gain: 0.35, rate: 1.22, vary: 0.08, ref: 26, duration: 0.65 });
+          A.play(SFX.sparkCrackle, { at, gain: 0.55, rate: 0.88, vary: 0.1, ref: 25 });
+          A.play(pick([SFX.ping1, SFX.ping2, SFX.ping3, SFX.ping4]), { at, gain: 0.32, rate: 0.82, vary: 0.1, ref: 25 });
+        } else {
+          A.play(SFX.explosionNear, { at, gain: 0.28, rate: 1.5, vary: 0.08, ref: 25, duration: 0.6 });
+          A.play(SFX.sparkCrackle, { at, gain: 0.5, vary: 0.1, ref: 25 });
+          A.play(pick([SFX.ping1, SFX.ping2, SFX.ping3, SFX.ping4]), { at, gain: 0.35, vary: 0.1, ref: 25 });
+        }
+        break;
+      case 'minigunStart':
+        // Mechanical motor spin-up + feed belt ratchet clack before the Phalanx buzz-saw tears loose
+        A.play(SFX.electricMotor, { at: at ?? m.pos, gain: 0.48, rate: 1.55, lowpass: 4800, ref: 10, duration: 0.28 });
+        A.play(SFX.ratchet, { at: at ?? m.pos, gain: 0.42, rate: 1.25, ref: 8, duration: 0.22 });
+        break;
+      case 'minigunFire':
+        // Ferocious warship Phalanx CIWS buzz-saw, crossfaded in overlapping slices every 0.21 s
+        // right off War Machine's shoulder with a heavy breech-recoil punch underneath
+        if (e.t < this.lastWmCiws || e.t - this.lastWmCiws >= 0.21) {
+          this.lastWmCiws = e.t;
+          A.play(SFX.ciwsBurst, {
+            at: at ?? m.pos,
+            propagate: false,
+            gain: 0.95,
+            rate: 0.96,
+            vary: 0.03,
+            ref: 22,
+            echo: 0.34,
+            offset: Math.random() * 2.85,
+            duration: 0.4,
+            fadeIn: 0.14,
+          });
+          A.play(SFX.heroThud, { at: at ?? m.pos, propagate: false, gain: 0.26, rate: 1.18, lowpass: 650, ref: 12, duration: 0.18 });
+        }
+        break;
+      case 'minigunStop':
+        // Iconic CIWS echo tail rolling off the hills + barrel-cool steam hiss if hot
+        this.lastWmCiws = -99;
+        A.play(SFX.ciwsTail, { at: at ?? m.pos, propagate: false, gain: 0.85, rate: 0.96, ref: 22, echo: 0.28 });
+        if ((e.value ?? 0) >= 0.95) {
+          A.play(SFX.steamRelease, { at: at ?? m.pos, gain: 0.48, rate: 0.85, ref: 8, duration: 1.3 });
+          A.play(SFX.metalClang, { at: at ?? m.pos, gain: 0.22, rate: 0.82, ref: 8, delay: 0.1 });
+        } else if ((e.value ?? 0) > 0.3) {
+          A.play(SFX.steamHiss, { at: at ?? m.pos, gain: 0.24, rate: 1.05, ref: 8, duration: 0.55 });
+        }
+        break;
+      case 'minigunHit':
+        // Throttled crisp tungsten-on-metal flak pops so 20 rds/s stays punchy without voice clipping
+        if (e.t < this.lastWmHit || e.t - this.lastWmHit >= 0.055) {
+          this.lastWmHit = e.t;
+          A.play(SFX.explosionNear, { at, gain: 0.22, rate: 1.75, vary: 0.1, ref: 28, duration: 0.32 });
+          A.play(SFX.sparkCrackle, { at, gain: 0.38, rate: 0.92, vary: 0.12, ref: 26, duration: 0.25 });
+          if (e.value) A.play(SFX.bulletRing, { at, gain: 0.28, rate: 0.95, vary: 0.14, ref: 28 });
+        }
         break;
       case 'siloOpen':
-        A.play(SFX.servoWhir, { at: m.pos, gain: 0.6, ref: 6 });
-        A.play(SFX.weaponDeploy, { at: m.pos, gain: 0.7, ref: 6, delay: 0.12 });
+        if (wm) {
+          // Heavy armored 6-tube shoulder pod hydraulics & steel blast door slam
+          A.play(SFX.servoWhir, { at: m.pos, gain: 0.65, rate: 0.72, ref: 6 });
+          A.play(SFX.metalSliding, { at: m.pos, gain: 0.55, rate: 0.88, ref: 6, duration: 0.38 });
+          A.play(SFX.weaponDeploy, { at: m.pos, gain: 0.75, rate: 0.76, ref: 6, delay: 0.09 });
+          A.play(SFX.metalClang, { at: m.pos, gain: 0.28, rate: 0.82, ref: 6, delay: 0.15 });
+        } else {
+          A.play(SFX.servoWhir, { at: m.pos, gain: 0.6, ref: 6 });
+          A.play(SFX.weaponDeploy, { at: m.pos, gain: 0.7, ref: 6, delay: 0.12 });
+        }
         break;
       case 'siloClose':
-        A.play(SFX.weaponStow, { at: m.pos, gain: 0.55, ref: 6 });
+        if (wm) {
+          A.play(SFX.metalSliding, { at: m.pos, gain: 0.45, rate: 0.8, ref: 6, duration: 0.32 });
+          A.play(SFX.weaponStow, { at: m.pos, gain: 0.62, rate: 0.74, ref: 6 });
+          A.play(SFX.metalTighten, { at: m.pos, gain: 0.42, rate: 0.88, ref: 6, delay: 0.12 });
+        } else {
+          A.play(SFX.weaponStow, { at: m.pos, gain: 0.55, ref: 6 });
+        }
         break;
       case 'lockTick':
       case 'lockFull':
-        // One beep per target painted, each a step up; the last one hands
-        // over to the solid lock tone (update())
-        A.play(SFX.lockTick, { ui: true, gain: 0.42, rate: 1 + 0.05 * ((e.value ?? 1) - 1) });
+        // One beep per target painted, each a step up; War Machine sits a minor third lower & grittier
+        A.play(SFX.lockTick, { ui: true, gain: 0.42, rate: (wm ? 0.8 : 1) + (wm ? 0.045 : 0.05) * ((e.value ?? 1) - 1) });
         break;
       case 'missileLaunch':
-        A.play(this.rocketSide++ % 2 ? SFX.rocket1 : SFX.rocket2, { at, gain: 1.1, vary: 0.08, ref: 10 });
+        if (wm) {
+          A.play(this.rocketSide++ % 2 ? SFX.rocket1 : SFX.rocket2, { at, gain: 1.05, rate: 0.78, vary: 0.07, ref: 10 });
+          A.play(SFX.missileIgnite, { at, gain: 0.48, rate: 0.92, vary: 0.06, ref: 12, duration: 0.55 });
+          A.play(SFX.heroThud, { at, gain: 0.35, rate: 0.95, lowpass: 620, ref: 10, duration: 0.2 });
+        } else {
+          A.play(this.rocketSide++ % 2 ? SFX.rocket1 : SFX.rocket2, { at, gain: 1.1, vary: 0.08, ref: 10 });
+        }
         break;
       case 'launcherFire':
-        A.play(SFX.weaponLock, { at, gain: 0.7, ref: 6 });
-        A.play(SFX.rocket1, { at, gain: 1, rate: 0.75, ref: 10, delay: 0.03 });
-        A.play(SFX.explosionSub, { at, gain: 0.35, ref: 10 });
+        if (wm) {
+          // Bunker-Buster heavy forearm ordnance: thunderous SAM ignition + sub-bass concussion
+          A.play(SFX.weaponLock, { at, gain: 0.75, rate: 0.74, ref: 6 });
+          A.play(SFX.samLaunch, { at, gain: 0.72, rate: 0.92, ref: 12, duration: 0.95, echo: 0.25 });
+          A.play(SFX.rocket1, { at, gain: 0.92, rate: 0.62, ref: 10, delay: 0.03 });
+          A.play(SFX.deepBoom, { at, gain: 0.62, lowpass: 900, ref: 12 });
+          A.play(SFX.explosionSub, { at, gain: 0.55, ref: 10 });
+        } else {
+          A.play(SFX.weaponLock, { at, gain: 0.7, ref: 6 });
+          A.play(SFX.rocket1, { at, gain: 1, rate: 0.75, ref: 10, delay: 0.03 });
+          A.play(SFX.explosionSub, { at, gain: 0.35, ref: 10 });
+        }
         break;
       case 'weaponDeploy':
-        A.play(SFX.weaponDeploy, { at: m.pos, gain: 0.7, ref: 6 });
+        if (wm) {
+          A.play(SFX.metalSliding, { at: m.pos, gain: 0.52, rate: 0.86, ref: 6, duration: 0.36 });
+          A.play(SFX.weaponDeploy, { at: m.pos, gain: 0.75, rate: 0.74, ref: 6 });
+          A.play(SFX.ratchet, { at: m.pos, gain: 0.38, rate: 1.1, ref: 6, delay: 0.08, duration: 0.24 });
+        } else {
+          A.play(SFX.weaponDeploy, { at: m.pos, gain: 0.7, ref: 6 });
+        }
         break;
       case 'weaponStow':
-        A.play(SFX.weaponStow, { at: m.pos, gain: 0.55, ref: 6 });
+        if (wm) {
+          A.play(SFX.weaponStow, { at: m.pos, gain: 0.62, rate: 0.72, ref: 6 });
+          A.play(SFX.metalTighten, { at: m.pos, gain: 0.44, rate: 0.85, ref: 6, delay: 0.08 });
+        } else {
+          A.play(SFX.weaponStow, { at: m.pos, gain: 0.55, ref: 6 });
+        }
         break;
       case 'laserCutterFire':
-        A.play(SFX.repulsorZap, { at: at ?? m.pos, gain: 0.9, rate: 1.35, ref: 10 });
-        A.play(SFX.sparkCrackle, { at: at ?? m.pos, gain: 0.8, rate: 1.2, ref: 10 });
-        A.play(SFX.electricMotor, { at: at ?? m.pos, gain: 0.45, rate: 1.8, duration: 0.65, ref: 8 });
+        if (wm) {
+          // Dual-Gauntlet Flak-Plasma Sweep: deep zap + staggered heavy flak cannon airbursts
+          A.play(SFX.repulsorZap, { at: at ?? m.pos, gain: 0.82, rate: 0.76, lowpass: 6500, ref: 10 });
+          A.play(SFX.sparkCrackle, { at: at ?? m.pos, gain: 0.78, rate: 0.85, ref: 10 });
+          for (let i = 0; i < 4; i++) {
+            A.play(SFX.gun, { at: at ?? m.pos, gain: 0.62, rate: 0.78, vary: 0.07, ref: 12, delay: i * 0.11, duration: 0.3 });
+          }
+          A.play(SFX.explosionNear, { at: at ?? m.pos, gain: 0.45, rate: 1.12, ref: 16, delay: 0.15, duration: 0.5 });
+        } else {
+          A.play(SFX.repulsorZap, { at: at ?? m.pos, gain: 0.9, rate: 1.35, ref: 10 });
+          A.play(SFX.sparkCrackle, { at: at ?? m.pos, gain: 0.8, rate: 1.2, ref: 10 });
+          A.play(SFX.electricMotor, { at: at ?? m.pos, gain: 0.45, rate: 1.8, duration: 0.65, ref: 8 });
+        }
         break;
       case 'reactorMode':
         A.play(SFX.lockTick, { ui: true, gain: 0.28, rate: e.text === 'BALANCED' ? 0.9 : 1.25 });
@@ -465,10 +585,15 @@ export class Soundscape {
         A.play(SFX.steamRelease, { at: m.pos, gain: 0.35, ref: 6, duration: 1.4 });
         break;
       case 'flareSalvo':
-        A.play(SFX.electricMotor, { at: m.pos, gain: 0.35, rate: 1.6, ref: 6, duration: 0.9 });
+        if (wm) {
+          A.play(SFX.ratchet, { at: m.pos, gain: 0.45, rate: 1.15, ref: 6, duration: 0.45 });
+          A.play(SFX.electricMotor, { at: m.pos, gain: 0.32, rate: 1.25, ref: 6, duration: 0.85 });
+        } else {
+          A.play(SFX.electricMotor, { at: m.pos, gain: 0.35, rate: 1.6, ref: 6, duration: 0.9 });
+        }
         break;
       case 'flarePop':
-        A.play(SFX.flarePop, { at, gain: 0.6, vary: 0.12, ref: 8 });
+        A.play(SFX.flarePop, { at, gain: wm ? 0.68 : 0.6, rate: wm ? 0.78 : 1, vary: 0.12, ref: 8 });
         break;
       case 'explosion':
         A.play(SFX.explosionNear, { at, gain: 1, vary: 0.08, ref: 40, echo: 0.3 });
@@ -725,13 +850,13 @@ export class Soundscape {
     }
     this.ear.copy(cam.position);
     this.air?.update(this.track, this.now, cam.position, out, gate);
-    // Boots: louder and higher with throttle; to the pilot, past Mach 1
-    // they fall away behind (outside, the air path does that for real)
+    // Boots: louder and higher with throttle; War Machine's heavier chassis sits a touch deeper
     const thr = m.throttle;
+    const wmPitch = this.variant === 'warmachine' ? 0.88 : 1;
     const supIn = sup * (1 - this.observer);
     const lp = THREE.MathUtils.lerp(16000, 2200, supIn);
-    this.thrust?.set((m.grounded ? 0 : 0.15 + 0.9 * thr) * (1 - 0.4 * supIn), 0.82 + 0.42 * thr, lp);
-    this.boost?.set(m.boosting ? 0.55 * (1 - 0.5 * supIn) : 0, 1.35 + 0.2 * thr, lp * 0.7);
+    this.thrust?.set((m.grounded ? 0 : 0.15 + 0.9 * thr) * (1 - 0.4 * supIn), (0.82 + 0.42 * thr) * wmPitch, lp);
+    this.boost?.set(m.boosting ? 0.55 * (1 - 0.5 * supIn) : 0, (1.35 + 0.2 * thr) * wmPitch, lp * 0.7);
     // The air torn open behind a fast suit: only from outside it
     const tear = THREE.MathUtils.smoothstep(m.speed, 40, 320);
     this.roar?.set(tear * (0.9 + 0.5 * (m.boosting ? 1 : 0)), 0.85 + 0.3 * tear);

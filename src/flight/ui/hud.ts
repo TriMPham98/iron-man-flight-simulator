@@ -250,6 +250,7 @@ export class Hud {
         this.kill(e.at, e.text);
         break;
       case 'repulsorHit':
+      case 'minigunHit':
         if (e.value) {
           this.hit();
           if (this.tally) this.tally.hits++;
@@ -257,6 +258,10 @@ export class Hud {
         break;
       case 'repulsorFire':
         this.recoil = 1;
+        if (this.tally) this.tally.shots++;
+        break;
+      case 'minigunFire':
+        this.recoil = Math.max(this.recoil, 0.55);
         if (this.tally) this.tally.shots++;
         break;
       case 'hitArmor': {
@@ -431,7 +436,7 @@ export class Hud {
     g.save();
     if (helmet) {
       g.translate(this.sway.x, this.sway.y);
-      this.panel('visor', 0, 0, () => this.drawVisor(g, s));
+      this.panel('visor', 0, 0, () => this.drawVisor(g, s, combat.weapons.variant === 'warmachine'));
       this.panel('suit', -30 * s, 0, () => this.drawSuitDiagram(g, m, combat, s));
     }
     this.panel('tapes', 0, 14 * s, () => this.drawTapes(g, m, ground, s));
@@ -859,7 +864,7 @@ export class Hud {
     this.sway.clampLength(0, 26 * s);
   }
 
-  private drawVisor(g: CanvasRenderingContext2D, s: number): void {
+  private drawVisor(g: CanvasRenderingContext2D, s: number, warmachine = false): void {
     // Helmet frame: the curved edges of the visor and a scan line
     g.strokeStyle = CYAN_FAINT;
     g.lineWidth = 1;
@@ -887,7 +892,7 @@ export class Hud {
       g.lineTo(x + dx * k, y);
       g.stroke();
     }
-    this.text(g, 'MK III  ·  HUD ONLINE', mx + 4 * s, my + k + 10 * s, 7.5 * s, CYAN_DIM, 'left', JARVIS);
+    this.text(g, warmachine ? 'WM MK II  ·  HUD ONLINE' : 'MK III  ·  HUD ONLINE', mx + 4 * s, my + k + 10 * s, 7.5 * s, warmachine ? AMBER : CYAN_DIM, 'left', JARVIS);
     const y = ((this.time * 0.12) % 1) * this.h;
     g.fillStyle = 'rgba(126,232,255,0.03)';
     g.fillRect(0, y, this.w, 2 * s);
@@ -1885,6 +1890,25 @@ export class Hud {
         }
         this.text(g, `AT${at + 1}`, x + r + 3 * s, y + r, 8 * s, AMBER);
       }
+      // War Machine M134 shoulder Vulcan auto-lock indicator
+      if (W.variant === 'warmachine' && W.minigunTarget === h) {
+        const hot = W.minigunFiring;
+        const r = size * (hot ? 1.48 + 0.1 * Math.sin(this.time * 28) : 1.42);
+        g.save();
+        g.strokeStyle = hot ? WHITE : AMBER;
+        g.lineWidth = hot ? 2 : 1.35;
+        g.setLineDash(hot ? [] : [4 * s, 3 * s]);
+        g.beginPath();
+        g.moveTo(x, y - r);
+        g.lineTo(x + r, y);
+        g.lineTo(x, y + r);
+        g.lineTo(x - r, y);
+        g.closePath();
+        g.stroke();
+        g.setLineDash([]);
+        g.restore();
+        this.text(g, hot ? 'VULCAN TRACK' : 'VULCAN LOCK', x, y - r - 8 * s, 7.5 * s, hot ? WHITE : AMBER, 'center', JARVIS);
+      }
     }
     // Launcher paint: a tight amber cone
     if (W.launcherLockProgress > 0) {
@@ -1901,23 +1925,27 @@ export class Hud {
       g.beginPath();
       g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * W.launcherLockProgress);
       g.stroke();
-      this.text(g, `AT LOCK ${W.launcherLocks.length}/${W.launcherAmmo}`, cx, cy + r + 14 * s, 9 * s, AMBER, 'center');
+      const lockLbl = W.variant === 'warmachine' ? 'BB LOCK' : 'AT LOCK';
+      this.text(g, `${lockLbl} ${W.launcherLocks.length}/${W.launcherAmmo}`, cx, cy + r + 14 * s, 9 * s, AMBER, 'center');
     }
-    // Unibeam: the reactor's charge ring round the sight, then the heat
-    if (W.unibeamCharge > 0 || W.unibeamOn) {
+    // Spacebar gauge round the sight: Unibeam charge/heat (Mk III) or Vulcan spool/barrel heat (War Machine)
+    const wmGunActive = W.variant === 'warmachine' && (W.minigunSpool > 0 || W.minigunFiring);
+    if (W.unibeamCharge > 0 || W.unibeamOn || wmGunActive) {
       const r = 26 * s;
+      const on = W.unibeamOn || W.minigunFiring;
+      const charge = W.variant === 'warmachine' ? W.minigunSpool : W.unibeamCharge;
       g.strokeStyle = CYAN_FAINT;
       g.lineWidth = 3 * s;
       g.beginPath();
       g.arc(cx, cy, r, 0, Math.PI * 2);
       g.stroke();
-      g.strokeStyle = W.unibeamOn ? WHITE : CYAN;
+      g.strokeStyle = on ? (W.variant === 'warmachine' ? AMBER : WHITE) : W.variant === 'warmachine' ? AMBER : CYAN;
       g.beginPath();
-      g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (W.unibeamOn ? 1 : W.unibeamCharge));
+      g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (on ? 1 : charge));
       g.stroke();
-      if (W.unibeamOn) {
+      if (on) {
         const heat = W.unibeamHeat;
-        g.strokeStyle = heat > 0.8 ? RED : heat > 0.55 ? AMBER : CYAN;
+        g.strokeStyle = heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.variant === 'warmachine' ? AMBER : CYAN;
         g.lineWidth = 2 * s;
         g.beginPath();
         g.arc(cx, cy, r + 6 * s, Math.PI * 0.75, Math.PI * 0.75 + Math.PI * 1.5 * heat);
@@ -2163,17 +2191,18 @@ export class Hud {
       g.fillRect(barX, ay - 2.5 * s, barW * ax.level, 5 * s);
     });
 
-    // Wrist laser cutter readiness ([C])
+    // Wrist laser cutter / War Machine dual-gauntlet flak sweep readiness ([C])
+    const isWM = W.variant === 'warmachine';
     const cy = y0 + 73 * s;
     const cutStatus = W.laserCutterActive
-      ? 'SLICING'
+      ? isWM ? 'SWEEPING' : 'SLICING'
       : W.laserCutterReady
         ? 'READY'
         : W.laserCutterCooldown > 0
           ? `COOL ${W.laserCutterCooldown.toFixed(1)}s`
           : 'HOT';
-    const cutCol = W.laserCutterActive ? WHITE : W.laserCutterReady ? RED : W.laserCutterCooldown > 0 ? CYAN_DIM : AMBER;
-    this.text(g, 'C · LASER', px, cy, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+    const cutCol = W.laserCutterActive ? WHITE : W.laserCutterReady ? (isWM ? AMBER : RED) : W.laserCutterCooldown > 0 ? CYAN_DIM : AMBER;
+    this.text(g, isWM ? 'C · FLAK SWEEP' : 'C · LASER', px, cy, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
     this.text(g, cutStatus, rx, cy, 8.5 * s, cutCol, 'right');
 
     // Overcharge capacitor bar (0–100% -> 400% surge countdown)
@@ -2215,35 +2244,66 @@ export class Hud {
       extra?.(x - 150 * s, y + 9 * s);
       y += 26 * s;
     };
-    row('REPULSORS', W.repulsorBusy ? 'FIRING' : 'READY', W.repulsorBusy ? WHITE : CYAN);
-    // Pods L | R: one pip per tube
-    row('MICRO-MISSILES', `${W.rockets}/${W.rocketCapacity}`, W.rockets ? CYAN : AMBER, (bx, by) => {
-      for (let p = 0; p < 2; p++) {
-        for (let i = 0; i < MINI_ROCKETS / 2; i++) {
-          g.fillStyle = i < W.pods[p] ? CYAN : CYAN_FAINT;
-          g.fillRect(bx + p * 78 * s + i * 16 * s, by, 12 * s, 3 * s);
+    const isWM = W.variant === 'warmachine';
+    row(isWM ? 'HVY REPULSORS' : 'REPULSORS', W.repulsorBusy ? 'FIRING' : 'READY', W.repulsorBusy ? WHITE : isWM ? AMBER : CYAN);
+    // Pods: Mk III 4+4 internal traps vs War Machine 6-tube left-shoulder box pod
+    row(isWM ? 'SHOULDER POD' : 'MICRO-MISSILES', `${W.rockets}/${W.rocketCapacity}`, W.rockets ? (isWM ? AMBER : CYAN) : RED, (bx, by) => {
+      if (isWM) {
+        const cap = W.rocketCapacity;
+        for (let i = 0; i < cap; i++) {
+          g.fillStyle = i < W.rockets ? AMBER : CYAN_FAINT;
+          g.fillRect(bx + i * 25 * s, by, 19 * s, 3 * s);
+        }
+      } else {
+        for (let p = 0; p < 2; p++) {
+          for (let i = 0; i < MINI_ROCKETS / 2; i++) {
+            g.fillStyle = i < W.pods[p] ? CYAN : CYAN_FAINT;
+            g.fillRect(bx + p * 78 * s + i * 16 * s, by, 12 * s, 3 * s);
+          }
         }
       }
     });
-    // Unibeam heat: cools back from red; overheated it locks out and vents
+    // Spacebar special: Mk III Unibeam vs War Machine Auto-Lock Shoulder M134 Vulcan
     const heat = W.unibeamHeat;
     const over = W.unibeamOverheat;
     const blink = Math.sin(this.time * 10) > 0;
-    const ubText = over ? 'OVERHEAT' : W.unibeamOn ? 'DISCHARGE' : W.unibeamCharge > 0 ? `CHARGING ${Math.round(W.unibeamCharge * 100)}%` : heat > 0.02 ? `COOLING ${Math.round(heat * 100)}°` : 'READY';
-    const ubColor = over ? (blink ? RED : AMBER) : W.unibeamOn ? WHITE : CYAN;
-    const ubKey = over ? 'over' : W.unibeamOn ? 'on' : W.unibeamCharge > 0 ? 'charge' : heat > 0.02 ? 'cool' : 'ready';
-    row('UNIBEAM', ubText, ubColor, (bx, by) => {
-      g.fillStyle = CYAN_FAINT;
-      g.fillRect(bx, by, 150 * s, 3 * s);
-      g.fillStyle = over ? RED : heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.unibeamOn ? WHITE : CYAN;
-      g.fillRect(bx, by, 150 * s * heat, 3 * s);
-      // Where the lockout releases
-      g.fillStyle = CYAN_DIM;
-      g.fillRect(bx + 150 * s * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
-    }, ubKey);
-    row('FLARES', `${W.flares}`, W.flareCooldown > 0 ? CYAN_DIM : CYAN);
+    if (isWM) {
+      const gunText = over
+        ? 'OVERHEAT'
+        : W.minigunFiring
+          ? W.minigunTarget ? 'AUTO-FIRE' : 'FIRING'
+          : W.minigunSpool > 0.05
+            ? `SPOOL ${Math.round(W.minigunSpool * 100)}%`
+            : heat > 0.02
+              ? `COOL ${Math.round(heat * 100)}°`
+              : W.minigunTarget ? 'LOCKED' : 'READY';
+      const gunColor = over ? (blink ? RED : AMBER) : W.minigunFiring ? WHITE : W.minigunTarget ? AMBER : CYAN;
+      const gunKey = over ? 'over' : W.minigunFiring ? 'fire' : W.minigunSpool > 0.05 ? 'spool' : heat > 0.02 ? 'cool' : W.minigunTarget ? 'lock' : 'ready';
+      row('VULCAN M134', gunText, gunColor, (bx, by) => {
+        g.fillStyle = CYAN_FAINT;
+        g.fillRect(bx, by, 150 * s, 3 * s);
+        g.fillStyle = over ? RED : heat > 0.8 ? RED : heat > 0.5 ? AMBER : W.minigunFiring ? WHITE : AMBER;
+        g.fillRect(bx, by, 150 * s * heat, 3 * s);
+        g.fillStyle = CYAN_DIM;
+        g.fillRect(bx + 150 * s * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
+      }, gunKey);
+    } else {
+      const ubText = over ? 'OVERHEAT' : W.unibeamOn ? 'DISCHARGE' : W.unibeamCharge > 0 ? `CHARGING ${Math.round(W.unibeamCharge * 100)}%` : heat > 0.02 ? `COOLING ${Math.round(heat * 100)}°` : 'READY';
+      const ubColor = over ? (blink ? RED : AMBER) : W.unibeamOn ? WHITE : CYAN;
+      const ubKey = over ? 'over' : W.unibeamOn ? 'on' : W.unibeamCharge > 0 ? 'charge' : heat > 0.02 ? 'cool' : 'ready';
+      row('UNIBEAM', ubText, ubColor, (bx, by) => {
+        g.fillStyle = CYAN_FAINT;
+        g.fillRect(bx, by, 150 * s, 3 * s);
+        g.fillStyle = over ? RED : heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.unibeamOn ? WHITE : CYAN;
+        g.fillRect(bx, by, 150 * s * heat, 3 * s);
+        // Where the lockout releases
+        g.fillStyle = CYAN_DIM;
+        g.fillRect(bx + 150 * s * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
+      }, ubKey);
+    }
+    row(isWM ? 'CHAFF / FLARES' : 'FLARES', `${W.flares}`, W.flareCooldown > 0 ? CYAN_DIM : CYAN);
     const atBusy = W.launcherQueue.length > 0;
-    row('AT LAUNCHERS', atBusy ? `FIRING ${W.launcherQueue.length}` : W.launcherAmmo ? `${W.launcherAmmo} RDS` : 'RELOAD', atBusy ? WHITE : W.launcherAmmo ? CYAN : AMBER, (bx, by) => {
+    row(isWM ? 'BUNKER BUSTER' : 'AT LAUNCHERS', atBusy ? `FIRING ${W.launcherQueue.length}` : W.launcherAmmo ? `${W.launcherAmmo} RDS` : 'RELOAD', atBusy ? WHITE : W.launcherAmmo ? (isWM ? AMBER : CYAN) : RED, (bx, by) => {
       for (let p = 0; p < 2; p++) {
         for (let i = 0; i < LAUNCHER_PER_ARM; i++) {
           g.fillStyle = i < W.launcherRounds[p] ? AMBER : CYAN_FAINT;

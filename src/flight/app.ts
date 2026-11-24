@@ -597,6 +597,7 @@ export class FlightApp {
     hud.draw(dt, camera, game.model, game.combat, game.ground, game.rig.mode === 'helmet');
     this.missionHud.update(camera, game.model.pos, this.missions.telemetry, this.engaged && !director && !cinematic);
     this.multiplayerHud?.update(camera, game.model.pos, this.engaged && !director && !cinematic);
+    this.sounds.variant = game.suitVariant;
     this.sounds.update(dt, game.model, game.combat, camera, game.rig.mode === 'helmet', game.combat.weapons.unibeamOn);
     this.post.render(dt, this.lens);
   }
@@ -722,6 +723,7 @@ export class FlightApp {
     const suitParam = query.get('suit');
     if (suitParam === 'warmachine' || suitParam === 'ironman') {
       this.multiplayer.setSuit(suitParam);
+      this.sounds.variant = suitParam;
     }
     const modeParam = query.get('mode');
     if (modeParam === 'duel' || modeParam === 'coop') {

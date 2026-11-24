@@ -67,6 +67,8 @@ void main() {
 const CUTTER_FRAG = /* glsl */ `
 uniform float uTime;
 uniform float uPower;
+uniform vec3 uBladeCol;
+uniform vec3 uHaloCol;
 varying vec2 vUv;
 varying float vLen;
 varying float vView;
@@ -76,9 +78,9 @@ void main() {
   float blade = exp(-pow(x / 0.36, 2.0) * 2.0);
   float halo = exp(-x * x * 3.5) * 0.4;
   float pulse = 0.88 + 0.12 * sin(vLen * 3.5 - uTime * 95.0);
-  vec3 col = vec3(1.0, 0.96, 0.94) * core * 6.5
-           + vec3(1.0, 0.22, 0.12) * blade * 2.8 * pulse
-           + vec3(1.0, 0.08, 0.04) * halo;
+  vec3 col = vec3(1.0, 0.96, 0.92) * core * 6.5
+           + uBladeCol * blade * 2.8 * pulse
+           + uHaloCol * halo;
   col *= smoothstep(0.35, 2.5, vView);
   gl_FragColor = vec4(col * uPower, 1.0);
 }
@@ -86,8 +88,14 @@ void main() {
 
 const LASER_SPARK_HOT = new THREE.Color(16, 4, 2);
 const LASER_SPARK_COOL = new THREE.Color(6, 0.6, 0.15);
+const FLAK_SPARK_HOT = new THREE.Color(18, 11, 3);
+const FLAK_SPARK_COOL = new THREE.Color(8, 2.4, 0.25);
 const ARC_HOT = new THREE.Color(8, 12, 18);
 const ARC_COOL = new THREE.Color(1.5, 4.5, 11);
+
+/** War Machine wider flak-plasma sweep arc (rad) and damage bonus. */
+export const WM_FLAK_SWEEP_ARC_RAD = THREE.MathUtils.degToRad(64);
+export const WM_FLAK_SWEEP_DAMAGE_MULT = 1.12;
 
 /** Eased sweep angle (rad) across `[-arc/2, +arc/2]` for normalized progress `u` in `[0, 1]`. */
 export function sweepProgressAngle(u: number, totalArcRad = LASER_CUTTER_ARC_RAD): number {
@@ -137,6 +145,8 @@ export class LaserCutterFx {
   private prevU = 0;
   private damageMult = 1;
   private time = 0;
+  private isWarmachine = false;
+  private flakPopAcc = 0;
 
   private readonly ribbon: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
   private readonly light = new THREE.PointLight(0xff4030, 0, 24, 2);
@@ -176,6 +186,8 @@ export class LaserCutterFx {
           uWidth: { value: new THREE.Vector2(0.18, 0.42) },
           uTime: { value: 0 },
           uPower: { value: 0 },
+          uBladeCol: { value: new THREE.Vector3(1.0, 0.22, 0.12) },
+          uHaloCol: { value: new THREE.Vector3(1.0, 0.08, 0.04) },
         },
         transparent: true,
         depthWrite: false,
@@ -191,21 +203,38 @@ export class LaserCutterFx {
     this.group.add(this.ribbon, this.light);
   }
 
-  /** Begin a sweeping cutting laser burst anchored to the aim frame. */
+  /** Switch between Iron Man's crimson wrist laser cutter and War Machine's amber-gold flak-plasma sweep. */
+  setVariant(variant: 'ironman' | 'warmachine'): void {
+    this.isWarmachine = variant === 'warmachine';
+    const u = this.ribbon.material.uniforms;
+    if (this.isWarmachine) {
+      (u.uBladeCol.value as THREE.Vector3).set(1.0, 0.56, 0.14);
+      (u.uHaloCol.value as THREE.Vector3).set(1.0, 0.34, 0.06);
+      this.light.color.setHex(0xff9830);
+    } else {
+      (u.uBladeCol.value as THREE.Vector3).set(1.0, 0.22, 0.12);
+      (u.uHaloCol.value as THREE.Vector3).set(1.0, 0.08, 0.04);
+      this.light.color.setHex(0xff4030);
+    }
+  }
+
+  /** Begin a sweeping cutting laser / flak-plasma burst anchored to the aim frame. */
   trigger(origin: THREE.Vector3, forward: THREE.Vector3, up: THREE.Vector3, damageMult: number, cooldownDuration: number): void {
     this.active = true;
     this.elapsed = 0;
     this.prevU = 0;
+    this.flakPopAcc = 0;
     this.duration = LASER_CUTTER_DURATION;
     this.cooldown = cooldownDuration;
-    this.damageMult = damageMult;
+    this.damageMult = damageMult * (this.isWarmachine ? WM_FLAK_SWEEP_DAMAGE_MULT : 1);
     this.hitIds.clear();
     this.beamFrom.copy(origin);
     this.baseFwd.copy(forward).normalize();
     this.baseRight.crossVectors(this.baseFwd, up);
     if (this.baseRight.lengthSq() < 1e-4) this.baseRight.set(1, 0, 0);
     else this.baseRight.normalize();
-    sweepDirection(this.baseFwd, this.baseRight, sweepProgressAngle(0), this.beamDir);
+    const arc = this.isWarmachine ? WM_FLAK_SWEEP_ARC_RAD : LASER_CUTTER_ARC_RAD;
+    sweepDirection(this.baseFwd, this.baseRight, sweepProgressAngle(0, arc), this.beamDir);
     this.beamEnd.copy(origin).addScaledVector(this.beamDir, LASER_CUTTER_RANGE);
   }
 
@@ -237,9 +266,13 @@ export class LaserCutterFx {
     const damage = LASER_CUTTER_BASE_DAMAGE * this.damageMult;
     const inbound = missiles.inbound();
 
+    const hotCol = this.isWarmachine ? FLAK_SPARK_HOT : LASER_SPARK_HOT;
+    const coolCol = this.isWarmachine ? FLAK_SPARK_COOL : LASER_SPARK_COOL;
+    const arc = this.isWarmachine ? WM_FLAK_SWEEP_ARC_RAD : LASER_CUTTER_ARC_RAD;
+
     for (let s = 1; s <= SUBSTEPS; s++) {
       const u = THREE.MathUtils.lerp(this.prevU, curU, s / SUBSTEPS);
-      const ang = sweepProgressAngle(u);
+      const ang = sweepProgressAngle(u, arc);
       const dir = sweepDirection(this.baseFwd, this.baseRight, ang, this._dir);
       let reach = LASER_CUTTER_RANGE;
       const hitGround = field.raycast(origin, dir, reach);
@@ -249,15 +282,19 @@ export class LaserCutterFx {
       for (const h of hostiles) {
         if (!h.alive || this.hitIds.has(h.id)) continue;
         const d2 = segmentToCore(h, origin, end, this._v, this._n);
-        const margin = h.radius + CUTTER_HIT_MARGIN;
+        const margin = h.radius + CUTTER_HIT_MARGIN + (this.isWarmachine ? 0.9 : 0);
         if (d2 <= margin * margin) {
           this.hitIds.add(h.id);
           slicedHostiles++;
           const hitAt = this._v.clone();
           const killed = h.damage(damage, hitAt, 'unibeam');
           if (particles) {
-            particles.emit('flash', hitAt, h.vel, { scale: 0.45, color: LASER_SPARK_HOT, end: LASER_SPARK_COOL });
-            particles.burst('spark', hitAt, 22, 24, this._w.copy(dir).negate(), 1.1, { color: LASER_SPARK_HOT, end: LASER_SPARK_COOL });
+            particles.emit('flash', hitAt, h.vel, { scale: this.isWarmachine ? 0.65 : 0.45, color: hotCol, end: coolCol });
+            particles.burst('spark', hitAt, this.isWarmachine ? 30 : 22, 24, this._w.copy(dir).negate(), 1.1, { color: hotCol, end: coolCol });
+            if (this.isWarmachine) {
+              particles.burst('fire', hitAt, 6, 10, undefined, 0.9, { scale: 0.9, life: 0.5 });
+              particles.burst('smoke', hitAt, 4, 8, undefined, 0.8, { scale: 1.0, life: 0.8 });
+            }
           }
           if (killed) onKill(h);
         }
@@ -265,11 +302,12 @@ export class LaserCutterFx {
 
       for (const m of inbound) {
         if (this.hitMissiles.has(m)) continue;
-        if (pointSegmentDistSq(m.pos, origin, end) <= CUTTER_MISSILE_RADIUS * CUTTER_MISSILE_RADIUS) {
+        const mRad = CUTTER_MISSILE_RADIUS + (this.isWarmachine ? 1.5 : 0);
+        if (pointSegmentDistSq(m.pos, origin, end) <= mRad * mRad) {
           this.hitMissiles.add(m);
           slicedMissiles++;
           const at = m.pos.clone();
-          if (particles) particles.burst('spark', at, 14, 18, undefined, 1, { color: LASER_SPARK_HOT, end: LASER_SPARK_COOL });
+          if (particles) particles.burst('spark', at, 14, 18, undefined, 1, { color: hotCol, end: coolCol });
           events?.emit('intercept', { at, text: 'suit' });
           missiles.shootDown(m);
         }
@@ -282,9 +320,22 @@ export class LaserCutterFx {
           if (hitGround > 0) {
             const water = field.heightAt(end.x, end.z) < 0 && end.y < 1;
             if (water) particles.burst('spray', end, 4, 8, new THREE.Vector3(0, 1.4, 0), 0.7);
-            else particles.burst('spark', end, 6, 16, new THREE.Vector3(0, 0.8, 0), 1.0, { color: LASER_SPARK_HOT, end: LASER_SPARK_COOL });
+            else particles.burst('spark', end, 6, 16, new THREE.Vector3(0, 0.8, 0), 1.0, { color: hotCol, end: coolCol });
           }
-          particles.emit('flash', origin, undefined, { scale: 0.05, color: LASER_SPARK_HOT, end: LASER_SPARK_COOL });
+          particles.emit('flash', origin, undefined, { scale: 0.05, color: hotCol, end: coolCol });
+          // War Machine flak-plasma sweep pops staggered incendiary airburst clouds along the arc
+          if (this.isWarmachine) {
+            this.flakPopAcc += dt * 16;
+            while (this.flakPopAcc >= 1) {
+              this.flakPopAcc -= 1;
+              const dPop = Math.min(reach * 0.85, 22 + Math.random() * 140);
+              const popAt = this._w.copy(origin).addScaledVector(dir, dPop);
+              particles.emit('flash', popAt, undefined, { scale: 0.35, color: hotCol, end: coolCol });
+              particles.burst('spark', popAt, 8, 16, undefined, 0.9, { scale: 0.9, life: 0.4, color: hotCol, end: coolCol });
+              particles.emit('fire', popAt, undefined, { scale: 0.85, life: 0.35 });
+              particles.emit('smoke', popAt, undefined, { scale: 1.1, life: 0.7 });
+            }
+          }
         }
       }
     }
@@ -297,7 +348,8 @@ export class LaserCutterFx {
     (uniforms.uA.value as THREE.Vector3).copy(this.beamFrom);
     (uniforms.uB.value as THREE.Vector3).copy(this.beamEnd);
     const len = this.beamFrom.distanceTo(this.beamEnd);
-    (uniforms.uWidth.value as THREE.Vector2).set(0.16 * env, (0.28 + len * 0.001) * env);
+    const wide = this.isWarmachine ? 1.35 : 1.0;
+    (uniforms.uWidth.value as THREE.Vector2).set(0.16 * wide * env, (0.28 + len * 0.001) * wide * env);
     uniforms.uTime.value = this.time;
     uniforms.uPower.value = env * 1.15;
     this.light.position.copy(this.beamFrom).addScaledVector(this.beamDir, 1.2);
@@ -305,7 +357,11 @@ export class LaserCutterFx {
 
     // Add a bright streak core along the cut line for extra punch
     if (streaks && env > 0.05) {
-      streaks.add(this.beamFrom, this.beamEnd, 14 * env, 2.5 * env, 1.5 * env, env, 0.04, 0.14);
+      if (this.isWarmachine) {
+        streaks.add(this.beamFrom, this.beamEnd, 16 * env, 8.5 * env, 2.2 * env, env, 0.06, 0.22);
+      } else {
+        streaks.add(this.beamFrom, this.beamEnd, 14 * env, 2.5 * env, 1.5 * env, env, 0.04, 0.14);
+      }
     }
 
     if (curU >= 1) {

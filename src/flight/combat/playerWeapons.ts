@@ -20,6 +20,8 @@ import {
 } from '../sim/reactorPower';
 import { GRAVITY } from '../world/config';
 import type { Heightfield } from '../world/heightfield';
+import type { SuitVariant } from '../net/protocol';
+import { animateWarMachinePack, WM_POD_TUBES, type WarMachinePack } from '../net/suitVisuals';
 import type { Explosions } from './explosions';
 import { segmentToCore } from './hitShape';
 import { LaserCutterFx } from './laserCutterFx';
@@ -59,11 +61,13 @@ interface Bolt {
   v: THREE.Vector3;
   life: number;
   side: 'L' | 'R';
-  /** Where it left the palm, carried on with the suit: the streak never reaches back past it. */
+  /** Projectile family: Iron Man plasma repulsor vs War Machine M134 tungsten-incendiary tracer. */
+  kind: 'repulsor' | 'tracer';
+  /** Where it left the muzzle, carried on with the suit: the streak never reaches back past it. */
   o: THREE.Vector3;
   /** The suit's velocity when it fired (the bolt carries it too). */
   vs: THREE.Vector3;
-  /** Age (s) and path laid since the last wisp of ionised trail (m). */
+  /** Age (s) and path laid since the last wisp of trail (m). */
   age: number;
   laid: number;
 }
@@ -86,12 +90,39 @@ interface Flare extends Decoy {
 
 type Shot =
   | { kind: 'bolt'; side: 'L' | 'R' }
+  | { kind: 'minigun' }
   | { kind: 'rocket'; target: Hostile | null }
   | { kind: 'launcher'; side: 0 | 1; target: Hostile | null }
   | { kind: 'flare'; side: 'L' | 'R'; sweep: number }
   | { kind: 'laserCutter' };
 
 const BOLT_SPEED = 780;
+/** War Machine M134 shoulder rotary minigun (Space — auto-locking, replaces Unibeam). */
+export const MINIGUN_SPEED = 1100;
+export const MINIGUN_DAMAGE = 20;
+export const MINIGUN_INTERVAL = 0.05;
+export const MINIGUN_SPOOL_UP = 0.14;
+export const MINIGUN_LOCK_RANGE = 2200;
+export const MINIGUN_LOCK_CONE = Math.cos(THREE.MathUtils.degToRad(45));
+const MINIGUN_HEAT_TIME = 4.6;
+const MINIGUN_SPREAD = 0.0055;
+const MINIGUN_RECOIL = 0.14;
+const MINIGUN_KNOCK = 3.2;
+const TRACER_HOT = new THREE.Color(16, 10, 3);
+const TRACER_COOL = new THREE.Color(7, 2.0, 0.28);
+const WM_REPULSOR_HOT = new THREE.Color(15, 6.5, 2.2);
+const WM_REPULSOR_COOL = new THREE.Color(4.2, 0.9, 0.2);
+const BRASS_HOT = new THREE.Color(7.5, 5.2, 1.4);
+const BRASS_COOL = new THREE.Color(2.4, 1.3, 0.25);
+/** War Machine heavier gauntlet repulsors & ordnance tuning. */
+const WM_REPULSOR_DAMAGE = 58;
+const WM_REPULSOR_INTERVAL = 0.2;
+const WM_POD_DAMAGE = 155;
+const WM_POD_BLAST = 5.8;
+const WM_BUNKER_DAMAGE = 340;
+const WM_BUNKER_BLAST = 9.5;
+const WM_SHOULDER_FALLBACK: [number, number, number] = [-0.24, 1.66, 0.42];
+const WM_POD_FALLBACK: [number, number, number] = [0.23, 1.61, 0.05];
 /** The aim snaps to a target this close to the sight line or its lead pip (deg), keeps it out to ASSIST_KEEP, within ASSIST_RANGE (m). */
 const ASSIST_CONE = 4.5;
 const ASSIST_KEEP = 8;
@@ -113,9 +144,8 @@ const IMPACT_LIGHT = 900;
 const MISSILE_CONE = Math.cos(THREE.MathUtils.degToRad(19));
 const MISSILE_RANGE = 3200;
 const LOCK_TIME = 0.24;
-/** Rockets per pod (one per tube; {@link MINI_ROCKETS} in all) and the most targets one paint takes. */
+/** Rockets per pod (one per tube; {@link MINI_ROCKETS} in all). */
 export const POD_ROUNDS = ROCKETS_PER_POD;
-const SALVO_MAX = MINI_ROCKETS;
 const SALVO_INTERVAL = 0.1;
 /** Rocket kick off the rail along its tube (m/s), and how long it coasts unguided. */
 const ROCKET_KICK = 28;
@@ -190,17 +220,26 @@ const SIDES = ['L', 'R'] as const;
 export class PlayerWeapons {
   readonly arms: ArmsState = IDLE_ARMS();
   readonly group = new THREE.Group();
+  /** Active suit chassis ('ironman' Mk III vs 'warmachine' Mk II). */
+  variant: SuitVariant = 'ironman';
+  /** Attached War Machine animated dorsal & forearm hardware pack (when active). */
+  wmPack: WarMachinePack | null = null;
   /** HUD-facing state. */
   locks: Hostile[] = [];
   lockProgress = 0;
-  /** Rockets left in each pod (L, R). */
+  /** Rockets left in each pod (L, R). Iron Man: 4+4=8; War Machine: 3+3=6. */
   readonly pods: [number, number] = [POD_ROUNDS, POD_ROUNDS];
-  readonly rocketCapacity = POD_ROUNDS * 2;
   unibeamCharge = 0;
   unibeamOn = false;
   /** Reactor heat 0–1; at 1 the beam cuts out until it cools. */
   unibeamHeat = 0;
   unibeamOverheat = false;
+  /** War Machine M134 rotary minigun live telemetry (0–1 spool & barrel heat, plus auto-locked target). */
+  minigunFiring = false;
+  minigunSpool = 0;
+  minigunHeat = 0;
+  /** Hostile currently auto-tracked by War Machine's shoulder M134 gimbal turret. */
+  minigunTarget: Hostile | null = null;
   flares = FLARE_MAG;
   flareCooldown = 0;
   /** Forearm rounds left (L, R), the targets painted, the paint's progress. */
@@ -218,7 +257,7 @@ export class PlayerWeapons {
   spec: SuitSpec = STOCK_SPEC();
   /** Live Arc Reactor power manager (shared with Combat; null falls back to stock multipliers). */
   reactor: ReactorPower | null = null;
-  /** Iron Man 2 sweeping wrist laser cutter visual & hit solver. */
+  /** Iron Man 2 sweeping wrist laser cutter / War Machine dual-gauntlet flak sweep. */
   readonly laserCutter = new LaserCutterFx();
   private readonly fallbackReactor = STOCK_REACTOR_MODIFIERS();
 
@@ -226,12 +265,18 @@ export class PlayerWeapons {
   private readonly flareList: Flare[] = [];
   private readonly beam = new UnibeamFx();
   private readonly pending: Shot[] = [];
-  /** One light rides the palm that fires, one flares where a bolt lands. */
+  /** One light rides the muzzle that fires, one flares where a shot lands. */
   private readonly muzzleLight = new THREE.PointLight(0xa8d8ff, 0, 9, 2);
   private readonly impactLight = new THREE.PointLight(0xa8d8ff, 0, 60, 2);
   private muzzleT = 1;
   private impactT = 1;
   private repulsorT = 0;
+  private minigunT = 0;
+  private minigunShotFrame = false;
+  private minigunSmokeAcc = 0;
+  private wristKickL = false;
+  private wristKickR = false;
+  private readonly _chestQ = new THREE.Quaternion();
   private nextSide: 'L' | 'R' = 'R';
   private holdL = 0;
   private holdR = 0;
@@ -314,7 +359,46 @@ export class PlayerWeapons {
     return hostiles.some((h) => h.noLock) ? hostiles.filter((h) => !h.noLock) : hostiles;
   }
 
-  /** Rockets left in both pods. */
+  /** Switch live weapon suite between Iron Man Mk III and War Machine Mk II. */
+  setVariant(variant: SuitVariant, pack: WarMachinePack | null = null): void {
+    this.variant = variant;
+    this.wmPack = variant === 'warmachine' ? pack : null;
+    this.beam.setVariant(variant);
+    this.laserCutter.setVariant(variant);
+    const wm = variant === 'warmachine';
+    this.muzzleLight.color.setHex(wm ? 0xffa848 : 0xa8d8ff);
+    this.impactLight.color.setHex(wm ? 0xff9438 : 0xa8d8ff);
+    const perPod = wm ? WM_POD_TUBES / 2 : POD_ROUNDS;
+    this.pods[0] = Math.min(this.pods[0], perPod);
+    this.pods[1] = Math.min(this.pods[1], perPod);
+    if (this.pods[0] === 0 && this.pods[1] === 0) {
+      this.pods[0] = perPod;
+      this.pods[1] = perPod;
+    }
+    // Clear active Mk3 / WM primary transition state cleanly
+    if (this.minigunFiring && !wm) {
+      this.minigunFiring = false;
+      this.minigunSpool = 0;
+      this.minigunTarget = null;
+      this.events.emit('minigunStop', { at: this.model.pos });
+    }
+    if (this.unibeamOn && wm) {
+      this.unibeamOn = false;
+      this.unibeamCharge = 0;
+      this.unibeamHold = 0;
+      this.events.emit('unibeamEnd', { at: this.model.pos });
+    }
+    this.chargeSide = null;
+    this.arms.silos = wm ? 0 : this.siloOpen;
+    this.arms.launchers = wm ? 0 : this.launcherOut;
+  }
+
+  /** Total rocket capacity (8 on Iron Man Mk III, 6 heavy tubes on War Machine Mk II). */
+  get rocketCapacity(): number {
+    return this.variant === 'warmachine' ? WM_POD_TUBES : POD_ROUNDS * 2;
+  }
+
+  /** Rockets left in both pods (or across the 6-tube War Machine shoulder pod). */
   get rockets(): number {
     return this.pods[0] + this.pods[1];
   }
@@ -345,14 +429,14 @@ export class PlayerWeapons {
   }
 
   get repulsorBusy(): boolean {
-    return this.holdL > 0 || this.holdR > 0;
+    return this.holdL > 0 || this.holdR > 0 || this.minigunFiring || this.minigunSpool > 0.15;
   }
 
   private get reactorMods() {
     return this.reactor ? this.reactor.modifiers : this.fallbackReactor;
   }
 
-  /** True when the wrist laser cutter can fire right now. */
+  /** True when the wrist laser cutter / flak sweep can fire right now. */
   get laserCutterReady(): boolean {
     if (this.reactor) return this.reactor.canFireLaserCutter(this.unibeamHeat, this.unibeamOverheat, this.laserCutter.cooldown);
     return !this.unibeamOverheat && this.unibeamHeat < LASER_CUTTER_MAX_HEAT && this.laserCutter.cooldown <= 0;
@@ -368,13 +452,12 @@ export class PlayerWeapons {
 
   /** The seeker as the pilot hears it: 0 off, 1 searching, 2 painting (some locks), 3 every round locked. */
   get seeker(): 0 | 1 | 2 | 3 {
-    const A = this.arms;
     let n = -1;
     let cap = 0;
-    if (this.missileHeld && A.silos > 0.95) {
+    if (this.missileHeld && this.siloOpen > 0.95) {
       n = this.locks.length;
-      cap = Math.min(SALVO_MAX, this.rockets);
-    } else if (this.launcherHeld && A.launchers > 0.95) {
+      cap = Math.min(this.rocketCapacity, this.rockets);
+    } else if (this.launcherHeld && this.launcherOut > 0.95) {
       n = this.launcherLocks.length;
       cap = this.launcherAmmo;
     }
@@ -384,6 +467,7 @@ export class PlayerWeapons {
 
   update(dt: number, c: Controls, aim: THREE.Vector3, eye: THREE.Vector3, hostiles: readonly Hostile[], enabled: boolean): void {
     const A = this.arms;
+    const isWM = this.variant === 'warmachine';
     this.lastDt = dt;
     this.hostiles = hostiles;
     this.eye.copy(eye);
@@ -392,7 +476,7 @@ export class PlayerWeapons {
 
     const mods = this.reactorMods;
 
-    // ── Repulsors ───────────────────────────────────────────────────
+    // ── Repulsors (Iron Man Mk III cyan plasma / War Machine Mk II heavy amber-crimson) ──
     this.repulsorT -= dt;
     const fire = enabled && c.fire && !this.unibeamOn;
     if (fire && this.repulsorT <= 0 && !this.chargeSide) {
@@ -401,7 +485,8 @@ export class PlayerWeapons {
       this.chargeSide = A.aimSide > 0 ? 'L' : A.aimSide < 0 ? 'R' : this.nextSide;
       this.chargeT = 0;
       this.nextSide = this.chargeSide === 'L' ? 'R' : 'L';
-      this.repulsorT = REPULSOR_INTERVAL * this.spec.repulsorInterval * mods.repulsorInterval;
+      const baseInt = isWM ? WM_REPULSOR_INTERVAL : REPULSOR_INTERVAL;
+      this.repulsorT = baseInt * this.spec.repulsorInterval * mods.repulsorInterval;
       this.events.emit('repulsorCharge', { side: this.chargeSide });
     }
     if (this.chargeSide) {
@@ -434,7 +519,7 @@ export class PlayerWeapons {
     A.chargeR = this.chargeSide === 'R' ? Math.min(1, this.chargeT * 10) : Math.max(0, A.chargeR - dt * 8);
     this.updateBolts(dt, hostiles);
 
-    // ── Mini-rockets ────────────────────────────────────────────────
+    // ── Shoulder rockets (Iron Man trap silos / War Machine left-shoulder 6-tube pod) ──
     const wantMissile = enabled && c.missile && this.rockets > 0 && !this.unibeamOn;
     if (wantMissile && !this.missileHeld) {
       this.missileHeld = true;
@@ -444,8 +529,8 @@ export class PlayerWeapons {
     }
     if (this.missileHeld) {
       this.siloHold = 0.8;
-      const cap = Math.min(SALVO_MAX, this.rockets);
-      if (A.silos > 0.95) {
+      const cap = Math.min(this.rocketCapacity, this.rockets);
+      if (this.siloOpen > 0.95) {
         this.lockT += dt;
         const lockTime = LOCK_TIME * this.spec.missileLock * this.jamSlow;
         this.lockProgress = this.locks.length >= cap ? 1 : Math.min(1, this.lockT / lockTime);
@@ -462,14 +547,14 @@ export class PlayerWeapons {
         this.lockProgress = 0;
         // Release: one rocket per locked enemy; none locked fires a pair at the aim point
         this.salvo = this.locks.length ? [...this.locks] : [null, null].slice(0, Math.min(2, this.rockets));
-        this.salvoT = A.silos > 0.9 ? 0 : 0.4;
+        this.salvoT = this.siloOpen > 0.9 ? 0 : 0.4;
         this.locks = [];
       }
     }
     if (this.salvo.length) {
       this.siloHold = 0.8;
       this.salvoT -= dt;
-      if (this.salvoT <= 0 && A.silos > 0.9 && this.siloArming >= 1) {
+      if (this.salvoT <= 0 && this.siloOpen > 0.9 && this.siloArming >= 1) {
         const target = this.salvo.shift() ?? null;
         // A target that died on the way gives its rocket to the aim point
         this.pending.push({ kind: 'rocket', target: target && target.alive ? target : null });
@@ -480,10 +565,11 @@ export class PlayerWeapons {
     const siloGoal = this.siloHold > 0 ? 1 : 0;
     if (siloGoal === 0 && this.siloOpen > 0.99) this.events.emit('siloClose');
     this.siloOpen += THREE.MathUtils.clamp(siloGoal - this.siloOpen, -dt / 0.4, dt / 0.35);
-    A.silos = this.siloOpen;
-    // Cells arm one after another (alternating pods) once the pods are up
-    this.siloArming = A.silos > 0.98 ? Math.min(MINI_ROCKETS, this.siloArming + dt * 16) : 0;
-    A.siloArmed = this.siloArming;
+    // Keep Iron Man's internal trap flaps closed while War Machine's external 6-tube pod elevates
+    A.silos = isWM ? 0 : this.siloOpen;
+    // Cells arm one after another once the pod is up
+    this.siloArming = this.siloOpen > 0.98 ? Math.min(this.rocketCapacity, this.siloArming + dt * 16) : 0;
+    A.siloArmed = isWM ? 0 : this.siloArming;
     if (this.rockets < this.rocketCapacity && this.siloOpen < 0.05) {
       this.reloadT += dt;
       if (this.reloadT > 1.2 * this.spec.rocketReload * mods.weaponReload) {
@@ -492,58 +578,109 @@ export class PlayerWeapons {
       }
     }
 
-    // ── Unibeam ─────────────────────────────────────────────────────
+    // ── Space: Iron Man Chest Unibeam  vs  War Machine Auto-Lock M134 Shoulder Minigun ──
     const overcharged = !!this.reactor?.overchargeActive;
     if (overcharged) {
       this.unibeamHeat = 0;
       this.unibeamOverheat = false;
     }
-    const canBeam = enabled && !this.unibeamOverheat;
-    const wantBeam = canBeam && c.unibeam;
-    if (wantBeam) {
-      if (this.unibeamHold === 0) this.events.emit('unibeamCharge', { at: this.model.pos });
-      this.unibeamHold = 0.3;
-    }
-    this.unibeamHold = Math.max(0, this.unibeamHold - dt);
-    if (wantBeam) this.unibeamCharge = Math.min(1, this.unibeamCharge + dt / (UNIBEAM_CHARGE * mods.unibeamCharge));
-    else this.unibeamCharge = Math.max(0, this.unibeamCharge - dt * 2.5);
-    const beamNow = wantBeam && this.unibeamCharge >= 1;
-    if (beamNow && !this.unibeamOn) {
-      this.events.emit('unibeamFire', { at: this.model.pos });
-      this.beamDir.copy(aim);
-    }
-    if (!beamNow && this.unibeamOn) this.events.emit('unibeamEnd', { at: this.model.pos });
-    this.unibeamOn = beamNow;
-    if (this.unibeamOn) {
-      if (!overcharged) {
-        this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (UNIBEAM_MAX * this.spec.unibeamTime));
-        if (this.unibeamHeat >= 1) {
-          // Overheat: the beam cuts, the chest vents, locked out until it cools
-          this.unibeamOverheat = true;
-          this.unibeamOn = false;
-          this.unibeamCharge = 0;
-          this.ventT = 1.4;
-          this.events.emit('unibeamEnd', { at: this.model.pos, value: 1 });
-          this.events.emit('jarvis', { text: 'Unibeam overheated, sir. Venting.' });
+    const canSpecial = enabled && !this.unibeamOverheat;
+    if (isWM) {
+      // War Machine: Space spools & fires the auto-locking M134 shoulder rotary minigun
+      // without locking the suit into a slow upright stance.
+      this.unibeamOn = false;
+      this.unibeamHold = 0;
+      this.unibeamPower = 0;
+      const wantGun = canSpecial && c.unibeam;
+      if (wantGun) {
+        if (!this.minigunFiring && this.minigunSpool < 0.05) {
+          this.events.emit('minigunStart', { at: this.model.pos });
         }
+        this.minigunSpool = Math.min(1, this.minigunSpool + dt / (MINIGUN_SPOOL_UP * mods.unibeamCharge));
+      } else {
+        this.minigunSpool = Math.max(0, this.minigunSpool - dt * 4.5);
       }
-    } else if (!overcharged) {
-      this.unibeamHeat = Math.max(0, this.unibeamHeat - dt / (UNIBEAM_COOL * this.spec.unibeamCool * mods.unibeamCool));
-      if (this.unibeamOverheat && this.unibeamHeat <= UNIBEAM_RESET) this.unibeamOverheat = false;
+      this.unibeamCharge = this.minigunSpool;
+      const gunNow = wantGun && this.minigunSpool >= 1;
+      if (!gunNow && this.minigunFiring) {
+        this.events.emit('minigunStop', { at: this.model.pos, value: this.unibeamHeat });
+      }
+      this.minigunFiring = gunNow;
+      this.minigunT -= dt;
+      if (this.minigunFiring) {
+        if (this.minigunT <= 0) {
+          this.pending.push({ kind: 'minigun' });
+          this.minigunT = MINIGUN_INTERVAL * this.spec.repulsorInterval * mods.repulsorInterval;
+        }
+        if (!overcharged) {
+          this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (MINIGUN_HEAT_TIME * this.spec.unibeamTime));
+          if (this.unibeamHeat >= 1) {
+            this.unibeamOverheat = true;
+            this.minigunFiring = false;
+            this.minigunSpool = 0;
+            this.unibeamCharge = 0;
+            this.ventT = 1.6;
+            this.events.emit('minigunStop', { at: this.model.pos, value: 1 });
+            this.events.emit('jarvis', { text: 'Minigun barrels overheated, sir. Venting.' });
+          }
+        }
+      } else if (!overcharged) {
+        this.unibeamHeat = Math.max(0, this.unibeamHeat - dt / (UNIBEAM_COOL * this.spec.unibeamCool * mods.unibeamCool));
+        if (this.unibeamOverheat && this.unibeamHeat <= UNIBEAM_RESET) this.unibeamOverheat = false;
+      }
+      this.minigunHeat = this.unibeamHeat;
+    } else {
+      // Iron Man Mk III: Chest Arc Reactor Unibeam
+      this.minigunFiring = false;
+      this.minigunSpool = 0;
+      this.minigunHeat = 0;
+      const wantBeam = canSpecial && c.unibeam;
+      if (wantBeam) {
+        if (this.unibeamHold === 0) this.events.emit('unibeamCharge', { at: this.model.pos });
+        this.unibeamHold = 0.3;
+      }
+      this.unibeamHold = Math.max(0, this.unibeamHold - dt);
+      if (wantBeam) this.unibeamCharge = Math.min(1, this.unibeamCharge + dt / (UNIBEAM_CHARGE * mods.unibeamCharge));
+      else this.unibeamCharge = Math.max(0, this.unibeamCharge - dt * 2.5);
+      const beamNow = wantBeam && this.unibeamCharge >= 1;
+      if (beamNow && !this.unibeamOn) {
+        this.events.emit('unibeamFire', { at: this.model.pos });
+        this.beamDir.copy(aim);
+      }
+      if (!beamNow && this.unibeamOn) this.events.emit('unibeamEnd', { at: this.model.pos });
+      this.unibeamOn = beamNow;
+      if (this.unibeamOn) {
+        if (!overcharged) {
+          this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (UNIBEAM_MAX * this.spec.unibeamTime));
+          if (this.unibeamHeat >= 1) {
+            // Overheat: the beam cuts, the chest vents, locked out until it cools
+            this.unibeamOverheat = true;
+            this.unibeamOn = false;
+            this.unibeamCharge = 0;
+            this.ventT = 1.4;
+            this.events.emit('unibeamEnd', { at: this.model.pos, value: 1 });
+            this.events.emit('jarvis', { text: 'Unibeam overheated, sir. Venting.' });
+          }
+        }
+      } else if (!overcharged) {
+        this.unibeamHeat = Math.max(0, this.unibeamHeat - dt / (UNIBEAM_COOL * this.spec.unibeamCool * mods.unibeamCool));
+        if (this.unibeamOverheat && this.unibeamHeat <= UNIBEAM_RESET) this.unibeamOverheat = false;
+      }
+      // The beam swells in over a few frames and collapses as fast
+      this.unibeamPower += ((this.unibeamOn ? 1 : 0) - this.unibeamPower) * (1 - Math.exp(-dt / (this.unibeamOn ? 0.05 : 0.04)));
+      if (!this.unibeamOn && this.unibeamPower < 0.01) this.unibeamPower = 0;
     }
 
-    // ── Sweeping Wrist Laser Cutter (KeyC) ──────────────────────────
+    // ── Sweeping Wrist Laser Cutter / War Machine Dual-Gauntlet Flak Sweep (KeyC) ──
     if (enabled && c.pressed.has(REACTOR_KEYS.LASER_CUTTER) && !this.unibeamOn && !this.laserCutter.active && this.laserCutterReady) {
       this.holdR = Math.max(this.holdR, 0.72);
+      if (isWM) this.holdL = Math.max(this.holdL, 0.72);
       if (!overcharged) {
         this.unibeamHeat = Math.min(1, this.unibeamHeat + LASER_CUTTER_HEAT_COST);
       }
       this.pending.push({ kind: 'laserCutter' });
       this.events.emit('laserCutterFire', { at: this.model.pos });
     }
-    // The beam swells in over a few frames and collapses as fast
-    this.unibeamPower += ((this.unibeamOn ? 1 : 0) - this.unibeamPower) * (1 - Math.exp(-dt / (this.unibeamOn ? 0.05 : 0.04)));
-    if (!this.unibeamOn && this.unibeamPower < 0.01) this.unibeamPower = 0;
     A.unibeam += ((this.unibeamHold > 0 ? 1 : 0) - A.unibeam) * (1 - Math.exp(-dt / 0.2));
     this.suit.setSystemsPower({ reactor: 1, eyes: 1, repulsors: 1 });
 
@@ -612,6 +749,7 @@ export class PlayerWeapons {
 
   private updateLaunchers(dt: number, c: Controls, aim: THREE.Vector3, eye: THREE.Vector3, hostiles: readonly Hostile[], enabled: boolean): void {
     const A = this.arms;
+    const isWM = this.variant === 'warmachine';
     for (const i of [0, 1] as const) this.bayEmpty[i] = Math.max(0, this.bayEmpty[i] - dt);
     const want = enabled && c.launcher && this.launcherAmmo > 0 && !this.unibeamOn && !this.launcherQueue.length;
     if (want) {
@@ -623,7 +761,7 @@ export class PlayerWeapons {
       }
       this.launcherHold = 0.6;
       const cap = this.launcherAmmo;
-      if (A.launchers > 0.95) {
+      if (this.launcherOut > 0.95) {
         // The next arm up rides the aim line while the lasers range
         this.launchHold[this.nextReady()] = 0.3;
         this.launcherLockT += dt;
@@ -650,7 +788,7 @@ export class PlayerWeapons {
       this.launcherT -= dt;
       const side = this.nextReady();
       if (this.launcherAmmo <= 0) this.launcherQueue = [];
-      else if (A.launchers > 0.95 && this.launcherT <= 0) {
+      else if (this.launcherOut > 0.95 && this.launcherT <= 0) {
         // Raise the arm onto the line; the round leaves once it's there
         this.launchHold[side] = 0.45;
         const up = side === 0 ? A.aimL : A.aimR;
@@ -668,12 +806,13 @@ export class PlayerWeapons {
     this.launcherHold = Math.max(0, this.launcherHold - dt);
     if (this.launcherHold === 0 && this.launcherOut > 0.99) this.events.emit('weaponStow');
     this.launcherOut += THREE.MathUtils.clamp((this.launcherHold > 0 ? 1 : 0) - this.launcherOut, -dt / 0.5, dt / 0.4);
-    A.launchers = this.launcherOut;
+    // Keep Mk III internal forearm flaps flush while War Machine deploys its external gauntlet pods
+    A.launchers = isWM ? 0 : this.launcherOut;
     // Seeker lock pulses: the arm that fires next glows hot once it has a target
     const locked = this.launcherLocks.length > 0 || this.launcherQueue.some((t) => t);
     const nxt = this.nextReady();
-    A.lockL = A.launchers > 0.95 ? (nxt === 0 && locked ? 1 : 0.25) : 0;
-    A.lockR = A.launchers > 0.95 ? (nxt === 1 && locked ? 1 : 0.25) : 0;
+    A.lockL = this.launcherOut > 0.95 ? (nxt === 0 && locked ? 1 : 0.25) : 0;
+    A.lockR = this.launcherOut > 0.95 ? (nxt === 1 && locked ? 1 : 0.25) : 0;
     if (this.launcherHold === 0) {
       this.launcherLocks = [];
       this.launcherHeld = false;
@@ -697,26 +836,60 @@ export class PlayerWeapons {
   }
 
   /**
-   * Once the suit is posed for the frame: shots leave their hardware, the
-   * unibeam traces from the reactor, and the streaks are laid.
+   * Once the suit is posed for the frame: animate War Machine hardware, fire
+   * shots from live muzzles, trace the unibeam / flak sweep, and lay streaks.
    */
   afterPose(fallback = false): void {
     if (!fallback) this.posedExternally = true;
+    const isWM = this.variant === 'warmachine';
+
+    // Pre-step War Machine pack so muzzles sit at this frame's exact gimbal & pod angles
+    if (isWM && this.wmPack) {
+      this.stepWarMachinePack(false);
+    }
+
     for (const s of this.pending) {
       if (s.kind === 'bolt') this.fireBolt(s.side, this.aimDir);
+      else if (s.kind === 'minigun') this.fireMinigun(this.aimDir);
       else if (s.kind === 'rocket') this.fireRocket(s.target);
       else if (s.kind === 'flare') this.popFlare(s.side, s.sweep);
       else if (s.kind === 'laserCutter') {
-        const wrist = this.palmMuzzle('R', this._a);
+        const wrist = this.flakOrigin(this._a);
         const cd = this.reactor?.overchargeActive ? LASER_CUTTER_OVERCHARGE_COOLDOWN : LASER_CUTTER_COOLDOWN;
         this.laserCutter.trigger(wrist, this.aimDir, this.model.up(this._n), this.reactorMods.laserCutterDamage, cd);
       } else this.fireLauncher(s.side, s.target);
     }
     this.pending.length = 0;
+
+    // Apply this frame's shot recoil & flash impulses immediately to the War Machine pack
+    if (isWM && this.wmPack && (this.minigunShotFrame || this.wristKickL || this.wristKickR)) {
+      this.stepWarMachinePack(true);
+    }
+    this.minigunShotFrame = false;
+    this.wristKickL = false;
+    this.wristKickR = false;
+
+    // Hot M134 barrel wisps & dorsal radiator steam when cooling off
+    if (isWM && (this.unibeamHeat > 0.35 || this.ventT > 0)) {
+      if (this.ventT > 0) this.ventT = Math.max(0, this.ventT - this.lastDt);
+      this.minigunSmokeAcc += this.lastDt * (this.ventT > 0 ? 22 : 10 * this.unibeamHeat);
+      while (this.minigunSmokeAcc >= 1) {
+        this.minigunSmokeAcc -= 1;
+        if (this.wmPack) {
+          this.wmPack.minigunMuzzle(this._a, this._b);
+        } else {
+          this.suit.boneWorldPoint('chest', WM_SHOULDER_FALLBACK, this._a);
+        }
+        const drift = this._v.copy(this.model.vel).multiplyScalar(0.55);
+        drift.y += 2.2 + Math.random() * 1.5;
+        this.particles.emit('vapor', this._a, drift, { scale: this.ventT > 0 ? 0.95 : 0.45 });
+      }
+    }
+
     this.updateBeam(this.lastDt, this.hostiles);
     this.laserCutter.step(
       this.lastDt,
-      this.palmMuzzle('R', this._a),
+      this.flakOrigin(this._a),
       this.field,
       this.hostiles,
       this.missiles,
@@ -728,18 +901,63 @@ export class PlayerWeapons {
     this.drawStreaks();
   }
 
+  /** Step War Machine's articulated shoulder M134, 6-tube missile pod, radiator vents & forearm pods. */
+  private stepWarMachinePack(impulseOnly: boolean): void {
+    const pack = this.wmPack;
+    if (!pack) return;
+    const chest = this.suit.rig?.bones?.chest;
+    if (chest) chest.getWorldQuaternion(this._chestQ);
+    else this._chestQ.copy(this.model.q);
+
+    // Shoulder M134 turret tracks the auto-locked hostile (with lead!) even before Space is pressed
+    let aimWorld: THREE.Vector3 = this.aimDir;
+    if (this.minigunTarget && this.minigunTarget.alive) {
+      const lead = this.leadPoint(this.minigunTarget, this._v, false, MINIGUN_SPEED);
+      const from = this._w.copy(this.model.pos);
+      if (lead.distanceToSquared(from) > 1) {
+        aimWorld = this._a.copy(lead).sub(from).normalize();
+      }
+    }
+
+    const ventGoal = Math.max(this.unibeamHeat * 0.85, this.ventT > 0 ? 1 : 0);
+    animateWarMachinePack(pack, impulseOnly ? 0 : this.lastDt, {
+      aimWorld,
+      chestWorldQuat: this._chestQ,
+      minigunFiring: this.minigunFiring || this.minigunSpool > 0.05,
+      minigunShot: this.minigunShotFrame,
+      podOpen: this.siloOpen,
+      podArmed: this.siloArming,
+      podLoaded: this.rockets,
+      ventOpen: ventGoal,
+      wristDeploy: this.launcherOut,
+      wristLoaded: [this.bayLoaded(0), this.bayLoaded(1)],
+      wristLock: [this.arms.lockL, this.arms.lockR],
+      flakSweepActive: this.laserCutter.active,
+      wristKickL: this.wristKickL,
+      wristKickR: this.wristKickR,
+    });
+  }
+
+  private flakOrigin(out: THREE.Vector3): THREE.Vector3 {
+    if (this.variant === 'warmachine' && this.wmPack) {
+      this.wmPack.wristR.muzzleWorld(out, this._b);
+      return out;
+    }
+    return this.palmMuzzle('R', out);
+  }
+
   /**
-   * Where to aim at `h` so the shot meets it: for a bolt, ahead along its
-   * motion relative to the suit (bolts carry the suit's own velocity) by
-   * the flight time; for the unibeam (all but instant) just the sweep's lag.
+   * Where to aim at `h` so the shot meets it: for a bolt / tracer, ahead along
+   * its motion relative to the suit (projectiles carry the suit's own velocity)
+   * by the flight time; for the unibeam (all but instant) just the sweep's lag.
    */
-  leadPoint(h: Hostile, out: THREE.Vector3, beam = this.unibeamHold > 0 || this.unibeamOn): THREE.Vector3 {
+  leadPoint(h: Hostile, out: THREE.Vector3, beam = this.unibeamHold > 0 || this.unibeamOn, projSpeed = BOLT_SPEED): THREE.Vector3 {
     if (beam) return out.copy(h.pos).addScaledVector(h.vel, BEAM_LAG);
     const rel = this._l.copy(h.vel).sub(this.model.vel);
     // Two rounds settle the flight time onto the moving point
     out.copy(h.pos);
     for (let i = 0; i < 2; i++) {
-      const t = out.distanceTo(this.model.pos) / BOLT_SPEED;
+      const t = out.distanceTo(this.model.pos) / projSpeed;
       out.copy(h.pos).addScaledVector(rel, t);
     }
     return out;
@@ -750,26 +968,49 @@ export class PlayerWeapons {
    * target near it — near the target itself *or* its lead point, so aiming
    * ahead of a crossing drone (what the pip asks for) keeps it — and holds
    * on to the one it has through a wider cone.
+   * For War Machine, also continuously auto-locks the best hostile inside the
+   * M134 shoulder turret's 45° forward engagement cone.
    */
   private findAim(aim: THREE.Vector3, eye: THREE.Vector3, hostiles: readonly Hostile[]): void {
     let best: Hostile | null = null;
     let bestDot = Math.cos(THREE.MathUtils.degToRad(ASSIST_CONE * this.spec.assistCone));
     const keep = Math.cos(THREE.MathUtils.degToRad(ASSIST_KEEP));
+
+    let wmBest: Hostile | null = null;
+    let wmBestScore = MINIGUN_LOCK_CONE;
+    const wmKeep = Math.cos(THREE.MathUtils.degToRad(52));
+    const isWM = this.variant === 'warmachine';
+
     for (const h of hostiles) {
       if (!h.alive) continue;
       const d = this._v.copy(h.pos).sub(eye);
       const dist = d.length();
-      if (dist > this.assistRange) continue;
-      const lead = this.leadPoint(h, this._w).sub(eye);
-      let dot = Math.max(d.dot(aim) / dist, lead.dot(aim) / Math.max(1e-6, lead.length()));
-      // The current target wins anything inside the wider cone
-      if (h === this.assist && dot > keep) dot = Math.max(dot, bestDot + 1e-6);
-      if (dot > bestDot) {
-        bestDot = dot;
-        best = h;
+      if (dist <= this.assistRange) {
+        const lead = this.leadPoint(h, this._w).sub(eye);
+        let dot = Math.max(d.dot(aim) / Math.max(1e-6, dist), lead.dot(aim) / Math.max(1e-6, lead.length()));
+        // The current target wins anything inside the wider cone
+        if (h === this.assist && dot > keep) dot = Math.max(dot, bestDot + 1e-6);
+        if (dot > bestDot) {
+          bestDot = dot;
+          best = h;
+        }
+      }
+      if (isWM && dist <= MINIGUN_LOCK_RANGE * this.spec.assistRange) {
+        const dot = d.dot(aim) / Math.max(1e-6, dist);
+        if (dot > wmKeep) {
+          // Prefer current lock slightly for stability, otherwise tightest angle & closer threat
+          const sticky = h === this.minigunTarget ? 0.045 : 0;
+          const rangeBias = 0.03 * (1 - dist / (MINIGUN_LOCK_RANGE * this.spec.assistRange));
+          const score = dot + sticky + rangeBias;
+          if (score > wmBestScore) {
+            wmBestScore = score;
+            wmBest = h;
+          }
+        }
       }
     }
     this.assist = best;
+    this.minigunTarget = isWM ? (best && best.alive ? best : wmBest) : null;
     const hit = this.field.raycast(eye, aim, 3000);
     this.aimPoint.copy(eye).addScaledVector(aim, hit > 0 ? hit : 1500);
   }
@@ -788,6 +1029,7 @@ export class PlayerWeapons {
   }
 
   private fireBolt(side: 'L' | 'R', aim: THREE.Vector3): void {
+    const isWM = this.variant === 'warmachine';
     const from = this.palmMuzzle(side, new THREE.Vector3());
     let target = this.aimPoint;
     // Lead the target (the pip on the HUD is this same point)
@@ -795,14 +1037,12 @@ export class PlayerWeapons {
     const dir = target.clone().sub(from).normalize();
     // Never fire backward through the suit
     if (dir.dot(aim) < 0.5) dir.copy(aim);
-    // Muzzle blast: a tight white-blue flash in the palm, a collar of
-    // plasma blown out round the wrist and a short jet thrown down the
-    // line, all riding the suit's own speed. Kept small: the camera sits a
-    // few metres off the hand and a big glow would white out the suit
     const P = this.particles;
     const vel = this.model.vel;
-    P.emit('flash', from, vel, { scale: 0.045, color: REPULSOR_HOT, end: REPULSOR_COOL });
-    P.emit('plasma', from, vel, { scale: 0.7, life: 0.5 });
+    const hot = isWM ? WM_REPULSOR_HOT : REPULSOR_HOT;
+    const cool = isWM ? WM_REPULSOR_COOL : REPULSOR_COOL;
+    P.emit('flash', from, vel, { scale: isWM ? 0.055 : 0.045, color: hot, end: cool });
+    P.emit('plasma', from, vel, { scale: 0.7, life: 0.5, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
     const u = this._n.set(0, 1, 0).cross(dir);
     if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
     u.normalize();
@@ -810,42 +1050,110 @@ export class PlayerWeapons {
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2 + Math.random() * 0.4;
       const v = this._w.copy(u).multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)).multiplyScalar(9 + Math.random() * 3).addScaledVector(dir, 3).add(vel);
-      P.emit('plasma', from, v, { scale: 0.3, life: 0.3 });
+      P.emit('plasma', from, v, { scale: 0.3, life: 0.3, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
     }
     for (let i = 0; i < 4; i++) {
       const v = this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(2).addScaledVector(dir, 14 + Math.random() * 24).add(vel);
-      P.emit('plasma', from, v, { scale: 0.35 + Math.random() * 0.2, life: 0.35 });
+      P.emit('plasma', from, v, { scale: 0.35 + Math.random() * 0.2, life: 0.35, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
     }
-    // Out ahead of the hand: it lights the arm and the air, not the faceplate
     this.muzzleLight.position.copy(from).addScaledVector(dir, 0.7);
     this.muzzleT = 0;
-    // The kick goes back up the arm into the suit (on foot the legs take it:
-    // walking into your own fire must still carry you forward)
-    this.model.vel.addScaledVector(dir, -REPULSOR_RECOIL * (this.model.grounded ? BRACED : 1));
-    // The bolt leaves the palm at its own speed on top of the suit's, so a
-    // shot fired flat out still pulls ahead of the hand, never falls behind it
+    this.model.vel.addScaledVector(dir, -REPULSOR_RECOIL * (isWM ? 1.2 : 1) * (this.model.grounded ? BRACED : 1));
     const vs = this.model.vel.clone();
     const v = dir.clone().multiplyScalar(BOLT_SPEED).add(vs);
-    this.bolts.push({ p: from.clone(), o: from, vs, v, life: 2.2, side, age: 0, laid: 0 });
+    this.bolts.push({ p: from.clone(), o: from, vs, v, life: 2.2, side, kind: 'repulsor', age: 0, laid: 0 });
     if (side === 'L') this.arms.flashL = 1;
     else this.arms.flashR = 1;
     this.events.emit('repulsorFire', { at: from, side });
   }
 
+  /**
+   * War Machine's auto-locking M134 shoulder rotary minigun (Space):
+   * fires tungsten-incendiary tracer rounds directly from the 6-barrel gimbal
+   * muzzle onto `minigunTarget`'s lead point (or manual aim if no target),
+   * ejecting glowing brass casings sideways with gun exhaust & breech kick.
+   */
+  private fireMinigun(aim: THREE.Vector3): void {
+    const from = new THREE.Vector3();
+    const bore = new THREE.Vector3();
+    if (this.wmPack) {
+      this.wmPack.minigunMuzzle(from, bore);
+    } else {
+      this.suit.boneWorldPoint('chest', WM_SHOULDER_FALLBACK, from);
+      bore.copy(aim);
+    }
+
+    const locked = this.minigunTarget && this.minigunTarget.alive ? this.minigunTarget : null;
+    const target = locked ? this.leadPoint(locked, this._w, false, MINIGUN_SPEED) : this.aimPoint;
+    const dir = target.clone().sub(from).normalize();
+    // Guard against firing straight back through the torso
+    if (dir.dot(aim) < 0.25) dir.copy(aim);
+
+    // Slight rotary dispersion so sustained bursts read as a ferocious Vulcan stream
+    const u = this._n.set(0, 1, 0).cross(dir);
+    if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
+    u.normalize();
+    const w = this._l.crossVectors(dir, u);
+    dir
+      .addScaledVector(u, (Math.random() - 0.5) * 2 * MINIGUN_SPREAD)
+      .addScaledVector(w, (Math.random() - 0.5) * 2 * MINIGUN_SPREAD)
+      .normalize();
+
+    const P = this.particles;
+    const vel = this.model.vel;
+    // Crisp fiery muzzle blast + gun exhaust puff
+    P.emit('flash', from, vel, { scale: 0.075, color: TRACER_HOT, end: TRACER_COOL });
+    if (Math.random() < 0.6) {
+      const puff = this._w.copy(vel).addScaledVector(dir, 10 + Math.random() * 6);
+      P.emit('smoke', from, puff, { scale: 0.22, life: 0.28, alpha: 0.45 });
+    }
+    // Ejected glowing brass shell casings flung sideways from the breech
+    if (this.wmPack) {
+      this.wmPack.ejectionPort(this._a, this._b);
+      const ejectV = this._w
+        .copy(vel)
+        .addScaledVector(this._b, 5.5 + Math.random() * 3.5)
+        .add(new THREE.Vector3((Math.random() - 0.5) * 1.4, 1.5 + Math.random() * 1.5, (Math.random() - 0.5) * 1.4));
+      P.emit('spark', this._a, ejectV, { scale: 0.48, life: 0.55, color: BRASS_HOT, end: BRASS_COOL });
+    }
+
+    this.muzzleLight.position.copy(from).addScaledVector(dir, 0.5);
+    this.muzzleT = 0;
+    this.minigunShotFrame = true;
+    this.model.vel.addScaledVector(dir, -MINIGUN_RECOIL * (this.model.grounded ? BRACED : 1));
+    const vs = this.model.vel.clone();
+    const v = dir.clone().multiplyScalar(MINIGUN_SPEED).add(vs);
+    this.bolts.push({ p: from.clone(), o: from, vs, v, life: 2.1, side: 'R', kind: 'tracer', age: 0, laid: 0 });
+    this.events.emit('minigunFire', { at: from, side: 'R', value: locked ? 1 : 0 });
+  }
+
   private updateBolts(dt: number, hostiles: readonly Hostile[]): void {
+    const isWM = this.variant === 'warmachine';
     for (let i = this.bolts.length - 1; i >= 0; i--) {
       const b = this.bolts[i];
+      const isTracer = b.kind === 'tracer';
+      const speed = isTracer ? MINIGUN_SPEED : BOLT_SPEED;
       const prev = this._a.copy(b.p);
       b.p.addScaledVector(b.v, dt);
       b.o.addScaledVector(b.vs, dt);
       b.life -= dt;
       b.age += dt;
-      // Ionised air left hanging along the path: a wisp every few metres
-      b.laid += BOLT_SPEED * dt;
-      while (b.laid > 7) {
-        b.laid -= 7;
-        const at = this._b.copy(b.p).addScaledVector(b.v, -b.laid / BOLT_SPEED);
-        this.particles.emit('plasma', at, undefined, { scale: 0.4, life: 0.3 });
+      // Trail wisps along the path
+      b.laid += speed * dt;
+      const spacing = isTracer ? 14 : 7;
+      while (b.laid > spacing) {
+        b.laid -= spacing;
+        const at = this._b.copy(b.p).addScaledVector(b.v, -b.laid / speed);
+        if (isTracer) {
+          this.particles.emit('smoke', at, undefined, { scale: 0.2, life: 0.22, alpha: 0.35 });
+        } else {
+          this.particles.emit('plasma', at, undefined, {
+            scale: 0.4,
+            life: 0.3,
+            color: isWM ? WM_REPULSOR_HOT : undefined,
+            end: isWM ? WM_REPULSOR_COOL : undefined,
+          });
+        }
       }
       let hit: THREE.Vector3 | null = null;
       let struck: Hostile | null = null;
@@ -854,15 +1162,20 @@ export class PlayerWeapons {
       const len2 = seg.lengthSq();
       for (const h of hostiles) {
         if (!h.alive) continue;
-        if (segmentToCore(h, prev, b.p, this._w, this._l) < h.radius * h.radius) {
-          // The hit sphere is generous (aim assist): the burst sits on the
-          // airframe, between the bolt's line and the target's middle
+        const pad = isTracer ? 0.65 : 0;
+        if (segmentToCore(h, prev, b.p, this._w, this._l) < (h.radius + pad) * (h.radius + pad)) {
           hit = this._w.clone().lerp(this._l, 0.6);
-          // A repulsor hits like a ram: the target is shoved off its line
-          h.vel.addScaledVector(seg, REPULSOR_KNOCK / Math.sqrt(Math.max(len2, 1e-6)));
+          const knock = isTracer ? MINIGUN_KNOCK : REPULSOR_KNOCK;
+          h.vel.addScaledVector(seg, knock / Math.sqrt(Math.max(len2, 1e-6)));
           struck = h;
-          const killed = h.damage(REPULSOR_DAMAGE * this.spec.repulsorDamage * this.reactorMods.repulsorDamage, hit, 'repulsor');
-          if (killed) this.onKill(h);
+          const dmg = isTracer
+            ? MINIGUN_DAMAGE * this.spec.repulsorDamage * this.reactorMods.unibeamDps
+            : (isWM ? WM_REPULSOR_DAMAGE : REPULSOR_DAMAGE) * this.spec.repulsorDamage * this.reactorMods.repulsorDamage;
+          const killed = h.damage(dmg, hit, 'repulsor');
+          if (killed) {
+            this.onKill(h);
+            if (isTracer) this.reactor?.feedOvercharge(0.14, 'minigunKill', h.pos);
+          }
           break;
         }
       }
@@ -870,36 +1183,41 @@ export class PlayerWeapons {
       if (!hit && b.p.y < surf) hit = new THREE.Vector3(b.p.x, surf + 0.3, b.p.z);
       if (hit || b.life <= 0) {
         if (hit) {
-          // A blue-white detonation: a hard flash, a shock ring blown out
-          // across the line of the shot, a shell of plasma, sparks thrown
-          // back off the struck face and a slower glowing core
           const P = this.particles;
           const d = this._n.copy(b.v).sub(b.vs).normalize();
-          // What it hit carries the glow on with it a little
           const carry = struck ? this._a.copy(struck.vel).multiplyScalar(0.6) : this._a.set(0, 0, 0);
-          P.emit('flash', hit, carry, { scale: 0.4, color: REPULSOR_HOT, end: REPULSOR_COOL });
-          const u = this._l.set(0, 1, 0).cross(d);
-          if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
-          u.normalize();
-          const w = this._b.crossVectors(d, u);
-          for (let k = 0; k < 28; k++) {
-            const a = (k / 28) * Math.PI * 2;
-            const v = this._w.copy(u).multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)).multiplyScalar(34).add(carry);
-            P.emit('plasma', hit, v, { scale: 0.75, life: 0.45 });
+          if (isTracer) {
+            // Tungsten-incendiary impact: fiery flak pop, metallic sparks, tight smoke puff
+            P.emit('flash', hit, carry, { scale: 0.28, color: TRACER_HOT, end: TRACER_COOL });
+            P.emit('fire', hit, carry, { scale: 0.75, life: 0.32 });
+            P.burst('spark', hit, 14, 24, this._w.copy(d).multiplyScalar(-0.7), 1.1, { color: TRACER_HOT, end: TRACER_COOL });
+            if (struck) P.emit('smoke', hit, carry, { scale: 0.65, life: 0.55 });
+          } else {
+            const hot = isWM ? WM_REPULSOR_HOT : REPULSOR_HOT;
+            const cool = isWM ? WM_REPULSOR_COOL : REPULSOR_COOL;
+            P.emit('flash', hit, carry, { scale: 0.4, color: hot, end: cool });
+            const u = this._l.set(0, 1, 0).cross(d);
+            if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
+            u.normalize();
+            const w = this._b.crossVectors(d, u);
+            for (let k = 0; k < 28; k++) {
+              const a = (k / 28) * Math.PI * 2;
+              const v = this._w.copy(u).multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)).multiplyScalar(34).add(carry);
+              P.emit('plasma', hit, v, { scale: 0.75, life: 0.45, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+            }
+            for (let k = 0; k < 14; k++) {
+              const v = this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(22).add(carry);
+              P.emit('plasma', hit, v, { scale: 1.5, life: 0.7, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+            }
+            P.emit('plasma', hit, carry, { scale: 5, life: 0.5, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+            P.burst('spark', hit, 26, 20, this._w.copy(d).multiplyScalar(-0.6), 1);
           }
-          for (let k = 0; k < 14; k++) {
-            const v = this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(22).add(carry);
-            P.emit('plasma', hit, v, { scale: 1.5, life: 0.7 });
-          }
-          P.emit('plasma', hit, carry, { scale: 5, life: 0.5 });
-          P.burst('spark', hit, 26, 20, this._w.copy(d).multiplyScalar(-0.6), 1);
           this.impactLight.position.copy(hit);
           this.impactT = 0;
           const water = this.field.heightAt(hit.x, hit.z) < 0 && hit.y < 1;
-          if (water) this.particles.burst('spray', hit, 10, 6, new THREE.Vector3(0, 1.4, 0), 0.6);
-          else if (hit.y < surf + 1) this.particles.burst('dust', hit, 5, 4, new THREE.Vector3(0, 0.8, 0), 0.8, { scale: 0.8 });
-          // value marks an enemy hit: the HUD cross is for that, not the ground
-          this.events.emit('repulsorHit', { at: hit, value: struck ? 1 : 0 });
+          if (water) this.particles.burst('spray', hit, isTracer ? 6 : 10, 6, new THREE.Vector3(0, 1.4, 0), 0.6);
+          else if (hit.y < surf + 1) this.particles.burst('dust', hit, isTracer ? 4 : 5, 4, new THREE.Vector3(0, 0.8, 0), 0.8, { scale: 0.8 });
+          this.events.emit(isTracer ? 'minigunHit' : 'repulsorHit', { at: hit, value: struck ? 1 : 0 });
         }
         this.bolts.splice(i, 1);
       }
@@ -917,19 +1235,32 @@ export class PlayerWeapons {
   }
 
   private fireRocket(target: Hostile | null): void {
+    const isWM = this.variant === 'warmachine';
     // Reverse of the arming order: alternating pods (the fuller one first,
     // the right on a tie), each firing its last-armed cell
     const side: 0 | 1 = this.pods[0] > this.pods[1] ? 0 : 1;
     if (this.pods[side] <= 0) return;
+    const remainingBefore = this.rockets;
     const cell = this.pods[side] - 1;
     this.pods[side]--;
     const from = new THREE.Vector3();
     const dir = new THREE.Vector3();
-    let caliber = this.siloTube(side, cell, from, dir);
-    if (!caliber) {
-      this.suit.boneWorldPoint('chest', SILO[side], from);
-      this.model.thrustAxis(dir);
-      caliber = 0.005;
+    let caliber = 0;
+    if (isWM) {
+      if (this.wmPack) {
+        this.wmPack.podMuzzle(remainingBefore - 1, from, dir);
+      } else {
+        this.suit.boneWorldPoint('chest', WM_POD_FALLBACK, from);
+        this.model.thrustAxis(dir);
+      }
+      caliber = 0.014;
+    } else {
+      caliber = this.siloTube(side, cell, from, dir);
+      if (!caliber) {
+        this.suit.boneWorldPoint('chest', SILO[side], from);
+        this.model.thrustAxis(dir);
+        caliber = 0.005;
+      }
     }
     // Off the rail along the tube, carrying the suit's own velocity
     const v = this.model.vel.clone().addScaledVector(dir, ROCKET_KICK);
@@ -941,29 +1272,52 @@ export class PlayerWeapons {
       aimPoint: target ? undefined : this.aimPoint,
       coast: ROCKET_COAST,
       caliber,
-      length: caliber * 14,
+      length: isWM ? 0.24 : caliber * 14,
+      style: isWM ? 'warmachine' : 'ironman',
+      damage: isWM ? WM_POD_DAMAGE : undefined,
+      blast: isWM ? WM_POD_BLAST : undefined,
     });
-    this.explosions.muzzle(from, dir, 0.1);
-    this.events.emit('missileLaunch', { at: from, side: SIDES[side] });
+    this.explosions.muzzle(from, dir, isWM ? 0.28 : 0.1);
+    if (isWM) {
+      this.particles.burst('smoke', from, 4, 5, dir.clone().negate(), 0.7, { scale: 0.35, life: 0.65 });
+    }
+    this.events.emit('missileLaunch', { at: from, side: isWM ? 'L' : SIDES[side] });
   }
 
   private fireLauncher(side: 0 | 1, target: Hostile | null): void {
-    const hw = this.suit.weaponHardware;
+    const isWM = this.variant === 'warmachine';
     const from = new THREE.Vector3();
     const dir = new THREE.Vector3();
-    const r = hw.fx.launcherMuzzle(SIDES[side], from, dir);
-    let caliber = r.caliber;
-    let length = r.length;
-    if (r.ok) {
-      from.applyMatrix4(hw.modelWorld);
-      dir.transformDirection(hw.modelWorld);
+    let caliber = 0.007;
+    let length = 0.11;
+    if (isWM) {
+      if (this.wmPack) {
+        const pod = side === 0 ? this.wmPack.wristL : this.wmPack.wristR;
+        pod.muzzleWorld(from, dir);
+      } else {
+        this.palmWorld(SIDES[side], from);
+        dir.copy(this.aimDir);
+      }
+      caliber = 0.022;
+      length = 0.34;
+      if (side === 0) this.wristKickL = true;
+      else this.wristKickR = true;
     } else {
-      this.palmWorld(SIDES[side], from);
-      dir.copy(this.aimDir);
-      caliber = 0.007;
-      length = 0.11;
+      const hw = this.suit.weaponHardware;
+      const r = hw.fx.launcherMuzzle(SIDES[side], from, dir);
+      caliber = r.caliber;
+      length = r.length;
+      if (r.ok) {
+        from.applyMatrix4(hw.modelWorld);
+        dir.transformDirection(hw.modelWorld);
+      } else {
+        this.palmWorld(SIDES[side], from);
+        dir.copy(this.aimDir);
+        caliber = 0.007;
+        length = 0.11;
+      }
     }
-    const v = this.model.vel.clone().addScaledVector(dir, LAUNCHER_KICK);
+    const v = this.model.vel.clone().addScaledVector(dir, LAUNCHER_KICK * (isWM ? 1.15 : 1));
     this.missiles.launch({
       team: 'player',
       from,
@@ -974,9 +1328,12 @@ export class PlayerWeapons {
       coast: 0.1,
       caliber,
       length,
+      style: isWM ? 'warmachine' : 'ironman',
+      damage: isWM ? WM_BUNKER_DAMAGE : undefined,
+      blast: isWM ? WM_BUNKER_BLAST : undefined,
     });
-    this.explosions.muzzle(from, dir, 0.45);
-    this.particles.burst('smoke', from, 3, 4, dir.clone().negate(), 0.6, { scale: 0.25, life: 0.5 });
+    this.explosions.muzzle(from, dir, isWM ? 0.65 : 0.45);
+    this.particles.burst('smoke', from, isWM ? 6 : 3, isWM ? 6 : 4, dir.clone().negate(), 0.7, { scale: isWM ? 0.42 : 0.25, life: isWM ? 0.75 : 0.5 });
     this.events.emit('launcherFire', { at: from, side: SIDES[side] });
   }
 
@@ -1080,7 +1437,7 @@ export class PlayerWeapons {
     const gas = this._n.copy(this.model.vel).addScaledVector(dir, 4);
     P.emit('flash', at, this.model.vel, { scale: 0.05 });
     P.emit('trail', at, gas, { scale: 0.35, life: 0.35, alpha: 0.8 });
-    P.burst('spark', at, 5, 8, dir, 0.5, { scale: 0.6, life: 0.4 });
+    P.burst('spark', at, this.variant === 'warmachine' ? 12 : 5, this.variant === 'warmachine' ? 13 : 8, dir, 0.65, { scale: 0.6, life: 0.55 });
     this.flarePort.copy(at);
     this.flarePopT = 0;
     const i = side === 'L' ? 0 : 1;
@@ -1176,23 +1533,38 @@ export class PlayerWeapons {
 
   private drawStreaks(): void {
     const S = this.streaks;
+    const isWM = this.variant === 'warmachine';
     for (const b of this.bolts) {
-      // A white-hot slug in a blue sheath, its tail stretched behind it —
-      // but never back past the palm it left (it grows out of the hand).
-      // The sheath shimmers shot to shot so a stream doesn't read as one
-      // rod; the slug's round head is a short fat streak (its caps)
       const sp = b.v.length();
       const out = b.p.distanceTo(b.o);
-      const len = Math.min(0.022, out / sp);
-      // Still in the palm (its first frame) it's a point inside the muzzle
-      // flash, not a fat orb in the camera's face
-      const fl = (0.85 + 0.3 * Math.sin(b.age * 90 + (b.side === 'L' ? 0 : 2))) * THREE.MathUtils.lerp(0.3, 1, Math.min(1, out / 4));
-      const tail = this._a.copy(b.p).addScaledVector(b.v, -len);
-      S.add(tail, b.p, 1.6, 3.6, 10, 0.6, 0.04, 0.6 * fl);
-      const mid = this._b.copy(b.p).addScaledVector(b.v, -len * 0.4);
-      S.add(mid, b.p, 9, 11, 14, 1, 0.03, 0.17);
-      const head = this._b.copy(b.p).addScaledVector(b.v, -Math.min(0.35, out) / sp);
-      S.add(head, b.p, 10, 13, 18, 1, 0.24 * fl, 0.3 * fl);
+      if (b.kind === 'tracer') {
+        // War Machine M134 Vulcan tungsten-incendiary tracer: long bright amber-gold needle with white-hot tip
+        const len = Math.min(0.032, out / Math.max(sp, 1));
+        const fl = 0.88 + 0.24 * Math.sin(b.age * 110);
+        const tail = this._a.copy(b.p).addScaledVector(b.v, -len);
+        S.add(tail, b.p, 11, 5.2, 1.0, 0.78, 0.025, 0.22 * fl);
+        const head = this._b.copy(b.p).addScaledVector(b.v, -len * 0.35);
+        S.add(head, b.p, 18, 13, 6, 1, 0.05, 0.14 * fl);
+      } else {
+        const len = Math.min(0.022, out / sp);
+        const fl = (0.85 + 0.3 * Math.sin(b.age * 90 + (b.side === 'L' ? 0 : 2))) * THREE.MathUtils.lerp(0.3, 1, Math.min(1, out / 4));
+        const tail = this._a.copy(b.p).addScaledVector(b.v, -len);
+        if (isWM) {
+          // War Machine heavy amber-crimson gauntlet repulsor bolt
+          S.add(tail, b.p, 11, 2.8, 0.9, 0.65, 0.045, 0.62 * fl);
+          const mid = this._b.copy(b.p).addScaledVector(b.v, -len * 0.4);
+          S.add(mid, b.p, 15, 7.5, 2.5, 1, 0.035, 0.19);
+          const head = this._b.copy(b.p).addScaledVector(b.v, -Math.min(0.35, out) / sp);
+          S.add(head, b.p, 18, 12, 6, 1, 0.26 * fl, 0.32 * fl);
+        } else {
+          // Iron Man Mk III white-hot slug in a cyan-blue plasma sheath
+          S.add(tail, b.p, 1.6, 3.6, 10, 0.6, 0.04, 0.6 * fl);
+          const mid = this._b.copy(b.p).addScaledVector(b.v, -len * 0.4);
+          S.add(mid, b.p, 9, 11, 14, 1, 0.03, 0.17);
+          const head = this._b.copy(b.p).addScaledVector(b.v, -Math.min(0.35, out) / sp);
+          S.add(head, b.p, 10, 13, 18, 1, 0.24 * fl, 0.3 * fl);
+        }
+      }
     }
     // Each flare's white-hot core, smeared a touch along its flight; a
     // pellet not yet lit is a dull red fleck
@@ -1209,13 +1581,17 @@ export class PlayerWeapons {
     }
     // Launcher lock: each arm's laser ranges the targets it will take, the
     // next shot's line brightest
-    if (this.arms.launchers > 0.95) {
+    if (this.launcherOut > 0.95) {
       const targets = this.launcherHeld ? this.launcherLocks : this.launcherQueue;
       const hw = this.suit.weaponHardware;
       let side = this.nextReady();
       targets.forEach((t, i) => {
         if (!t || !t.alive) return;
-        if (hw.fx.launcherMuzzle(SIDES[side], this._a, this._b).ok) {
+        if (isWM && this.wmPack) {
+          const pod = side === 0 ? this.wmPack.wristL : this.wmPack.wristR;
+          pod.muzzleWorld(this._a, this._b);
+          S.add(this._a, t.pos, 8, 0.8, 0.35, i === 0 ? 0.95 : 0.4, 0.024, 0.65);
+        } else if (hw.fx.launcherMuzzle(SIDES[side], this._a, this._b).ok) {
           this._a.applyMatrix4(hw.modelWorld);
           S.add(this._a, t.pos, 6, 0.6, 0.3, i === 0 ? 0.9 : 0.35, 0.02, 0.6);
         }

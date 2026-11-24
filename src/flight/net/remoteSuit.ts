@@ -6,7 +6,7 @@ import { beam, box, frustum, glowMaterial, loft, merge, paint, type V3 } from '.
 import { FLIGHT_POSTURE } from '../sim/flightModel';
 import { SPEED_OF_SOUND } from '../world/config';
 import { SuitFlag, type SuitNetState, type SuitVariant } from './protocol';
-import { buildWarMachinePack, type WarMachinePack } from './suitVisuals';
+import { animateWarMachinePack, buildWarMachinePack, type WarMachinePack } from './suitVisuals';
 
 /**
  * The remote pilot's powered-armor suit in 3D space (Iron Man Mk III or
@@ -343,7 +343,6 @@ export class RemoteSuit {
   private readonly hazeUniforms?: Record<string, THREE.IUniform>;
   private readonly _dir = new THREE.Vector3();
   private readonly _invQ = new THREE.Quaternion();
-  private readonly _localAim = new THREE.Vector3();
 
   constructor(id: string, variant: SuitVariant, callsign: string, hazeUniforms?: Record<string, THREE.IUniform>) {
     this.id = id;
@@ -421,6 +420,15 @@ export class RemoteSuit {
       // Align dorsal pack to RemoteSuit torso coordinates (chest centre ~ y = 0.44)
       this.wmPack.root.position.set(0, 0.44, -0.02);
       this.visualRoot.add(this.wmPack.root);
+      // Attach twin forearm gauntlet weapon pods to RemoteSuit forearms
+      this.wmPack.wristL.root.position.set(0.085, -0.42, 0.0);
+      this.wmPack.wristL.root.rotation.set(0, 0, Math.PI);
+      this.wmPack.wristL.root.visible = true;
+      this.armL.add(this.wmPack.wristL.root);
+      this.wmPack.wristR.root.position.set(-0.085, -0.42, 0.0);
+      this.wmPack.wristR.root.rotation.set(0, Math.PI, Math.PI);
+      this.wmPack.wristR.root.visible = true;
+      this.armR.add(this.wmPack.wristR.root);
     }
 
     const tex = plumeTexture();
@@ -598,21 +606,24 @@ export class RemoteSuit {
     this.armR.rotation.x = THREE.MathUtils.lerp(this.armR.rotation.x, rx, armAlpha);
     this.armR.rotation.z = THREE.MathUtils.lerp(this.armR.rotation.z, rz, armAlpha);
 
-    // ── War Machine shoulder minigun tracking & spin ──
+    // ── War Machine shoulder minigun & pack articulation ──
     if (this.wmPack) {
       this.mesh.updateMatrixWorld(true);
-      this._invQ.copy(this.body.getWorldQuaternion(this._invQ)).invert();
-      this._localAim.copy(this.aim).applyQuaternion(this._invQ);
-      const yaw = THREE.MathUtils.clamp(Math.atan2(this._localAim.x, Math.max(0.15, this._localAim.z)), -0.85, 0.85);
-      const pitch = THREE.MathUtils.clamp(-Math.asin(THREE.MathUtils.clamp(this._localAim.y, -0.85, 0.85)), -0.75, 0.75);
-      this.wmPack.turret.rotation.y = THREE.MathUtils.lerp(this.wmPack.turret.rotation.y, yaw, armAlpha);
-      this.wmPack.turret.rotation.x = THREE.MathUtils.lerp(this.wmPack.turret.rotation.x, pitch, armAlpha);
-      if (this.firing) {
-        this.wmPack.barrels.rotation.z += dt * 34;
-        this.wmPack.muzzleGlow.visible = Math.sin(this.time * 85) > -0.2;
-      } else {
-        this.wmPack.muzzleGlow.visible = false;
-      }
+      this.body.getWorldQuaternion(this._invQ);
+      animateWarMachinePack(this.wmPack, dt, {
+        aimWorld: this.aim,
+        chestWorldQuat: this._invQ,
+        minigunFiring: this.firing,
+        minigunShot: this.firing && Math.sin(this.time * 85) > 0.35,
+        podOpen: 0,
+        podArmed: 0,
+        podLoaded: 6,
+        ventOpen: this.firing ? 0.6 : 0,
+        wristDeploy: 0,
+        wristLoaded: [true, true],
+        wristLock: [0, 0],
+        flakSweepActive: false,
+      });
     }
 
     // ── Boot & palm plumes ──

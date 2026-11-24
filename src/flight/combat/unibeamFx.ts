@@ -60,6 +60,9 @@ uniform float uTime;
 uniform float uPower;
 uniform float uCore;   // core half-width as a share of the haze half-width
 uniform float uSheath; // sheath half-width as a share
+uniform vec3 uSheathCol;
+uniform vec3 uEdgeCol;
+uniform vec3 uHazeCol;
 varying vec2 vUv;
 varying float vLen;
 varying float vView;
@@ -83,9 +86,9 @@ void main() {
   float edge = smoothstep(sw * 1.1, sw * 0.5, x) * smoothstep(sw * 0.25, sw * 0.8, x);
   float haze = exp(-x * x * 3.0) * (0.35 + 0.65 * shimmer) * 0.22;
   vec3 col = vec3(1.0) * core * 4.0
-           + vec3(0.3, 0.8, 1.0) * sheath * (1.0 + 0.7 * mix(0.5, ripple, near))
-           + vec3(0.6, 0.95, 1.0) * edge * 0.9 * mix(0.4, ripple, near)
-           + vec3(0.3, 0.6, 1.0) * haze;
+           + uSheathCol * sheath * (1.0 + 0.7 * mix(0.5, ripple, near))
+           + uEdgeCol * edge * 0.9 * mix(0.4, ripple, near)
+           + uHazeCol * haze;
   // Hottest at the reactor, settling down the beam
   col *= 1.0 + 0.5 * exp(-vLen / 4.0);
   // From the helmet the reactor is just under the chin: the beam's root
@@ -171,6 +174,7 @@ export class UnibeamFx {
   private time = 0;
   /** The splash's size eased between landing (1) and running out in the air (0). */
   private splashHit = 0;
+  private isWarmachine = false;
 
   constructor() {
     this.group.name = 'unibeam';
@@ -204,6 +208,9 @@ export class UnibeamFx {
           uPower: { value: 0 },
           uCore: { value: 0.16 },
           uSheath: { value: 0.42 },
+          uSheathCol: { value: new THREE.Vector3(0.3, 0.8, 1.0) },
+          uEdgeCol: { value: new THREE.Vector3(0.6, 0.95, 1.0) },
+          uHazeCol: { value: new THREE.Vector3(0.3, 0.6, 1.0) },
         },
         transparent: true,
         depthWrite: false,
@@ -281,6 +288,25 @@ export class UnibeamFx {
     this.group.add(this.beam, this.scorch);
   }
 
+  /** Switch beam palette between Iron Man cyan-white and War Machine crimson-amber thermal plasma. */
+  setVariant(variant: 'ironman' | 'warmachine'): void {
+    this.isWarmachine = variant === 'warmachine';
+    const u = this.beam.material.uniforms;
+    if (this.isWarmachine) {
+      (u.uSheathCol.value as THREE.Vector3).set(1.0, 0.32, 0.12);
+      (u.uEdgeCol.value as THREE.Vector3).set(1.0, 0.72, 0.24);
+      (u.uHazeCol.value as THREE.Vector3).set(1.0, 0.2, 0.06);
+      u.uCore.value = 0.2;
+      u.uSheath.value = 0.48;
+    } else {
+      (u.uSheathCol.value as THREE.Vector3).set(0.3, 0.8, 1.0);
+      (u.uEdgeCol.value as THREE.Vector3).set(0.6, 0.95, 1.0);
+      (u.uHazeCol.value as THREE.Vector3).set(0.3, 0.6, 1.0);
+      u.uCore.value = 0.16;
+      u.uSheath.value = 0.42;
+    }
+  }
+
   /**
    * One frame. `charge` 0–1 winds the reactor up; `power` 0–1 is the beam
    * itself (from → to); `hit` is where it lands (null: it runs out in the air).
@@ -300,18 +326,19 @@ export class UnibeamFx {
     const show = glow > 0.01;
     this.glare.visible = this.halo.visible = show;
     this.streak.visible = power * eyeGap > 0.01;
+    const wm = this.isWarmachine;
     if (show) {
       const pulse = power > 0 ? 1 : 0.8 + 0.2 * Math.sin(T * (10 + 30 * charge));
       const seen = Math.max(1, from.distanceTo(camPos) / 12);
       this.glare.position.copy(from);
       this.glare.scale.setScalar((0.12 + 0.3 * glow * pulse + 0.25 * power) * seen);
-      this.glare.material.color.setRGB(4, 4, 4).multiplyScalar(glow * flick);
+      this.glare.material.color.setRGB(wm ? 4.4 : 4, wm ? 3.5 : 4, wm ? 2.6 : 4).multiplyScalar(glow * flick);
       this.halo.position.copy(from);
       this.halo.scale.setScalar((0.3 + 0.6 * glow + 0.6 * power) * pulse * seen);
-      this.halo.material.color.setRGB(0.45, 1.1, 1.8).multiplyScalar(glow * (0.6 + 0.4 * flick));
+      this.halo.material.color.setRGB(wm ? 2.1 : 0.45, wm ? 0.65 : 1.1, wm ? 0.22 : 1.8).multiplyScalar(glow * (0.6 + 0.4 * flick));
       this.streak.position.copy(from);
       this.streak.scale.set(5 * power * seen, 0.16 * power * seen, 1);
-      this.streak.material.color.setRGB(1, 2, 3).multiplyScalar(power * eyeGap * flick);
+      this.streak.material.color.setRGB(wm ? 3.2 : 1, wm ? 1.2 : 2, wm ? 0.4 : 3).multiplyScalar(power * eyeGap * flick);
     }
 
     // The beam
@@ -322,7 +349,8 @@ export class UnibeamFx {
       (u.uB.value as THREE.Vector3).copy(to);
       const len = from.distanceTo(to);
       // A little wider down range so it still reads as a bar of light far off
-      (u.uWidth.value as THREE.Vector2).set(0.4 * power, (0.4 + len * 0.0012) * power);
+      const wide = wm ? 1.18 : 1.0;
+      (u.uWidth.value as THREE.Vector2).set(0.4 * wide * power, (0.4 * wide + len * 0.0012 * wide) * power);
       u.uTime.value = T;
       u.uPower.value = power * flick;
     }
@@ -339,10 +367,10 @@ export class UnibeamFx {
       this.splashHit += ((hit ? 1 : 0) - this.splashHit) * (1 - Math.exp(-dt / 0.08));
       this.splash.position.copy(to);
       this.splash.scale.setScalar((1.2 + 1.2 * this.splashHit) * jit * seen * power);
-      this.splash.material.color.setRGB(5, 5, 5);
+      this.splash.material.color.setRGB(5, wm ? 4.2 : 5, wm ? 3.2 : 5);
       this.splashHalo.position.copy(to);
       this.splashHalo.scale.setScalar((4 + 5 * this.splashHit) * boil * seen * power);
-      this.splashHalo.material.color.setRGB(0.8, 1.8, 3);
+      this.splashHalo.material.color.setRGB(wm ? 3.4 : 0.8, wm ? 1.05 : 1.8, wm ? 0.35 : 3);
     }
 
     // Scorch marks: char fades back to the ground; the embers cool fast

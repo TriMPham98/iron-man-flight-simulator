@@ -17,6 +17,8 @@ import { groundProbe } from './ground';
 import type { Controls } from './input';
 import { SuitDriver } from './suitDriver';
 import { Combat } from '../combat/combat';
+import type { SuitVariant } from '../net/protocol';
+import type { WarMachinePack } from '../net/suitVisuals';
 import { EventBus } from './events';
 import { SPEED_OF_SOUND } from '../world/config';
 
@@ -54,6 +56,8 @@ export class Game {
   readonly input: FlightInput = EMPTY_INPUT();
   readonly events = new EventBus();
   readonly combat: Combat;
+  /** Active local suit variant ('ironman' Mk III vs 'warmachine' Mk II). */
+  suitVariant: SuitVariant = 'ironman';
   time = 0;
   private acc = 0;
   readonly head = new THREE.Vector3();
@@ -111,6 +115,8 @@ export class Game {
     this.events.on((e) => {
       if (e.kind === 'reactorOvercharge' && e.value) this.rig.shake += 1.25;
       else if (e.kind === 'laserCutterFire') this.rig.shake += 0.35;
+      else if (e.kind === 'minigunStart') this.rig.shake += 0.1;
+      else if (e.kind === 'minigunFire') this.rig.shake = Math.min(0.45, this.rig.shake + 0.045);
     });
     this.neck.visible = false;
     this.neck.receiveShadow = true;
@@ -140,12 +146,19 @@ export class Game {
     this.rig.lookHeading(heading, -0.05);
   }
 
+  /** Switch local combat weapons & telemetry between Iron Man Mk III and War Machine Mk II. */
+  setSuitVariant(variant: SuitVariant, pack: WarMachinePack | null = null): void {
+    this.suitVariant = variant;
+    this.combat.weapons.setVariant(variant, pack);
+  }
+
   /** The suit was lost: a fresh run from the pad, wave one next. */
   redeploy(): void {
     this.combat.resetRun();
     this.reset();
     const n = this.combat.reserves;
-    this.events.emit('jarvis', { text: `Mark III redeployed. Full armour, ${n === 1 ? 'one reserve' : `${n} reserves`}, sir.` });
+    const name = this.suitVariant === 'warmachine' ? 'War Machine' : 'Mark III';
+    this.events.emit('jarvis', { text: `${name} redeployed. Full armour, ${n === 1 ? 'one reserve' : `${n} reserves`}, sir.` });
   }
 
   /** Standing on the pad's deck: the suit can be refitted there. */
