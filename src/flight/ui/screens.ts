@@ -47,6 +47,7 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
     ['WHEEL', 'camera distance'],
     ['R', 'reset to the house'],
     ['N', 'call a wave (sky clear)'],
+    ['P', 'House Party / hot-swap'],
     ['J', 'missions'],
     ['M', 'multiplayer'],
     ['U', 'R&D refit (on the pad)'],
@@ -518,6 +519,13 @@ export class Screens {
           return `<span><small>${esc(label)}</small>${esc(now)}${then && then !== now ? `<em>&#x2192; ${esc(then)}</em>` : ''}</span>`;
         })
         .join('');
+      const perks = up.perks
+        .map((pk) => {
+          const active = level >= pk.level;
+          const next = cost !== null && level + 1 === pk.level;
+          return `<span class="rd-perk${active ? ' on' : next ? ' next' : ''}" title="${esc(pk.desc)}"><b>L${pk.level}</b> ${esc(pk.name)}<em>${esc(pk.desc)}</em></span>`;
+        })
+        .join('');
       const afford = cost !== null && lock === null && u.state.rd >= cost;
       const buy =
         cost === null
@@ -531,6 +539,7 @@ export class Screens {
         <div class="rd-pips">${pips}</div>
         <div class="rd-buyc">${buy}</div>
         <div class="rd-stats">${stats}</div>
+        <div class="rd-perks">${perks}</div>
       </div>`;
     }).join('');
     const hp = m.house?.hp() ?? null;

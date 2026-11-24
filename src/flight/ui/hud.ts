@@ -112,6 +112,37 @@ const STREAKS = Array.from({ length: 40 }, (_, i) => {
   return { a: h(1) * Math.PI * 2, p: h(2), v: 0.7 + h(3) * 0.8 };
 });
 
+/** Deterministic water-droplet seeds across the helmet faceplate (normalized x/y, size, speed). */
+const VISOR_DROPS = Array.from({ length: 34 }, (_, i) => {
+  const h = (k: number) => {
+    const v = Math.sin(i * 127.1 + k * 311.7) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  return {
+    x: 0.06 + h(1) * 0.88,
+    y: 0.06 + h(2) * 0.88,
+    r: 1.8 + h(3) * 3.6,
+    phase: h(4),
+    speed: 0.45 + h(5) * 0.85,
+  };
+});
+
+/** Deterministic frost-crystal branch anchors along the four visor corners. */
+const FROST_ANCHORS: ReadonlyArray<{ cx: number; cy: number; angle: number; len: number }> = [
+  { cx: 0, cy: 0, angle: 0.42, len: 0.24 },
+  { cx: 0, cy: 0, angle: 0.85, len: 0.22 },
+  { cx: 0, cy: 0, angle: 1.18, len: 0.19 },
+  { cx: 1, cy: 0, angle: Math.PI - 0.42, len: 0.24 },
+  { cx: 1, cy: 0, angle: Math.PI - 0.85, len: 0.22 },
+  { cx: 1, cy: 0, angle: Math.PI - 1.18, len: 0.19 },
+  { cx: 0, cy: 1, angle: -0.42, len: 0.24 },
+  { cx: 0, cy: 1, angle: -0.85, len: 0.22 },
+  { cx: 0, cy: 1, angle: -1.18, len: 0.19 },
+  { cx: 1, cy: 1, angle: Math.PI + 0.42, len: 0.24 },
+  { cx: 1, cy: 1, angle: Math.PI + 0.85, len: 0.22 },
+  { cx: 1, cy: 1, angle: Math.PI + 1.18, len: 0.19 },
+];
+
 /** A run of kills inside this many seconds of each other is a streak. */
 const STREAK_GAP = 3.5;
 const STREAK_NAME = ['SPLASH', 'SPLASH TWO', 'SPLASH THREE', 'SPLASH FOUR', 'SPLASH FIVE'];
@@ -227,6 +258,9 @@ export class Hud {
   onCue: ((cue: HudCue, n?: number) => void) | null = null;
   /** Weapon rows: the state each last showed, and when it changed (for the flash). */
   private readonly rowState = new Map<string, { key: string; t: number }>();
+  /** Diegetic helmet visor surface states (0–1): sea-spray droplets and high-altitude frost creep. */
+  private visorWet = 0;
+  private visorFrost = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
@@ -327,6 +361,22 @@ export class Hud {
       case 'reactorOvercharge':
         if (e.value) this.showBanner('400% OVERCHARGE', 'ARC REACTOR CAPACITY SURGE', WHITE, true);
         break;
+      case 'payloadDetonation':
+        this.showBanner('PAYLOAD DETONATED', e.value ? `CHAIN AIRBURST · +${e.value} ESCORT${e.value === 1 ? '' : 'S'}` : 'BOMB BAY CRITICAL', AMBER, true);
+        break;
+      case 'housePartyLaunch':
+        this.showBanner('HOUSE PARTY', e.value === 2 ? 'CENTURION & HEARTBREAKER AIRBORNE' : 'SILVER CENTURION AIRBORNE', CYAN, true);
+        break;
+      case 'hotSwapLaunch':
+        this.showBanner('HOT-SWAP INBOUND', 'STEER INTO POD OR PRESS P', AMBER, false);
+        break;
+      case 'hotSwapCatch':
+        this.showBanner('SUIT TRANSFER COMPLETE', 'FULL ARMOUR ONLINE', CYAN, true);
+        this.bootT = 0;
+        break;
+      case 'reactivePulse':
+        this.showBanner(e.value === 2 ? 'NANITE SURGE' : 'REACTIVE PULSE', 'EMERGENCY SHIELD BRACE', WHITE, true);
+        break;
     }
   }
 
@@ -422,13 +472,17 @@ export class Hud {
     g.save();
     const shake = this.shake * this.shake * 10 * s;
     if (shake > 0.05) g.translate((flick(this.time, 1) - 0.5) * 2 * shake, (flick(this.time, 2) - 0.5) * 2 * shake);
-    if (helmet) this.drawVisorTint(g);
+    if (helmet) {
+      this.drawVisorTint(g);
+      this.drawDiegeticVisorFx(g, dt, m, combat, ground, s);
+    }
     this.drawStreaks(g, cam, m, helmet, s);
     this.panel('ladder', 0, 0, () => this.drawLadder(g, cam, cx, cy, s));
     this.panel('reticle', 0, 0, () => this.drawReticle(g, cx, cy, s, combat));
     this.drawMarkers(g, cam, m, s);
     this.drawPadMarker(g, cam, m, s);
     this.drawTargets(g, cam, m, combat, s);
+    this.drawHousePartyMarkers(g, cam, m, combat, s);
     this.drawSplashes(g, cam, s);
     this.drawWarnings(g, cam, m, combat, s);
     this.drawImpacts(g, cam, cx, cy, s);
@@ -436,7 +490,7 @@ export class Hud {
     g.save();
     if (helmet) {
       g.translate(this.sway.x, this.sway.y);
-      this.panel('visor', 0, 0, () => this.drawVisor(g, s, combat.weapons.variant === 'warmachine'));
+      this.panel('visor', 0, 0, () => this.drawVisor(g, s, combat.weapons.variant === 'warmachine', combat.armor));
       this.panel('suit', -30 * s, 0, () => this.drawSuitDiagram(g, m, combat, s));
     }
     this.panel('tapes', 0, 14 * s, () => this.drawTapes(g, m, ground, s));
@@ -460,7 +514,7 @@ export class Hud {
     if (combat.lost) this.drawLost(g, combat, cx, cy, s);
     g.restore();
     g.globalAlpha = 1;
-    this.drawGlitch(g, s);
+    this.drawGlitch(g, s, helmet && combat.armor < 0.32 ? (0.32 - combat.armor) / 0.32 : 0);
   }
 
   /** Runs a panel's drawing as it boots: flickering on and settling in from (dx, dy). */
@@ -477,9 +531,10 @@ export class Hud {
     g.restore();
   }
 
-  /** A hit tears a few bands of the projection sideways. */
-  private drawGlitch(g: CanvasRenderingContext2D, s: number): void {
-    if (this.glitch < 0.03) return;
+  /** A hit tears a few bands of the projection sideways; low armour adds subtle chromatic helmet glitches. */
+  private drawGlitch(g: CanvasRenderingContext2D, s: number, lowArmor = 0): void {
+    const level = Math.max(this.glitch, lowArmor > 0 && flick(this.time * 0.45, 19) < lowArmor * 0.35 ? lowArmor * 0.42 : 0);
+    if (level < 0.03) return;
     const W = this.canvas.width;
     const H = this.canvas.height;
     g.save();
@@ -488,11 +543,16 @@ export class Hud {
     g.globalAlpha = 0.7;
     for (let i = 0; i < 4; i++) {
       const r = flick(this.time, i * 3 + 1);
-      if (r > this.glitch * 1.2) continue;
+      if (r > level * 1.2) continue;
       const bh = Math.round((4 + flick(this.time, i * 3 + 2) * 26) * s * this.dpr);
       const y = Math.round(flick(this.time, i * 3 + 3) * (H - bh));
-      const off = (flick(this.time, i * 3 + 4) - 0.5) * 50 * this.glitch * s * this.dpr;
+      const off = (flick(this.time, i * 3 + 4) - 0.5) * 50 * level * s * this.dpr;
       g.drawImage(this.canvas, 0, y, W, bh, off, y, W, bh);
+      // Chromatic fringe tint on low-armour or heavy hit tears
+      if (lowArmor > 0.15 || this.glitch > 0.35) {
+        g.fillStyle = i % 2 === 0 ? `rgba(255, 50, 60, ${0.14 * level})` : `rgba(80, 225, 255, ${0.14 * level})`;
+        g.fillRect(0, y, W, Math.max(2, bh * 0.35));
+      }
     }
     g.restore();
   }
@@ -535,6 +595,51 @@ export class Hud {
       g.stroke();
       g.restore();
     }
+  }
+
+  /** Friendly HUD markers for autonomous House Party wingmen and an inbound Mid-Air Hot-Swap suit pod. */
+  private drawHousePartyMarkers(g: CanvasRenderingContext2D, cam: THREE.PerspectiveCamera, m: FlightModel, c: Combat, s: number): void {
+    const hp = c.houseParty;
+    for (const w of hp.wingmen) {
+      if (w.done) continue;
+      const p = this.project(w.pos, cam);
+      if (!p) continue;
+      const dist = w.pos.distanceTo(m.pos);
+      const r = 7 * s;
+      g.save();
+      g.strokeStyle = w.returning ? CYAN_DIM : CYAN;
+      g.lineWidth = 1.4;
+      g.beginPath();
+      g.moveTo(p.x, p.y - r);
+      g.lineTo(p.x + r, p.y);
+      g.lineTo(p.x, p.y + r);
+      g.lineTo(p.x - r, p.y);
+      g.closePath();
+      g.stroke();
+      const dText = dist > 1000 ? `${(dist / 1000).toFixed(1)}k` : `${Math.round(dist)}m`;
+      this.text(g, `${w.callsign} · ${dText}`, p.x + r + 5 * s, p.y + 3 * s, 8 * s, CYAN);
+      g.restore();
+    }
+
+    const swap = hp.hotSwapTelemetry(m.pos);
+    if (!swap) return;
+    const p = this.project(swap.podPos, cam);
+    const pulse = 0.7 + 0.3 * Math.sin(this.time * 16);
+    if (p) {
+      const r = (swap.inCatchRange ? 22 : 14) * s * pulse;
+      g.save();
+      g.strokeStyle = swap.inCatchRange ? WHITE : AMBER;
+      g.lineWidth = 2;
+      g.beginPath();
+      g.arc(p.x, p.y, r, 0, Math.PI * 2);
+      g.stroke();
+      this.text(g, `SUIT POD · ${Math.round(swap.distance)} M`, p.x, p.y - r - 8 * s, 9.5 * s, swap.inCatchRange ? WHITE : AMBER, 'center', JARVIS);
+      g.restore();
+    }
+    const prompt = swap.inCatchRange
+      ? `PRESS [P] OR [SPACE] TO HOT-SWAP · ${Math.round(swap.distance)} M`
+      : `EMERGENCY CHASSIS INBOUND · ${Math.round(swap.distance)} M · ${swap.timeLeft.toFixed(1)} S`;
+    this.text(g, prompt, this.w / 2, this.h * 0.64, 11 * s, swap.inCatchRange ? WHITE : AMBER, 'center', JARVIS);
   }
 
   /** SPLASH where each kill fell: a burst ring, the stamp rising off it. */
@@ -864,7 +969,161 @@ export class Hud {
     this.sway.clampLength(0, 26 * s);
   }
 
-  private drawVisor(g: CanvasRenderingContext2D, s: number, warmachine = false): void {
+  /**
+   * Diegetic Helmet-Cam Visor FX (Pillar 6A):
+   *  1. High-altitude frost creep (crystalline veins + frosty corner vignette as icing builds).
+   *  2. Water droplets & wind-driven sea-spray streaks on the faceplate after skimming / splash-diving.
+   *  3. Subtle glass micro-fractures near the visor rim below 35% armour.
+   */
+  private drawDiegeticVisorFx(
+    g: CanvasRenderingContext2D,
+    dt: number,
+    m: FlightModel,
+    combat: Combat,
+    ground: GroundProbe,
+    s: number,
+  ): void {
+    // 1. Update visor surface wetness (immersion, wetness, or low fast water skim)
+    const clearance = m.pos.y - m.hipHeight() - ground.surface(m.pos.x, m.pos.z);
+    const skimming = ground.isWater(m.pos.x, m.pos.z) && clearance < 14 && m.speed > 18;
+    const wetGoal = Math.min(1, Math.max(m.wetness, m.immersion > 0 ? 1 : 0, skimming ? 0.65 : 0));
+    const wetRate = wetGoal > this.visorWet ? 6.0 : 0.22 + Math.min(0.6, m.speed / 280);
+    this.visorWet += (wetGoal - this.visorWet) * (1 - Math.exp(-dt * wetRate));
+
+    // 2. Update visor frost creep (starts creeping 450 m below icing altitude, full at icing = 1)
+    const preFrost = THREE.MathUtils.smoothstep(m.pos.y, m.icingAlt - 450, m.icingAlt + 200) * 0.28;
+    const frostGoal = Math.min(1, Math.max(preFrost, m.icing));
+    this.visorFrost += (frostGoal - this.visorFrost) * (1 - Math.exp(-dt * (frostGoal > this.visorFrost ? 1.8 : 1.1)));
+
+    g.save();
+    g.shadowBlur = 0;
+
+    // ── Water Droplets & Radial Wind Streaks ──
+    if (this.visorWet > 0.03) {
+      const cx = this.w / 2;
+      const cy = this.h / 2;
+      const airPush = THREE.MathUtils.clamp(m.speed / 120, 0, 2.2);
+      const a = Math.min(0.75, this.visorWet * 0.72);
+      for (const d of VISOR_DROPS) {
+        const drift = ((this.time * (0.14 + 0.45 * airPush) * d.speed + d.phase) % 1);
+        const bx = d.x * this.w;
+        const by = d.y * this.h;
+        // Streak radially away from centre at speed, or drip downward in hover
+        const vx = bx - cx;
+        const vy = by - cy;
+        const vLen = Math.max(1, Math.hypot(vx, vy));
+        const dx = (vx / vLen) * airPush * 34 * s;
+        const dy = ((vy / vLen) * airPush * 34 + (1 - Math.min(1, airPush)) * 22) * s;
+        const px = bx + dx * drift;
+        const py = by + dy * drift;
+        const streakLen = (4 + 26 * airPush) * s * this.visorWet;
+        const fade = Math.sin(Math.PI * drift) * a;
+        if (fade < 0.02) continue;
+
+        g.strokeStyle = `rgba(210, 242, 255, ${fade * 0.55})`;
+        g.lineWidth = Math.max(1, d.r * 0.42 * s);
+        g.beginPath();
+        g.moveTo(px, py);
+        g.lineTo(px - (dx / Math.max(1, Math.hypot(dx, dy))) * streakLen, py - (dy / Math.max(1, Math.hypot(dx, dy))) * streakLen);
+        g.stroke();
+
+        // Droplet head highlight
+        g.fillStyle = `rgba(230, 248, 255, ${fade * 0.72})`;
+        g.beginPath();
+        g.arc(px, py, d.r * 0.55 * s, 0, Math.PI * 2);
+        g.fill();
+      }
+    }
+
+    // ── High-Altitude Frost Creep ──
+    if (this.visorFrost > 0.03) {
+      const f = this.visorFrost;
+      const R = Math.max(this.w, this.h) * 0.72;
+      const grad = g.createRadialGradient(this.w / 2, this.h / 2, R * (0.72 - 0.25 * f), this.w / 2, this.h / 2, R);
+      grad.addColorStop(0, 'rgba(190, 232, 255, 0)');
+      grad.addColorStop(0.65, `rgba(195, 236, 255, ${0.14 * f})`);
+      grad.addColorStop(1, `rgba(225, 246, 255, ${0.44 * f})`);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, this.w, this.h);
+
+      // Crystalline frost tendrils branching inward from all four visor corners
+      g.strokeStyle = `rgba(220, 246, 255, ${0.52 * f})`;
+      g.lineWidth = 1.1 * s;
+      const diag = Math.hypot(this.w, this.h);
+      for (const anc of FROST_ANCHORS) {
+        const ox = anc.cx * this.w;
+        const oy = anc.cy * this.h;
+        const len = anc.len * diag * f;
+        const ex = ox + Math.cos(anc.angle) * len;
+        const ey = oy + Math.sin(anc.angle) * len;
+        g.beginPath();
+        g.moveTo(ox, oy);
+        g.lineTo(ex, ey);
+        // Secondary crystalline spurs
+        for (const frac of [0.38, 0.68]) {
+          const sx = ox + (ex - ox) * frac;
+          const sy = oy + (ey - oy) * frac;
+          const spur = len * 0.24 * (1 - frac * 0.4);
+          g.moveTo(sx, sy);
+          g.lineTo(sx + Math.cos(anc.angle + 0.52) * spur, sy + Math.sin(anc.angle + 0.52) * spur);
+          g.moveTo(sx, sy);
+          g.lineTo(sx + Math.cos(anc.angle - 0.52) * spur, sy + Math.sin(anc.angle - 0.52) * spur);
+        }
+        g.stroke();
+      }
+      if (m.icing > 0.05) {
+        this.text(g, `EXTERIOR ICE · ${Math.round(m.icing * 100)}%`, this.w / 2, this.h * 0.14, 9.5 * s, WHITE, 'center', JARVIS);
+      }
+    }
+
+    // ── Critical Armour Visor Micro-Fractures (< 35% armour) ──
+    if (combat.armor < 0.35 && !combat.lost) {
+      const dmg = THREE.MathUtils.clamp((0.35 - combat.armor) / 0.35, 0, 1);
+      g.strokeStyle = `rgba(215, 240, 255, ${0.18 + 0.45 * dmg})`;
+      g.lineWidth = 1.0 * s;
+      // Top-right & bottom-left hairline glass spiderweb cracks near visor rim
+      const cracks: ReadonlyArray<ReadonlyArray<[number, number]>> = [
+        [
+          [0.98, 0.14],
+          [0.92, 0.17],
+          [0.88, 0.22],
+          [0.85, 0.24],
+        ],
+        [
+          [0.92, 0.17],
+          [0.89, 0.13],
+          [0.84, 0.11],
+        ],
+        [
+          [0.03, 0.84],
+          [0.08, 0.79],
+          [0.13, 0.77],
+        ],
+        [
+          [0.08, 0.79],
+          [0.11, 0.85],
+          [0.16, 0.88],
+        ],
+      ];
+      for (let c = 0; c < cracks.length; c++) {
+        if (c >= 2 && dmg < 0.45) continue;
+        const pts = cracks[c];
+        g.beginPath();
+        g.moveTo(pts[0][0] * this.w, pts[0][1] * this.h);
+        for (let i = 1; i < pts.length; i++) {
+          const k = Math.min(1, dmg * 1.4);
+          const x = THREE.MathUtils.lerp(pts[0][0], pts[i][0], k) * this.w;
+          const y = THREE.MathUtils.lerp(pts[0][1], pts[i][1], k) * this.h;
+          g.lineTo(x, y);
+        }
+        g.stroke();
+      }
+    }
+
+    g.restore();
+  }
+
+  private drawVisor(g: CanvasRenderingContext2D, s: number, warmachine = false, armor = 1): void {
     // Helmet frame: the curved edges of the visor and a scan line
     g.strokeStyle = CYAN_FAINT;
     g.lineWidth = 1;
@@ -892,7 +1151,13 @@ export class Hud {
       g.lineTo(x + dx * k, y);
       g.stroke();
     }
-    this.text(g, warmachine ? 'WM MK II  ·  HUD ONLINE' : 'MK III  ·  HUD ONLINE', mx + 4 * s, my + k + 10 * s, 7.5 * s, warmachine ? AMBER : CYAN_DIM, 'left', JARVIS);
+    const damaged = armor < 0.35;
+    const statusLabel = damaged
+      ? 'VISOR INTEGRITY COMPROMISED'
+      : warmachine
+        ? 'WM MK II  ·  HUD ONLINE'
+        : 'MK III  ·  HUD ONLINE';
+    this.text(g, statusLabel, mx + 4 * s, my + k + 10 * s, 7.5 * s, damaged ? RED : warmachine ? AMBER : CYAN_DIM, 'left', JARVIS);
     const y = ((this.time * 0.12) % 1) * this.h;
     g.fillStyle = 'rgba(126,232,255,0.03)';
     g.fillRect(0, y, this.w, 2 * s);
@@ -1759,6 +2024,19 @@ export class Hud {
       g.restore();
       const label = `${h.label ?? (h.kind === 'sam' ? 'SAM' : 'DRN')} ${dist > 1000 ? (dist / 1000).toFixed(1) + 'k' : Math.round(dist)}`;
       if (acq >= 1) this.text(g, label, x + size + 6 * s, y - size + 6 * s, 9 * s, hostileColor);
+      // Bomber Open-Bay Payload Weak-Point indicator (Pillar 6B)
+      if (h.kind === 'bomber' && (h as { bayOpen?: boolean }).bayOpen) {
+        const pulse = 0.65 + 0.35 * Math.sin(this.time * 14);
+        g.save();
+        g.globalAlpha *= pulse;
+        g.strokeStyle = AMBER;
+        g.lineWidth = 1.6;
+        g.beginPath();
+        g.arc(x, y + size * 0.25, size * 0.55, 0, Math.PI * 2);
+        g.stroke();
+        this.text(g, 'BAY OPEN · CRIT', x, y - size - 8 * s, 8.5 * s, AMBER, 'center', JARVIS);
+        g.restore();
+      }
       // Health bar
       const hp = h.hp / h.maxHp;
       if (hp < 0.999) {
@@ -2219,8 +2497,8 @@ export class Hud {
   private drawWeapons(g: CanvasRenderingContext2D, c: Combat, s: number): void {
     const W = c.weapons;
     const x = this.w - 40 * s;
-    let y = this.h - 132 * s - this.bottomInset;
-    this.glass(g, x - 166 * s, y - 20 * s, 184 * s, 146 * s, s, true);
+    let y = this.h - 158 * s - this.bottomInset;
+    this.glass(g, x - 166 * s, y - 20 * s, 184 * s, 172 * s, s, true);
     // A row lights up as its state changes (`key`: what counts as a change; defaults to the value)
     const row = (label: string, value: string, color: string, extra?: (bx: number, by: number) => void, key = value) => {
       let st = this.rowState.get(label);
@@ -2311,6 +2589,17 @@ export class Hud {
         }
       }
     });
+    const hp = c.houseParty;
+    const hpText = hp.hotSwapActive
+      ? 'HOT-SWAP'
+      : hp.activeCount > 0
+        ? `${hp.activeCount} ACTIVE ${Math.ceil(hp.maxRemaining)}S`
+        : hp.cooldown > 0
+          ? `COOL ${Math.ceil(hp.cooldown)}S`
+          : 'READY [P]';
+    const hpColor = hp.hotSwapActive ? AMBER : hp.activeCount > 0 ? WHITE : hp.cooldown > 0 ? CYAN_DIM : CYAN;
+    const hpKey = hp.hotSwapActive ? 'swap' : hp.activeCount > 0 ? 'on' : hp.cooldown > 0 ? 'cool' : 'ready';
+    row('HOUSE PARTY', hpText, hpColor, undefined, hpKey);
   }
 
   private drawRadar(g: CanvasRenderingContext2D, cam: THREE.PerspectiveCamera, m: FlightModel, c: Combat, s: number): void {
@@ -2428,6 +2717,8 @@ export class Hud {
       g.stroke();
     }
     for (const h of c.hostiles) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
+    for (const w of c.houseParty.wingmen) if (!w.done) plot(w.pos, CYAN, 4.5 * s);
+    if (c.houseParty.hotSwapActive) plot(c.houseParty.podPos, WHITE, 5 * s);
     for (const ms of c.missiles.threats()) plot(ms.pos, WHITE, 3 * s);
     for (const ms of c.missiles.strikes()) plot(ms.pos, AMBER, 2.5 * s);
     g.fillStyle = WHITE;

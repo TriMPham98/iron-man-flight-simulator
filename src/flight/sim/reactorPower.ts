@@ -168,11 +168,23 @@ export class ReactorPower {
   autoOvercharge = true;
   /** Last reason string passed to `feedOvercharge` (for HUD / diagnostics). */
   lastFeedReason = '';
+  /** R&D Arc Reactor capstone tier (0 = stock, 1 = L3 Capacitor Siphon, 2 = L5 Sustained Overdrive). */
+  capTier: 0 | 1 | 2 = 0;
 
   private time = 0;
   private lastCalloutT = -Infinity;
 
   constructor(private readonly events?: EventBus) {}
+
+  /** Active overcharge duration (s), extended by Arc Reactor L3 (+2 s) and L5 (+4 s). */
+  get overchargeDuration(): number {
+    return OVERCHARGE_DURATION + (this.capTier === 2 ? 4 : this.capTier === 1 ? 2 : 0);
+  }
+
+  /** Overcharge gain multiplier from Arc Reactor capstones (1× / 1.35× / 1.7×). */
+  get overchargeGainMult(): number {
+    return this.capTier === 2 ? 1.7 : this.capTier === 1 ? 1.35 : 1;
+  }
 
   get overchargeActive(): boolean {
     return this.overchargeRemaining > 0;
@@ -231,7 +243,7 @@ export class ReactorPower {
   feedOvercharge(amount: number, reason: string, at?: THREE.Vector3): number {
     if (amount <= 0 || !Number.isFinite(amount) || this.overchargeActive) return 0;
     const before = this.overcharge;
-    this.overcharge = Math.min(1, this.overcharge + amount);
+    this.overcharge = Math.min(1, this.overcharge + amount * this.overchargeGainMult);
     const added = this.overcharge - before;
     if (added > 0) this.lastFeedReason = reason;
     if (this.overcharge >= 1 && this.autoOvercharge) {
@@ -250,11 +262,11 @@ export class ReactorPower {
     return this.feedOvercharge(gain, 'shieldAbsorb', at);
   }
 
-  /** Trigger the 8-second 400% OVERCHARGE state once the capacitor is full. */
+  /** Trigger the 400% OVERCHARGE state once the capacitor is full. */
   triggerOvercharge(at?: THREE.Vector3): boolean {
     if (this.overchargeActive || this.overcharge < 1 - 1e-6) return false;
     this.overcharge = 1;
-    this.overchargeRemaining = OVERCHARGE_DURATION;
+    this.overchargeRemaining = this.overchargeDuration;
     this.overchargePulse = 1;
     this.syncModifiers();
     this.events?.emit('reactorOvercharge', { at, value: 1 });
@@ -282,7 +294,7 @@ export class ReactorPower {
     }
     if (this.overchargeRemaining > 0) {
       this.overchargeRemaining = Math.max(0, this.overchargeRemaining - dt);
-      this.overcharge = this.overchargeRemaining / OVERCHARGE_DURATION;
+      this.overcharge = this.overchargeRemaining / this.overchargeDuration;
       if (this.overchargeRemaining <= 0) {
         this.syncModifiers();
         this.events?.emit('reactorOvercharge', { value: 0 });

@@ -221,12 +221,29 @@ const JAM_FLEE = 1100;
 export const JAM_RANGE = 4500;
 /** A bomber's run: height over the house (m), how far out it lets go (m), bombs in a stick, the gap between them (s), and the share of the house each takes. */
 const BOMB_HEIGHT = 520;
-const BOMB_RELEASE = 1300;
+export const BOMB_RELEASE = 1300;
+/** Distance from house where a bomber opens its belly bomb-bay doors (exposing its payload weak-point). */
+export const BOMB_BAY_OPEN_DIST = 1950;
+/** Critical damage multiplier when striking a bomber with its bomb bay open. */
+export const BOMB_BAY_CRIT_MULT = 1.75;
+/** Radius (m) and peak splash damage of a bomber payload chain-detonation airburst. */
+export const BOMB_CHAIN_RADIUS = 140;
+export const BOMB_CHAIN_DAMAGE = 220;
 const BOMB_STICK = 2;
 const BOMB_GAP = 0.6;
 export const BOMB_DAMAGE = 0.07;
 /** After a stick it runs on this long (s) before it comes round for another. */
 const BOMB_EXTEND = 16;
+
+let bombBayGeo: THREE.BufferGeometry | null = null;
+function bombBayCore(): THREE.BufferGeometry {
+  if (bombBayGeo) return bombBayGeo;
+  bombBayGeo = merge([
+    paint(new THREE.BoxGeometry(0.46, 0.22, 1.15).translate(0, -0.27, 0.15), new THREE.Color(1.0, 0.36, 0.08), 7),
+    paint(new THREE.SphereGeometry(0.18, 10, 8).translate(0, -0.32, 0.15), new THREE.Color(1.0, 0.82, 0.28), 9),
+  ]);
+  return bombBayGeo;
+}
 
 const variantMats = new Map<DroneType, THREE.MeshStandardMaterial>();
 function bodyMaterial(type: DroneType): THREE.MeshStandardMaterial {
@@ -300,6 +317,11 @@ export class Drone implements Hostile {
   icing = 0;
   frozen = false;
   destabilized = 0;
+  /** Bomber open belly bomb-bay state (exposes critical payload weak-point). */
+  bayOpen = false;
+  /** Set true if killed while bomb bay was open (triggers chain-detonation airburst in Combat). */
+  payloadDetonated = false;
+  private bayMesh: THREE.Mesh | null = null;
 
   constructor(at: THREE.Vector3, heading: THREE.Vector3, readonly type: DroneType = 'drone') {
     const sp = (this.spec = DRONE_TYPES[type]);
@@ -317,6 +339,11 @@ export class Drone implements Hostile {
     if (sp.role === 'jammer') {
       const r = radome();
       frame.add(new THREE.Mesh(r.body, bodyMaterial(type)), new THREE.Mesh(r.glow, mats.glow));
+    }
+    if (sp.role === 'bomber') {
+      this.bayMesh = new THREE.Mesh(bombBayCore(), mats.glow);
+      this.bayMesh.visible = false;
+      frame.add(this.bayMesh);
     }
     frame.scale.set(...sp.scale);
     this.mesh.add(frame);
@@ -336,13 +363,16 @@ export class Drone implements Hostile {
 
   damage(amount: number, at: THREE.Vector3, kind: DamageKind): boolean {
     if (!this.alive) return false;
-    const vuln = this.frozen ? 1.8 : 1 + this.icing * 0.5;
+    const vuln = (this.frozen ? 1.8 : 1 + this.icing * 0.5) * (this.bayOpen ? BOMB_BAY_CRIT_MULT : 1);
     this.hp -= amount * vuln;
     void at;
     void kind;
     if (this.hp <= 0) {
       this.alive = false;
       this.frozen = false;
+      if (this.bayOpen) this.payloadDetonated = true;
+      this.bayOpen = false;
+      if (this.bayMesh) this.bayMesh.visible = false;
       this.mode = 'dying';
       this.spin = (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 3);
       return true;
@@ -556,6 +586,8 @@ export class Drone implements Hostile {
     const flat = Math.hypot(to.x, to.z);
     const climb = THREE.MathUtils.clamp((this.mark.y + BOMB_HEIGHT - this.pos.y) / 300, -0.35, 0.35);
     if (this.mode === 'extend') {
+      this.bayOpen = false;
+      if (this.bayMesh) this.bayMesh.visible = false;
       // Straight on over the house and away
       want.copy(dir).setY(climb).normalize();
       if (this.modeT > BOMB_EXTEND) {
@@ -568,6 +600,15 @@ export class Drone implements Hostile {
     to.setY(0).normalize();
     const lined = dir.x * to.x + dir.z * to.z > 0.96 * Math.hypot(dir.x, dir.z);
     to.setY(climb).normalize();
+    // Open the belly weapons bay on final approach, exposing the payload weak-point
+    this.bayOpen = (flat < BOMB_BAY_OPEN_DIST && lined) || this.stick > 0;
+    if (this.bayMesh) {
+      this.bayMesh.visible = this.bayOpen;
+      if (this.bayOpen) {
+        const pulse = 0.85 + 0.25 * Math.sin(this.modeT * 14);
+        this.bayMesh.scale.set(1, pulse, 1);
+      }
+    }
     if (this.stick === 0 && flat < BOMB_RELEASE && lined) {
       this.stick = BOMB_STICK;
       this.stickT = 0;

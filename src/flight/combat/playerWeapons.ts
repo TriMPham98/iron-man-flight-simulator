@@ -274,6 +274,7 @@ export class PlayerWeapons {
   private muzzleT = 1;
   private impactT = 1;
   private repulsorT = 0;
+  private repulsorHitCount = 0;
   private minigunT = 0;
   private minigunShotFrame = false;
   private minigunSmokeAcc = 0;
@@ -538,8 +539,15 @@ export class PlayerWeapons {
         const lockTime = LOCK_TIME * this.spec.missileLock * this.jamSlow;
         this.lockProgress = this.locks.length >= cap ? 1 : Math.min(1, this.lockT / lockTime);
         if (this.lockT >= lockTime) {
+          // Micro-Missiles capstone: L3 widens lock cone to 42°, L5 enables 360° spherical helmet lock
+          const lockCone =
+            this.spec.missileRearAspect === 2
+              ? -1.1
+              : this.spec.missileRearAspect === 1
+                ? Math.cos(THREE.MathUtils.degToRad(42))
+                : MISSILE_CONE;
           // One lock per enemy: the paint never doubles up on a target
-          const next = paintLock(this.locks, cap, eye, aim, this.lockable(hostiles), MISSILE_CONE, MISSILE_RANGE * this.spec.missileRange);
+          const next = paintLock(this.locks, cap, eye, aim, this.lockable(hostiles), lockCone, MISSILE_RANGE * this.spec.missileRange);
           if (next) this.events.emit(this.locks.length >= cap ? 'lockFull' : 'lockTick', { at: next.pos, value: this.locks.length });
           this.lockT = 0;
         }
@@ -708,7 +716,10 @@ export class PlayerWeapons {
       this.flareSalvo = Math.min(FLARE_SALVO, this.flares);
       this.flareRound = 0;
       this.flareT = fresh ? 0.2 : 0;
-      if (fresh) this.events.emit('flareSalvo', { at: this.model.pos });
+      if (fresh) {
+        this.events.emit('flareSalvo', { at: this.model.pos });
+        this.triggerFlareCapstone(hostiles);
+      }
     }
     if (this.flareSalvo > 0) {
       this.flareHold = 0.5;
@@ -1182,13 +1193,24 @@ export class PlayerWeapons {
           const knock = isTracer ? MINIGUN_KNOCK : REPULSOR_KNOCK;
           h.vel.addScaledVector(seg, knock / Math.sqrt(Math.max(len2, 1e-6)));
           struck = h;
-          const dmg = isTracer
-            ? MINIGUN_DAMAGE * this.spec.repulsorDamage * this.reactorMods.unibeamDps
-            : (isWM ? WM_REPULSOR_DAMAGE : REPULSOR_DAMAGE) * this.spec.repulsorDamage * this.reactorMods.repulsorDamage;
+          // Sensors L3/L5 Weak-Point Telemetry precision bonus on assisted / weak-point targets
+          const sensorBonus = this.sensorCritMultiplier(h);
+          const dmg =
+            (isTracer
+              ? MINIGUN_DAMAGE * this.spec.repulsorDamage * this.reactorMods.unibeamDps
+              : (isWM ? WM_REPULSOR_DAMAGE : REPULSOR_DAMAGE) * this.spec.repulsorDamage * this.reactorMods.repulsorDamage) * sensorBonus;
           const killed = h.damage(dmg, hit, 'repulsor');
           if (killed) {
             this.onKill(h);
             if (isTracer) this.reactor?.feedOvercharge(0.14, 'minigunKill', h.pos);
+          }
+          // Repulsors L3/L5 Capstone: Concussive Pulse / Overcharged Palm Shockwave
+          if (!isTracer && this.spec.repulsorBlastTier > 0) {
+            this.repulsorHitCount++;
+            const every = this.spec.repulsorBlastTier === 2 ? 2 : 3;
+            if (this.repulsorHitCount % every === 0) {
+              this.triggerRepulsorShockBlast(hit, h, hostiles);
+            }
           }
           break;
         }
@@ -1332,6 +1354,9 @@ export class PlayerWeapons {
       }
     }
     const v = this.model.vel.clone().addScaledVector(dir, LAUNCHER_KICK * (isWM ? 1.15 : 1));
+    const baseBlast = isWM ? WM_BUNKER_BLAST : 6.5;
+    const blast = this.spec.launcherClusterTier >= 1 ? baseBlast * 1.35 : isWM ? WM_BUNKER_BLAST : undefined;
+    const clusterTier = this.spec.launcherClusterTier;
     this.missiles.launch({
       team: 'player',
       from,
@@ -1344,7 +1369,11 @@ export class PlayerWeapons {
       length,
       style: isWM ? 'warmachine' : 'ironman',
       damage: isWM ? WM_BUNKER_DAMAGE : undefined,
-      blast: isWM ? WM_BUNKER_BLAST : undefined,
+      blast,
+      onImpact:
+        clusterTier !== 0
+          ? (at) => this.onLauncherCapstoneImpact(at, clusterTier)
+          : undefined,
     });
     this.explosions.muzzle(from, dir, isWM ? 0.65 : 0.45);
     this.particles.burst('smoke', from, isWM ? 6 : 3, isWM ? 6 : 4, dir.clone().negate(), 0.7, { scale: isWM ? 0.42 : 0.25, life: isWM ? 0.75 : 0.5 });
@@ -1375,7 +1404,8 @@ export class PlayerWeapons {
         const t = this._v.distanceTo(from);
         if (d2 < (h.radius + 1.2 + t * 0.002) ** 2) {
           const at = this._w.copy(from).addScaledVector(dir, Math.max(0, t - h.radius * 0.6));
-          if (h.damage(UNIBEAM_DPS * this.reactorMods.unibeamDps * dt * power, at, 'unibeam')) {
+          const sensorMult = this.sensorCritMultiplier(h);
+          if (h.damage(UNIBEAM_DPS * this.reactorMods.unibeamDps * sensorMult * dt * power, at, 'unibeam')) {
             this.onKill(h);
             this.reactor?.feedOvercharge(0.22, 'unibeamKill', h.pos);
           }
@@ -1617,6 +1647,96 @@ export class PlayerWeapons {
         }
         if (this.launcherRounds[side === 0 ? 1 : 0] > 0) side = side === 0 ? 1 : 0;
       });
+    }
+  }
+
+  /** Sensors L3/L5 Weak-Point Telemetry damage multiplier. */
+  private sensorCritMultiplier(h: Hostile): number {
+    const tier = this.spec.sensorCritTier;
+    if (tier === 0) return 1;
+    const isWeak =
+      (h as { bayOpen?: boolean }).bayOpen === true ||
+      (h as { frozen?: boolean; iced?: boolean }).frozen === true ||
+      (h as { iced?: boolean }).iced === true;
+    if (isWeak) return tier === 2 ? 1.55 : 1.25;
+    if (h === this.assist || h === this.minigunTarget) return tier === 2 ? 1.3 : 1.15;
+    return 1;
+  }
+
+  /** Repulsors L3/L5 Capstone: concussive plasma shockwave around the impact point. */
+  private triggerRepulsorShockBlast(at: THREE.Vector3, primary: Hostile, hostiles: readonly Hostile[]): void {
+    const tier = this.spec.repulsorBlastTier;
+    const radius = tier === 2 ? 32 : 18;
+    const splashDmg = tier === 2 ? 55 : 28;
+    const knock = tier === 2 ? 38 : 22;
+
+    for (const h of hostiles) {
+      if (!h.alive || h === primary) continue;
+      const off = this._w.copy(h.pos).sub(at);
+      const d = off.length();
+      if (d > radius + h.radius) continue;
+      const fall = 1 - 0.5 * Math.min(1, d / Math.max(1, radius));
+      if (d > 1e-3) {
+        off.divideScalar(d);
+        h.vel.addScaledVector(off, knock * fall);
+      }
+      if ('destabilized' in h && typeof (h as { destabilized?: number }).destabilized === 'number') {
+        (h as { destabilized: number }).destabilized = Math.max((h as { destabilized: number }).destabilized, tier === 2 ? 1.6 : 0.9);
+      }
+      if (h.damage(splashDmg * fall, at, 'repulsor')) this.onKill(h);
+    }
+
+    // L5 Palm Shockwave also vents a bit of unibeam/minigun heat on every shock pulse
+    if (tier === 2 && !this.reactor?.overchargeActive && this.unibeamHeat > 0) {
+      this.unibeamHeat = Math.max(0, this.unibeamHeat - 0.08);
+    }
+    this.particles.burst('plasma', at, tier === 2 ? 22 : 12, tier === 2 ? 28 : 18, undefined, 1, { scale: tier === 2 ? 1.3 : 0.9 });
+    this.events.emit('repulsorPulse', { at, value: tier });
+  }
+
+  /** Forearm Launchers L3/L5 Capstone: shrapnel destabilize & tandem proximity airburst. */
+  private onLauncherCapstoneImpact(at: THREE.Vector3, tier: 1 | 2): void {
+    const radius = tier === 2 ? 48 : 30;
+    const dmg = tier === 2 ? 110 : 45;
+    for (const h of this.hostiles) {
+      if (!h.alive) continue;
+      const d = h.pos.distanceTo(at);
+      if (d > radius + h.radius) continue;
+      const fall = 1 - 0.6 * Math.min(1, d / radius);
+      if ('destabilized' in h && typeof (h as { destabilized?: number }).destabilized === 'number') {
+        (h as { destabilized: number }).destabilized = Math.max((h as { destabilized: number }).destabilized, 1.5);
+      }
+      if (h.damage(dmg * fall, at, 'missile')) this.onKill(h);
+    }
+    if (tier === 2) {
+      this.explosions.blast(at, 9, { debris: 10 });
+    }
+  }
+
+  /** Countermeasures L3/L5 Capstone: Smart Chaff Screen & EMP Flare Curtain. */
+  private triggerFlareCapstone(hostiles: readonly Hostile[]): void {
+    const tier = this.spec.flareEmpTier;
+    if (tier === 0) return;
+    // L3+: destabilize & push back close pursuing drones
+    const chaffR = tier === 2 ? 110 : 75;
+    for (const h of hostiles) {
+      if (!h.alive) continue;
+      const off = this._w.copy(h.pos).sub(this.model.pos);
+      const d = off.length();
+      if (d > chaffR || d < 1e-3) continue;
+      if ('destabilized' in h && typeof (h as { destabilized?: number }).destabilized === 'number') {
+        (h as { destabilized: number }).destabilized = Math.max((h as { destabilized: number }).destabilized, tier === 2 ? 2.0 : 1.2);
+      }
+      h.vel.addScaledVector(off.divideScalar(d), tier === 2 ? 32 : 18);
+      h.threatened = Math.max(h.threatened, 1.4);
+    }
+    // L5: EMP curtain detonates enemy seekers inside 45 m immediately
+    if (tier === 2) {
+      const close = this.missiles.live.filter((m) => m.team === 'enemy' && m.pos.distanceTo(this.model.pos) <= 45);
+      for (const m of close) {
+        this.missiles.shootDown(m);
+        this.events.emit('missileDecoyed', { at: m.pos });
+      }
     }
   }
 

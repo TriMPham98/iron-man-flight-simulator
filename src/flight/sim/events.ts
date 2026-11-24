@@ -87,6 +87,14 @@ export type SimEventKind =
   | 'kineticRam'
   | 'enemyIced'
   | 'iceKill'
+  /** Bomber open-bay payload chain-detonation: value = extra escort kills. */
+  | 'payloadDetonation'
+  /** R&D Capstone & House Party Protocol events. */
+  | 'repulsorPulse'
+  | 'reactivePulse'
+  | 'housePartyLaunch'
+  | 'hotSwapLaunch'
+  | 'hotSwapCatch'
   // Picture (directed reels)
   | 'cameraCut';
 

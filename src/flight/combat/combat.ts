@@ -8,9 +8,11 @@ import type { Suit } from '../../suit/Suit';
 import { HOME, type Heightfield } from '../world/heightfield';
 import { strikeMarks, structureTop } from '../world/house';
 import { Dreadnought, type BossPart } from './dreadnought';
-import { Drone, Guns, JAM_RANGE, type DroneType } from './drones';
+import { BOMB_CHAIN_DAMAGE, BOMB_CHAIN_RADIUS, Drone, Guns, JAM_RANGE, type DroneType } from './drones';
 import { Explosions, type SurfaceQuery } from './explosions';
 import { Frigate, type ShipPart } from './frigate';
+import { HouseCiws } from './houseCiws';
+import { HOUSE_PARTY_KEY, HousePartyManager } from './houseParty';
 import { Missiles, type Missile } from './missiles';
 import { PhysicsWeapons } from './physicsWeapons';
 import { PlayerWeapons } from './playerWeapons';
@@ -96,6 +98,15 @@ export class Combat {
   readonly physics = new PhysicsWeapons();
   /** Live Arc Reactor 3-way power allocation & 400% overcharge manager. */
   readonly reactor: ReactorPower;
+  /** House Party Protocol: autonomous spare suits (KeyP) + mid-air Hot-Swap rescue. */
+  readonly houseParty: HousePartyManager;
+  /** Malibu Automated CIWS Terrace Turrets (House Defences L3/L5 capstone). */
+  readonly houseCiws: HouseCiws;
+  /** Armour L3/L5 Reactive Pulse state (cooldown & active 2 s damage brace). */
+  reactivePulseCd = 0;
+  reactiveBraceT = 0;
+  /** Fitted upgrade level count (synced from app to scale House Party deployment 1 vs 2 suits). */
+  fittedLevels = 0;
   readonly drones: Drone[] = [];
   readonly sams: SamSite[] = [];
   readonly ships: Frigate[] = [];
@@ -158,9 +169,19 @@ export class Combat {
     this.missiles = new Missiles(particles, this.explosions, ground, events);
     this.weapons = new PlayerWeapons(suit, model, field, particles, this.streaks, this.missiles, this.explosions, events);
     this.reactor = new ReactorPower(events);
+    this.houseParty = new HousePartyManager(hazeUniforms);
+    this.houseCiws = new HouseCiws(field, hazeUniforms);
     this.weapons.reactor = this.reactor;
     this.model.reactor = this.reactor.modifiers;
-    this.group.add(this.streaks.mesh, this.explosions.group, this.missiles.group, this.weapons.group, this.physics.group);
+    this.group.add(
+      this.streaks.mesh,
+      this.explosions.group,
+      this.missiles.group,
+      this.weapons.group,
+      this.physics.group,
+      this.houseParty.group,
+      this.houseCiws.group,
+    );
     this.group.name = 'combat';
     this.samSpots = samSites(field, HOME, 6, 3);
     this.house = { marks: strikeMarks(field), struck: (at, damage) => this.houseStruck(at, damage ?? SAM_DAMAGE) };
@@ -173,7 +194,8 @@ export class Combat {
       },
       hit(amount: number, at: THREE.Vector3, kind: 'bullet' | 'missile' | 'beam') {
         if (self.down > 0) return;
-        self.armor = Math.max(0, self.armor - (amount * self.spec.damageTaken * self.reactor.modifiers.damageTaken) / 100);
+        const brace = self.reactiveBraceT > 0 ? 0.55 : 1;
+        self.armor = Math.max(0, self.armor - (amount * self.spec.damageTaken * self.reactor.modifiers.damageTaken * brace) / 100);
         if (kind === 'beam') {
           // Absorbing the Rival Ace's Unibeam in SHIELDS mode rapidly surges the 400% capacitor
           if (self.reactor.mode === 'SHIELDS') {
@@ -186,21 +208,25 @@ export class Combat {
         self.damageFlash = Math.min(1, self.damageFlash + (kind === 'missile' ? 0.9 : kind === 'beam' ? 0.45 : 0.25));
         onHit(amount, at);
         events.emit('hitArmor', { at, value: amount });
+
+        // Armour L3/L5 Capstone: Reactive EMP Pulse when dropping below 25% armour
+        if (self.armor > 0 && self.armor <= 0.25 && self.spec.armorOverdriveTier > 0 && self.reactivePulseCd <= 0) {
+          self.triggerReactivePulse(at);
+        }
+
         if (self.armor <= 0) {
-          self.down = 3.2;
           events.emit('suitCritical', { at: model.pos });
           // Scripted runs (waves off) always reboot
           if (!self.wavesEnabled || self.reserves > 0) {
+            self.down = 3.2;
             if (self.wavesEnabled) self.reserves--;
             const left = !self.wavesEnabled ? '' : self.reserves === 0 ? ' That was the last reserve, sir.' : self.reserves === 1 ? ' One reserve left.' : ` ${self.reserves} reserves left.`;
             events.emit('jarvis', { text: `Armour critical. Rerouting power. Hold on, sir.${left}` });
+          } else if (self.houseParty.tryStartHotSwap(model, self.ground, self.particles, events)) {
+            // Mid-Air Hot-Swap Rescue: hold suit down while the emergency spare pod intercepts!
+            self.down = 7.5;
           } else {
-            self.lost = true;
-            self.lostWhy = 'suit';
-            self.lostT = 0;
-            self.down = Infinity;
-            events.emit('suitLost', { at: model.pos, value: self.wave + 1 });
-            events.emit('jarvis', { text: 'Reserves exhausted. I’m losing the suit, sir.' });
+            self.markSuitLost();
           }
         }
       },
@@ -249,6 +275,10 @@ export class Combat {
     this.drones.length = this.sams.length = this.ships.length = this.hostiles.length = 0;
     this.missiles.clear();
     this.physics.reset();
+    this.houseParty.reset();
+    this.houseCiws.reset();
+    this.reactivePulseCd = 0;
+    this.reactiveBraceT = 0;
     this.guns.rounds.length = 0;
     this.counted.clear();
     this.wave = -1;
@@ -393,17 +423,26 @@ export class Combat {
     this.shellCallT += dt;
     this.damageFlash = Math.max(0, this.damageFlash - dt * 1.6);
     this.houseFlash = Math.max(0, this.houseFlash - dt * 1.2);
-    if (this.down <= 0 && !this.lost) this.reactor.handleInput(c.pressed, this.model.pos);
+    this.reactivePulseCd = Math.max(0, this.reactivePulseCd - dt);
+    this.reactiveBraceT = Math.max(0, this.reactiveBraceT - dt);
+    this.reactor.capTier = this.spec.reactorCapTier;
+    if (this.down <= 0 && !this.lost) {
+      this.reactor.handleInput(c.pressed, this.model.pos);
+      if (c.pressed.has(HOUSE_PARTY_KEY)) {
+        const count: 1 | 2 = this.fittedLevels >= 10 || this.wave >= 3 ? 2 : 1;
+        this.houseParty.deploy(count, this.particles, this.events);
+      }
+    }
     this.reactor.update(dt, this.down > 0 || this.lost);
     if (this.lost) this.lostT += dt;
-    else if (this.down > 0) {
+    else if (this.down > 0 && !this.houseParty.hotSwapActive) {
       this.down -= dt;
       if (this.down <= 0) {
         this.armor = 0.5;
         this.events.emit('reboot', { at: this.model.pos });
         this.events.emit('jarvis', { text: 'Systems restored. Fifty percent armour.' });
       }
-    } else if (this.sinceHit > 6 * this.spec.regenDelay * this.reactor.modifiers.regenDelay) {
+    } else if (this.down <= 0 && this.sinceHit > 6 * this.spec.regenDelay * this.reactor.modifiers.regenDelay) {
       this.armor = Math.min(1, this.armor + dt * 0.035 * this.spec.regenRate * this.reactor.modifiers.regenRate);
     }
 
@@ -415,6 +454,7 @@ export class Combat {
       if (this.waveT > 1.5 && this.waveT - dt <= 1.5) {
         const earned = this.reserves < this.maxReserves;
         if (earned) this.reserves++;
+        this.houseParty.onWaveClear();
         // (the bots get a little of the house back up between waves)
         this.repairHouse(this.spec.houseRepair);
         this.events.emit('waveClear', { value: this.wave + 1 });
@@ -458,6 +498,38 @@ export class Combat {
       this.rival.update(dt, t, this.player, this.ground, this.missiles, this.particles, this.streaks, this.explosions, this.events, this.group);
     }
     this.physics.update(dt, this.model, this.weapons, this.drones, this.missiles, this.player, this.ground, this.particles, this.explosions, this.events);
+    const swapRes = this.houseParty.update(
+      dt,
+      t,
+      this.model,
+      this.hostiles,
+      this.ground,
+      this.missiles,
+      this.particles,
+      this.streaks,
+      this.explosions,
+      this.events,
+      c.pressed.has(HOUSE_PARTY_KEY) || c.unibeam,
+      (h) => this.events.emit('kill', { at: h.pos, text: h.kind }),
+    );
+    if (swapRes === 'caught') {
+      this.down = 0;
+      this.armor = 1;
+      this.reactiveBraceT = Math.max(this.reactiveBraceT, 3.0);
+      this.reactor.feedOvercharge(0.35, 'hotSwap', this.model.pos);
+    } else if (swapRes === 'missed' && !this.lost) {
+      this.markSuitLost();
+    }
+    this.houseCiws.update(
+      dt,
+      this.spec.houseCiwsTier,
+      this.hostiles,
+      this.particles,
+      this.streaks,
+      this.events,
+      (h) => this.events.emit('kill', { at: h.pos, text: h.kind }),
+      this.lost || this.houseHp <= 0,
+    );
     this.intercept(dt);
     this.guns.update(dt, this.player, this.ground, this.particles, this.streaks, this.events);
     this.missiles.update(dt, this.hostiles, this.player);
@@ -490,7 +562,11 @@ export class Combat {
           (h as RivalSuit).onDestroyed(this.explosions, this.events);
           this.reactor.feedOvercharge(0.5, 'rivalDefeated', h.pos);
         } else {
-          this.explosions.blast(h.pos, 4, { debris: 5, vel: h.vel.clone().multiplyScalar(0.3) });
+          if (h.kind === 'bomber' && (h as Drone).payloadDetonated) {
+            this.detonateBomberPayload(h as Drone);
+          } else {
+            this.explosions.blast(h.pos, 4, { debris: 5, vel: h.vel.clone().multiplyScalar(0.3) });
+          }
         }
       }
     }
@@ -597,19 +673,49 @@ export class Combat {
     this.pdT = Math.max(0, this.pdT - dt);
     const inbound = S.pdInterval > 0 || S.houseIntercept > 0 ? this.missiles.inbound() : [];
     if (S.pdInterval > 0 && this.pdT <= 0 && this.down <= 0) {
-      let best: Missile | null = null;
-      let bestD = S.pdRange * S.pdRange;
-      for (const m of inbound) {
-        const d = m.pos.distanceToSquared(this.model.pos);
-        // (not the instant it leaves the rail: there has to be something to see)
-        if (m.age > 0.4 && d < bestD) {
-          bestD = d;
-          best = m;
+      const maxShots = S.pdChainTier >= 1 ? 2 : 1;
+      const picked: Missile[] = [];
+      for (let shot = 0; shot < maxShots; shot++) {
+        let best: Missile | null = null;
+        let bestD = S.pdRange * S.pdRange;
+        for (const m of inbound) {
+          if (picked.includes(m)) continue;
+          const d = m.pos.distanceToSquared(this.model.pos);
+          // (not the instant it leaves the rail: there has to be something to see)
+          if (m.age > 0.4 && d < bestD) {
+            bestD = d;
+            best = m;
+          }
         }
+        if (best) picked.push(best);
       }
-      if (best) {
+      if (picked.length > 0) {
         this.pdT = S.pdInterval;
-        this.zap(this.model.pos.clone().add(new THREE.Vector3(0, 0.45, 0)), best, 'suit');
+        for (const m of picked) {
+          this.zap(this.model.pos.clone().add(new THREE.Vector3(0, 0.45, 0)), m, 'suit');
+        }
+      } else if (S.pdChainTier === 2) {
+        // Point Defence L5 Active Interception Grid: zap enemy drones inside 180 m
+        let closeDrone: Drone | null = null;
+        let bestD2 = 180 * 180;
+        for (const d of this.drones) {
+          if (!d.alive) continue;
+          const d2 = d.pos.distanceToSquared(this.model.pos);
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            closeDrone = d;
+          }
+        }
+        if (closeDrone) {
+          this.pdT = S.pdInterval;
+          const from = this.model.pos.clone().add(new THREE.Vector3(0, 0.45, 0));
+          this.zaps.push({ a: from, b: closeDrone.pos.clone(), t: 0.16 });
+          this.particles.burst('spark', closeDrone.pos, 10, 14, undefined, 1);
+          if (closeDrone.damage(35, closeDrone.pos, 'repulsor')) {
+            this.events.emit('kill', { at: closeDrone.pos, text: closeDrone.kind });
+          }
+          this.events.emit('intercept', { at: closeDrone.pos, text: 'suit' });
+        }
       }
     }
     if (S.houseIntercept > 0 && !this.lost) {
@@ -694,6 +800,71 @@ export class Combat {
     this.events.emit('suitCritical', { at: this.model.pos });
     this.events.emit('suitLost', { at: this.model.pos, value: this.wave + 1, text: 'house' });
     this.events.emit('jarvis', { text: 'The house is gone, sir. My servers with it. I am losing y—' });
+  }
+
+  private markSuitLost(): void {
+    this.lost = true;
+    this.lostWhy = 'suit';
+    this.lostT = 0;
+    this.down = Infinity;
+    this.events.emit('suitLost', { at: this.model.pos, value: this.wave + 1 });
+    this.events.emit('jarvis', { text: 'Reserves exhausted. I’m losing the suit, sir.' });
+  }
+
+  /** Armour L3/L5 Capstone: Reactive EMP pulse below 25% armour. */
+  private triggerReactivePulse(at: THREE.Vector3): void {
+    const tier = this.spec.armorOverdriveTier;
+    this.reactivePulseCd = 25;
+    this.reactiveBraceT = 2.0;
+    const radius = tier === 2 ? 120 : 85;
+    for (const d of this.drones) {
+      if (!d.alive) continue;
+      const off = d.pos.clone().sub(this.model.pos);
+      const dist = off.length();
+      if (dist > radius || dist < 1e-3) continue;
+      d.vel.addScaledVector(off.divideScalar(dist), 55);
+      d.destabilized = Math.max(d.destabilized, 2.0);
+    }
+    const nearMissiles = this.missiles.live.filter((m) => m.team === 'enemy' && m.pos.distanceTo(this.model.pos) <= radius * 0.7);
+    for (const m of nearMissiles) this.missiles.shootDown(m);
+    if (tier === 2) {
+      this.armor = Math.min(1, this.armor + 0.15);
+      this.reactor.feedOvercharge(0.25, 'naniteSurge', at);
+    }
+    this.particles.burst('plasma', this.model.pos, 26, 28, undefined, 1.1, { scale: 1.4 });
+    this.events.emit('reactivePulse', { at: this.model.pos, value: tier });
+    this.events.emit('jarvis', {
+      text: tier === 2 ? 'Auto-nanite surge engaged, sir. Armour reinforced.' : 'Reactive EMP pulse discharged. Brace active.',
+    });
+  }
+
+  /** Bomber Open-Bay Payload Chain-Detonation (Pillar 6B): massive airburst that wipes nearby escort drones. */
+  private detonateBomberPayload(bomber: Drone): void {
+    const at = bomber.pos.clone();
+    this.explosions.blast(at, 14, { debris: 24, burn: true, vel: bomber.vel.clone().multiplyScalar(0.2) });
+    this.particles.burst('plasma', at, 32, 34, undefined, 1.2, { scale: 2.0 });
+    this.particles.burst('spark', at, 28, 30, undefined, 1.2, { scale: 1.5 });
+    let chainKills = 0;
+    for (const d of this.drones) {
+      if (!d.alive || d === bomber) continue;
+      const dist = d.pos.distanceTo(at);
+      if (dist > BOMB_CHAIN_RADIUS) continue;
+      const fall = 1 - 0.65 * (dist / BOMB_CHAIN_RADIUS);
+      const killed = d.damage(BOMB_CHAIN_DAMAGE * fall, at, 'missile');
+      const push = d.pos.clone().sub(at);
+      if (push.lengthSq() > 1e-4) d.vel.addScaledVector(push.normalize(), 65 * fall);
+      if (killed) {
+        chainKills++;
+        this.events.emit('kill', { at: d.pos, text: d.kind });
+      }
+    }
+    this.events.emit('payloadDetonation', { at, value: chainKills });
+    this.events.emit('jarvis', {
+      text:
+        chainKills > 0
+          ? `Direct hit on the bomb bay — ${chainKills === 1 ? 'an escort went' : `${chainKills} escorts went`} up with it, sir.`
+          : 'Direct hit on the open bomb bay, sir. Saved us a lot of drywall.',
+    });
   }
 
   /** Where the radars holding the suit right now are (SAM trucks, the frigate's gun directors, the dreadnought's turrets). */

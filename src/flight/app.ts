@@ -618,6 +618,7 @@ export class FlightApp {
     let flares = combat.weapons.flares;
     const sync = () => {
       const W = combat.weapons;
+      combat.fittedLevels = upgrades.fitted;
       if (!combat.lost) combat.reserves = Math.max(0, Math.min(combat.maxReserves, combat.reserves + combat.maxReserves - reserves));
       W.flares = Math.max(0, Math.min(W.flareMag, W.flares + W.flareMag - flares));
       reserves = combat.maxReserves;

@@ -574,6 +574,34 @@ export class Soundscape {
           A.play(SFX.steamRelease, { at: m.pos, gain: 0.4, ref: 6, duration: 0.9 });
         }
         break;
+      case 'payloadDetonation':
+        A.play(SFX.explosionHuge, { at, gain: 1.1, ref: 60, echo: 0.55 });
+        A.play(SFX.deepBoom, { at, gain: 0.85, ref: 50 });
+        A.play(SFX.killConfirm, { ui: true, gain: 0.36, rate: 1.15 });
+        break;
+      case 'repulsorPulse':
+        A.play(SFX.repulsorZap, { at, gain: 0.45, rate: 0.75, ref: 24 });
+        A.play(SFX.heroThud, { at, gain: 0.4, rate: 1.15, lowpass: 800, ref: 24, duration: 0.25 });
+        break;
+      case 'reactivePulse':
+        A.play(SFX.repulsorZap, { at: m.pos, gain: 0.75, rate: 0.65, ref: 12 });
+        A.play(SFX.explosionSub, { at: m.pos, gain: 0.65, ref: 12 });
+        A.play(SFX.sparkCrackle, { at: m.pos, gain: 0.65, ref: 10 });
+        break;
+      case 'housePartyLaunch':
+        A.play(SFX.thrusterIgnite, { at, gain: 0.95, rate: 0.9, ref: 24 });
+        A.play(SFX.rocket1, { at, gain: 0.75, rate: 0.8, ref: 24, delay: 0.12 });
+        A.play(SFX.waveStart, { ui: true, gain: 0.42, rate: 1.15 });
+        break;
+      case 'hotSwapLaunch':
+        A.play(SFX.rocket2, { at, gain: 0.9, rate: 0.82, ref: 25 });
+        A.play(SFX.rwrChirp, { ui: true, gain: 0.45, rate: 1.2 });
+        break;
+      case 'hotSwapCatch':
+        A.play(SFX.metalClang, { at: m.pos, gain: 0.9, rate: 1.05, ref: 8 });
+        A.play(SFX.weaponLock, { at: m.pos, gain: 0.75, ref: 8, delay: 0.06 });
+        A.play(SFX.charge, { ui: true, gain: 0.72, rate: 1.1 });
+        break;
       case 'unibeamCharge':
         A.play(SFX.charge, { at: m.pos, gain: 0.9, ref: 8, delay: 0.15 });
         break;

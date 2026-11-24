@@ -172,6 +172,7 @@ export class PhysicsWeapons {
   private readonly ramCooldown = new WeakMap<Drone, number>();
   private readonly frostAcc = new WeakMap<Drone, number>();
   private steamAcc = 0;
+  private auraPulseT = 0;
   private iceCalloutDone = false;
   private splashCalloutDone = false;
   private pendingShake = 0;
@@ -190,6 +191,7 @@ export class PhysicsWeapons {
   reset(): void {
     this.hasPrevPos = false;
     this.steamAcc = 0;
+    this.auraPulseT = 0;
     this.iceCalloutDone = false;
     this.splashCalloutDone = false;
     this.pendingShake = 0;
@@ -207,7 +209,7 @@ export class PhysicsWeapons {
     return s;
   }
 
-  /** Per-frame update: enemy icing, water-cooling/splash-dive, kinetic ramming, and shockwave rings. */
+  /** Per-frame update: enemy icing, water-cooling/splash-dive, kinetic ramming, Mach aura capstones, and shockwave rings. */
   update(
     dt: number,
     model: FlightModel,
@@ -222,7 +224,8 @@ export class PhysicsWeapons {
   ): void {
     this.updateEnemyIcing(dt, drones, ground, particles, explosions, events);
     this.updateWaterAndSplash(dt, model, weapons, missiles, ground, particles, events);
-    this.updateKineticRam(dt, model, drones, player, particles, explosions, events);
+    this.updateKineticRam(dt, model, drones, player, particles, explosions, events, weapons.spec.machAuraTier);
+    this.updateMachAura(dt, model, drones, missiles, particles, weapons.spec.machAuraTier);
     this.updateRings(dt);
   }
 
@@ -467,11 +470,16 @@ export class PhysicsWeapons {
     particles: Particles,
     explosions: Explosions,
     events: EventBus,
+    machAuraTier: 0 | 1 | 2 = 0,
   ): number {
     if (!this.hasPrevPos || this.prevSuitPos.distanceToSquared(model.pos) > 400 * 400) {
       this.prevSuitPos.copy(model.pos);
       this.hasPrevPos = true;
     }
+
+    const boostedAura = model.boosting && machAuraTier >= 1;
+    const extraPad = boostedAura ? (machAuraTier === 2 ? 5.5 : 3.5) : 0;
+    const dmgMult = boostedAura ? (machAuraTier === 2 ? 1.75 : 1.4) : 1;
 
     let rams = 0;
     if (player.alive && model.speed >= RAM_MIN_SPEED) {
@@ -482,14 +490,14 @@ export class PhysicsWeapons {
           this.ramCooldown.set(d, Math.max(0, cd - dt));
           continue;
         }
-        const hitR = d.radius + RAM_HIT_PAD;
+        const hitR = d.radius + RAM_HIT_PAD + extraPad;
         const distSq = segmentToCore(d, this.prevSuitPos, model.pos, this._seg, this._core);
         if (distSq > hitR * hitR) continue;
 
         this.ramCooldown.set(d, 0.5);
         rams++;
         const hitAt = this._seg.clone().lerp(this._core, 0.5);
-        const ramDamage = RAM_BASE_DAMAGE + (model.speed - RAM_MIN_SPEED) * RAM_SPEED_SCALE;
+        const ramDamage = (RAM_BASE_DAMAGE + (model.speed - RAM_MIN_SPEED) * RAM_SPEED_SCALE) * dmgMult;
         const killed = d.damage(ramDamage, hitAt, 'ram');
 
         // Transfer violent forward kinetic momentum to the struck airframe
@@ -517,6 +525,63 @@ export class PhysicsWeapons {
 
     this.prevSuitPos.copy(model.pos);
     return rams;
+  }
+
+  // ── 4C. Propulsion L3/L5 Capstone: Transonic Ram Shield & Mach 2 Supercruise Aura ──
+
+  updateMachAura(
+    dt: number,
+    model: Pick<FlightModel, 'pos' | 'vel' | 'speed' | 'mach' | 'boosting'>,
+    drones: readonly Drone[],
+    missiles: Missiles,
+    particles: Particles,
+    tier: 0 | 1 | 2,
+  ): { dronesPushed: number; missilesShattered: number } {
+    if (tier === 0 || !model.boosting) {
+      this.auraPulseT = Math.max(0, this.auraPulseT - dt);
+      return { dronesPushed: 0, missilesShattered: 0 };
+    }
+    const minMach = tier === 2 ? 1.05 : 0.9;
+    if (model.mach < minMach) {
+      this.auraPulseT = Math.max(0, this.auraPulseT - dt);
+      return { dronesPushed: 0, missilesShattered: 0 };
+    }
+
+    let dronesPushed = 0;
+    let missilesShattered = 0;
+    const radius = tier === 2 ? 75 : 45;
+
+    // L5: continuous seeker-shattering shock cone while boosting supersonic
+    if (tier === 2) {
+      const closeSeekers = missiles.live.filter((m) => m.team === 'enemy' && m.pos.distanceTo(model.pos) <= 55);
+      for (const m of closeSeekers) {
+        missiles.shootDown(m);
+        missilesShattered++;
+      }
+    }
+
+    this.auraPulseT -= dt;
+    if (this.auraPulseT <= 0) {
+      this.auraPulseT = tier === 2 ? 0.55 : 0.9;
+      const fwd = this._v.copy(model.vel);
+      if (fwd.lengthSq() > 1e-4) fwd.normalize();
+      else fwd.set(0, 0, 1);
+      for (const d of drones) {
+        if (!d.alive || !isLightAircraft(d.type)) continue;
+        const off = this._w.copy(d.pos).sub(model.pos);
+        const dist = off.length();
+        if (dist > radius || dist < 1e-3) continue;
+        off.divideScalar(dist);
+        const push = (tier === 2 ? 65 : 38) * (1 - 0.5 * (dist / radius));
+        d.vel.addScaledVector(off, push);
+        d.destabilized = Math.max(d.destabilized, tier === 2 ? 1.8 : 1.1);
+        d.threatened = Math.max(d.threatened, 1.0);
+        particles.burst('vapor', d.pos, 4, 8, off, 0.7);
+        dronesPushed++;
+      }
+      this.spawnAirRing(model.pos, fwd, 1.5, radius * 0.45, 0.28, tier === 2 ? 0x8be4ff : 0xd0ecff, 0.38);
+    }
+    return { dronesPushed, missilesShattered };
   }
 
   // ── 4B. Mach 1 Physical Shockwave Cone ─────────────────────────────────────

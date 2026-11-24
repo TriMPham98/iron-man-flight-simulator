@@ -55,6 +55,17 @@ export interface SuitSpec {
   houseDamage: number;
   houseRepair: number;
   houseIntercept: number;
+  /** R&D Capstone perk tiers (0 = locked, 1 = Level 3 perk, 2 = Level 5 upgraded capstone). */
+  armorOverdriveTier: 0 | 1 | 2;
+  reactorCapTier: 0 | 1 | 2;
+  repulsorBlastTier: 0 | 1 | 2;
+  missileRearAspect: 0 | 1 | 2;
+  launcherClusterTier: 0 | 1 | 2;
+  flareEmpTier: 0 | 1 | 2;
+  machAuraTier: 0 | 1 | 2;
+  sensorCritTier: 0 | 1 | 2;
+  pdChainTier: 0 | 1 | 2;
+  houseCiwsTier: 0 | 1 | 2;
 }
 
 /** What a cleared wave puts back on the house, by level of its defences (share of the whole). */
@@ -90,12 +101,29 @@ export const STOCK_SPEC = (): SuitSpec => ({
   houseDamage: 1,
   houseRepair: HOUSE_REPAIR[0],
   houseIntercept: 0,
+  armorOverdriveTier: 0,
+  reactorCapTier: 0,
+  repulsorBlastTier: 0,
+  missileRearAspect: 0,
+  launcherClusterTier: 0,
+  flareEmpTier: 0,
+  machAuraTier: 0,
+  sensorCritTier: 0,
+  pdChainTier: 0,
+  houseCiwsTier: 0,
 });
 
 export type UpgradeId = 'armour' | 'reactor' | 'repulsors' | 'missiles' | 'launchers' | 'flares' | 'propulsion' | 'sensors' | 'pointDefence' | 'house';
 
 /** One line of what an upgrade does: its label, and the value at a level (0 = stock). */
 type Stat = [label: string, show: (level: number) => string];
+
+/** Behavior-changing capstone perk unlocked at Level 3 and upgraded at Level 5. */
+export interface CapstonePerk {
+  readonly level: 3 | 5;
+  readonly name: string;
+  readonly desc: string;
+}
 
 export interface Upgrade {
   id: UpgradeId;
@@ -105,9 +133,14 @@ export interface Upgrade {
   /** R&D price of each level, first to last. */
   costs: readonly number[];
   stats: Stat[];
+  /** Behavior-changing capstone perks unlocked at Level 3 and Level 5. */
+  perks: readonly [CapstonePerk, CapstonePerk];
   /** Writes the upgrade's effect at a level (1 to {@link MAX_LEVEL}) into the spec. */
   apply: (spec: SuitSpec, level: number) => void;
 }
+
+/** Capstone tier from upgrade level: 0 below L3, 1 at L3–L4, 2 at L5. */
+export const capstoneTier = (level: number): 0 | 1 | 2 => (level >= 5 ? 2 : level >= 3 ? 1 : 0);
 
 /** Levels in every system. */
 export const MAX_LEVEL = 5;
@@ -175,10 +208,15 @@ export const UPGRADES: readonly Upgrade[] = [
       ['RESERVES', (l) => `${1 + ARMOUR_RESERVES[l]}`],
       ['REGEN AFTER', (l) => sec(6 * armourDelay(l))],
     ],
+    perks: [
+      { level: 3, name: 'REACTIVE PULSE', desc: 'Below 25% armour: auto EMP knockback + 2 s shield brace' },
+      { level: 5, name: 'AUTO-NANITE SURGE', desc: 'Reactive pulse also restores +15% armour & +25% overcharge' },
+    ],
     apply: (s, l) => {
       s.damageTaken = armourTaken(l);
       s.reserves = ARMOUR_RESERVES[l];
       s.regenDelay = armourDelay(l);
+      s.armorOverdriveTier = capstoneTier(l);
     },
   },
   {
@@ -191,10 +229,15 @@ export const UPGRADES: readonly Upgrade[] = [
       ['BEAM COOL', (l) => sec(7 * beamCool(l))],
       ['ARMOUR REGEN', (l) => pct(regen(l) - 1)],
     ],
+    perks: [
+      { level: 3, name: 'CAPACITOR SIPHON', desc: '+35% overcharge charge rate & 10 s 400% duration' },
+      { level: 5, name: 'SUSTAINED OVERDRIVE', desc: '+70% overcharge charge rate & 12 s 400% duration' },
+    ],
     apply: (s, l) => {
       s.unibeamTime = beamTime(l);
       s.unibeamCool = beamCool(l);
       s.regenRate = regen(l);
+      s.reactorCapTier = capstoneTier(l);
     },
   },
   {
@@ -206,9 +249,14 @@ export const UPGRADES: readonly Upgrade[] = [
       ['BOLT DAMAGE', (l) => pct(boltDamage(l) - 1)],
       ['RATE OF FIRE', (l) => pct(1 / boltInterval(l) - 1)],
     ],
+    perks: [
+      { level: 3, name: 'CONCUSSIVE PULSE', desc: 'Every 3rd hit triggers an 18 m concussive shock blast' },
+      { level: 5, name: 'PALM SHOCKWAVE', desc: 'Every 2nd hit triggers a 32 m blast & vents beam heat' },
+    ],
     apply: (s, l) => {
       s.repulsorDamage = boltDamage(l);
       s.repulsorInterval = boltInterval(l);
+      s.repulsorBlastTier = capstoneTier(l);
     },
   },
   {
@@ -221,10 +269,15 @@ export const UPGRADES: readonly Upgrade[] = [
       ['REACH', (l) => km(3.2 * missileRange(l))],
       ['POD RELOAD', (l) => pct(podReload(l) - 1)],
     ],
+    perks: [
+      { level: 3, name: 'WIDE-ASPECT PAINT', desc: '42° helmet lock cone for effortless high-G tracking' },
+      { level: 5, name: '360° HELMET LOCK', desc: 'Full spherical rear-aspect lock — paint pursuers behind you' },
+    ],
     apply: (s, l) => {
       s.missileLock = missileLock(l);
       s.missileRange = missileRange(l);
       s.rocketReload = podReload(l);
+      s.missileRearAspect = capstoneTier(l);
     },
   },
   {
@@ -237,10 +290,15 @@ export const UPGRADES: readonly Upgrade[] = [
       ['PAINT TIME', (l) => pct(bayLock(l) - 1)],
       ['REACH', (l) => km(4.5 * bayRange(l))],
     ],
+    perks: [
+      { level: 3, name: 'SHRAPNEL WARHEAD', desc: '+35% blast radius & destabilizing shockwave on impact' },
+      { level: 5, name: 'TANDEM CLUSTER', desc: 'Secondary proximity airburst hits nearby hostiles within 45 m' },
+    ],
     apply: (s, l) => {
       s.launcherReload = bayReload(l);
       s.launcherLock = bayLock(l);
       s.launcherRange = bayRange(l);
+      s.launcherClusterTier = capstoneTier(l);
     },
   },
   {
@@ -252,9 +310,14 @@ export const UPGRADES: readonly Upgrade[] = [
       ['FLARES', (l) => `${FLARES[l]}`],
       ['RESTOCK', (l) => sec(flareRestock(l), 2)],
     ],
+    perks: [
+      { level: 3, name: 'SMART CHAFF SCREEN', desc: 'Flare salvos push back & destabilize close pursuing drones' },
+      { level: 5, name: 'EMP FLARE CURTAIN', desc: 'Salvos emit an EMP snap that detonates seekers within 45 m' },
+    ],
     apply: (s, l) => {
       s.flareMag = FLARES[l] / FLARES[0];
       s.flareRestock = flareRestock(l);
+      s.flareEmpTier = capstoneTier(l);
     },
   },
   {
@@ -267,10 +330,15 @@ export const UPGRADES: readonly Upgrade[] = [
       ['TOP SPEED', (l) => `M ${(1.5 * topSpeed(l)).toFixed(2)}`],
       ['ICES AT', (l) => km((ICING_ALT + icing(l)) / 1000)],
     ],
+    perks: [
+      { level: 3, name: 'TRANSONIC RAM SHIELD', desc: 'Wider +40% kinetic ramming & 45 m Mach-boost shock pulses' },
+      { level: 5, name: 'MACH 2.0 SUPERCRUISE', desc: 'Sustained 75 m supersonic aura shatters seekers & scatters drones' },
+    ],
     apply: (s, l) => {
       s.boostThrust = thrust(l);
       s.boostSpeed = topSpeed(l);
       s.icingLift = icing(l);
+      s.machAuraTier = capstoneTier(l);
     },
   },
   {
@@ -283,10 +351,15 @@ export const UPGRADES: readonly Upgrade[] = [
       ['ASSIST CONE', (l) => `${(4.5 * assist(l)).toFixed(1)}°`],
       ['JAM RESIST', (l) => (l ? `${Math.round(eccm(l) * 100)}%` : 'NONE')],
     ],
+    perks: [
+      { level: 3, name: 'WEAK-POINT TELEMETRY', desc: '+15% precision damage on assisted & open-bay targets' },
+      { level: 5, name: 'PREDICTIVE LOCK SUITE', desc: '+30% precision damage & 2× bonus on iced / bomber weak-points' },
+    ],
     apply: (s, l) => {
       s.assistRange = assist(l);
       s.assistCone = assist(l);
       s.jamResist = eccm(l);
+      s.sensorCritTier = capstoneTier(l);
     },
   },
   {
@@ -300,9 +373,14 @@ export const UPGRADES: readonly Upgrade[] = [
       ['SHOT EVERY', (l) => (l ? sec(PD_INTERVAL[l]) : 'NOT FITTED')],
       ['REACH', (l) => (l ? `${PD_RANGE[l]} m` : '—')],
     ],
+    perks: [
+      { level: 3, name: 'DUAL-BEAM COLLAR', desc: 'Burns down up to 2 inbound seekers per firing cycle' },
+      { level: 5, name: 'ACTIVE INTERCEPT GRID', desc: 'Also zaps enemy drones inside 180 m with defensive arc bolts' },
+    ],
     apply: (s, l) => {
       s.pdInterval = PD_INTERVAL[l];
       s.pdRange = PD_RANGE[l];
+      s.pdChainTier = capstoneTier(l);
     },
   },
   {
@@ -315,10 +393,15 @@ export const UPGRADES: readonly Upgrade[] = [
       ['REPAIR / WAVE', (l) => `+${Math.round(HOUSE_REPAIR[l] * 100)}%`],
       ['INTERCEPTS', (l) => (l ? `${Math.round(HOUSE_INTERCEPT[l] * 100)}%` : 'NONE')],
     ],
+    perks: [
+      { level: 3, name: 'MALIBU CIWS TURRETS', desc: 'Deploys 2 automated terrace turrets that shred bombers (650 m)' },
+      { level: 5, name: 'STARK PERIMETER GRID', desc: '4 glowing terrace CIWS batteries with 900 m range & rapid fire' },
+    ],
     apply: (s, l) => {
       s.houseDamage = houseTaken(l);
       s.houseRepair = HOUSE_REPAIR[l];
       s.houseIntercept = HOUSE_INTERCEPT[l];
+      s.houseCiwsTier = capstoneTier(l);
     },
   },
 ];
@@ -348,10 +431,11 @@ export const AWARD = {
   decoy: 5,
   /** The first time through the barrier on each flight. */
   sonicBoom: 10,
-  /** Physics-combat bonuses: hero-landing shockwave kill, high-speed kinetic ram, icing crash kill. */
+  /** Physics-combat bonuses: hero-landing shockwave kill, high-speed kinetic ram, icing crash kill, bomber payload chain-detonation. */
   heroSlam: 30,
   kineticRam: 25,
   iceKill: 25,
+  payloadDetonation: 45,
 } as const;
 /** What the award for a kill is called, where the kind's own name won't do. */
 const DOWNED: Partial<Record<string, string>> = { frigate: 'WARSHIP SUNK', boss: 'DREADNOUGHT SYSTEM OUT', dreadnought: 'DREADNOUGHT DOWN', rival: 'RIVAL ACE DOWN' };
@@ -519,6 +603,9 @@ export class Upgrades {
         break;
       case 'iceKill':
         this.earn(AWARD.iceKill, 'ICING KILL');
+        break;
+      case 'payloadDetonation':
+        this.earn(AWARD.payloadDetonation + Math.max(0, e.value ?? 0) * 15, 'PAYLOAD CHAIN-DETONATION');
         break;
     }
   }

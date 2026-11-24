@@ -347,6 +347,14 @@ export class RivalSuit implements Hostile {
   /** World-space endpoints of the rival's Unibeam (for clash/collision inspection). */
   readonly beamFrom = new THREE.Vector3();
   readonly beamEnd = new THREE.Vector3();
+  /** Adaptive counter-play telemetry (Pillar 6B): climb lure pressure, missile-spam adaptation, predictive beam & thermal dive. */
+  climbThreat = 0;
+  missileAdapt = 0;
+  predictiveBeam = false;
+  thermalBreakActive = false;
+  private climbWarned = false;
+  private lastThreatened = 0;
+  private recentHitT = 99;
   /** Active countermeasure flares (exposed for testing & inspection). */
   readonly flares: RivalFlare[] = [];
   /** Active palm repulsor bolts in flight. */
@@ -497,6 +505,7 @@ export class RivalSuit implements Hostile {
     void kind;
     const mult = this.iced ? RIVAL_ICED_DAMAGE_MULT : 1;
     this.hp -= amount * mult;
+    this.recentHitT = 0;
     if (this.hp <= 0) {
       this.hp = 0;
       this.alive = false;
@@ -568,6 +577,21 @@ export class RivalSuit implements Hostile {
     fxParent: THREE.Object3D = this.mesh.parent ?? this.mesh,
   ): void {
     this.modeT += dt;
+    this.recentHitT += dt;
+    // Detect fresh missile threat pulses -> tighten countermeasure adaptation
+    if (this.threatened > 0.2 && this.lastThreatened <= 0.2) {
+      this.missileAdapt = Math.min(3, this.missileAdapt + 1);
+    }
+    this.lastThreatened = this.threatened;
+    this.missileAdapt = Math.max(0, this.missileAdapt - dt / 14);
+
+    // Detect predictable straight-up climb lure toward the 8,800 m icing layer
+    if (player.alive && player.pos.y > 4500 && player.vel.y > 28 && player.pos.y >= this.pos.y - 350) {
+      this.climbThreat = Math.min(1, this.climbThreat + dt * 0.65);
+    } else {
+      this.climbThreat = Math.max(0, this.climbThreat - dt * 0.35);
+    }
+
     this.threatened = Math.max(0, this.threatened - dt);
     this.flareCooldown = Math.max(0, this.flareCooldown - dt);
     this.dashCooldown = Math.max(0, this.dashCooldown - dt);
@@ -667,18 +691,51 @@ export class RivalSuit implements Hostile {
       return;
     }
 
+    // ── Adaptive Climb-Cut Predictive Unibeam (Pillar 6B) ─────────────
+    // If the player climbs predictably toward the icing ceiling, cut off their climb with a lead beam!
+    if (
+      player.alive &&
+      this.climbThreat >= 0.75 &&
+      this.beamCooldown <= 2.5 &&
+      this.mode !== 'evade' &&
+      dist > 200 &&
+      dist < 1650 &&
+      this.pos.y >= Math.max(ground.surface(this.pos.x, this.pos.z), 0) + 45
+    ) {
+      const leadDir = this._b
+        .copy(player.pos)
+        .addScaledVector(player.vel, 0.75)
+        .sub(this.pos)
+        .normalize();
+      this.predictiveBeam = true;
+      this.beamCooldown = 0;
+      this.startBeamCharge(leadDir, events);
+      if (!this.climbWarned) {
+        this.climbWarned = true;
+        events.emit('jarvis', {
+          text: "He's reading our climb, sir — lining up a predictive unibeam sweep to cut us off! Break and feint!",
+        });
+      }
+      return;
+    }
+
     // ── Agile Suit-Like Flight AI ─────────────────────────────────────
     const want = this._want;
     let targetSpeed = RIVAL_CRUISE_SPEED;
     let boosting = false;
+    this.thermalBreakActive = false;
 
     switch (this.mode) {
       case 'stalk': {
         // Pursue player aggressively to any altitude (including into the icing trap!)
         const tgo = Math.min(2.0, dist / Math.max(speed, 180));
         want.copy(player.pos).addScaledVector(player.vel, tgo * 0.6).sub(this.pos);
-        // If just thawed out above icing altitude, dive out briefly before re-engaging
-        if (this.pos.y > RIVAL_ICING_ALT && this.icing > 0.15 && this.modeT < 1.8) {
+        // Thermal-break counter-play: if icing climbs high and the player isn't staying close or pressuring with fire, peel downward out of the cold air
+        if (this.pos.y > 7800 && this.icing > 0.35 && this.icing < 0.85 && this.recentHitT > 4.0 && dist > 680) {
+          this.thermalBreakActive = true;
+          want.y = Math.min(want.y, -Math.max(260, dist * 0.5));
+        } else if (this.pos.y > RIVAL_ICING_ALT && this.icing > 0.15 && this.modeT < 1.8) {
+          // If just thawed out above icing altitude, dive out briefly before re-engaging
           want.y = Math.min(want.y, -Math.max(200, dist * 0.45));
         }
         want.normalize();
@@ -1007,6 +1064,7 @@ export class RivalSuit implements Hostile {
     this.beamT -= dt;
     if (this.beamT <= 0) {
       this.firingBeam = false;
+      this.predictiveBeam = false;
       this.reactorGlare.visible = false;
       this.reactorHalo.visible = false;
       this.beamCooldown = 13 + Math.random() * 4;
@@ -1081,7 +1139,8 @@ export class RivalSuit implements Hostile {
 
   /** Eject countermeasure flares to decoy incoming player seekers. */
   popFlares(missiles: Missiles, particles: Particles, events: EventBus, fxParent: THREE.Object3D = this.mesh.parent ?? this.mesh): number {
-    this.flareCooldown = RIVAL_FLARE_COOLDOWN;
+    // Under repeated missile spam (missileAdapt >= 1.4), Rival tightens flare cadence down to 4.5 s
+    this.flareCooldown = this.missileAdapt >= 1.4 ? Math.max(4.5, RIVAL_FLARE_COOLDOWN - (this.missileAdapt - 1) * 1.4) : RIVAL_FLARE_COOLDOWN;
     const speed = this.vel.length();
     const back = speed > 2 ? this._a.copy(this.vel).divideScalar(-speed) : new THREE.Vector3(0, 0, -1);
     const right = this._b.crossVectors(UP, back);
