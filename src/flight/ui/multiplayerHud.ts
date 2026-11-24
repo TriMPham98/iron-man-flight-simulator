@@ -412,7 +412,9 @@ export class MultiplayerHud {
         </div>
       </div>
     `;
-    document.body.appendChild(this.root);
+    // Inside the flight UI layer (as the missions HUD is): on the workshop
+    // handoff, everything else on <body> is faded out and sits under the sim.
+    (document.getElementById('flight-ui') ?? document.body).appendChild(this.root);
 
     this.topEl = this.root.querySelector('.mp-top')!;
     this.pillEl = this.root.querySelector('.mp-pill')!;
