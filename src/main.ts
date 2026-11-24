@@ -20,7 +20,7 @@ import { APERTURE_INNER, APERTURE_OUTER } from './workshop/ringAperture';
 import { Suit } from './suit/Suit';
 import { SUIT_GROUND_CLEARANCE } from './suit/loadSuitModel';
 import { bindInput } from './ui/bindInput';
-import { installButtonFocusRelease } from './ui/blurButtons';
+import { installButtonFocusRelease, installTabFocusBlock } from './ui/blurButtons';
 import { cueAtSeedTime } from './audio/binaryInterfaceCues';
 import { createAudioTimelinePanel } from './ui/audioTimelinePanel';
 import {
@@ -71,6 +71,7 @@ async function boot(): Promise<void> {
 
   // Don't leave buttons focused after a tap (Space would re-trigger them).
   installButtonFocusRelease();
+  installTabFocusBlock();
   // Cyan holographic reticle (fine-pointer desktops only).
   const teardownCursor = installJarvisCursor();
 
