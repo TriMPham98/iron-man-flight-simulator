@@ -176,7 +176,7 @@ export class Hud {
   /** How to call a wave, for the prompt under the radar (the touch overlay has a button). */
   waveKey = 'N';
   /** How to hand the suit to auto-land (the touch overlay's button says LAND). */
-  landKey = 'L';
+  landKey = 'TAB';
   /** Auto-land: on offer, flying, or neither (set by the app each frame). */
   autoLand: 'ready' | 'active' | null = null;
   /** TEMP: on the ground and free to lift off (set by the app each frame). */
@@ -1622,7 +1622,7 @@ export class Hud {
     // Pops in with a little overshoot
     const pop = 1 + 0.18 * Math.exp(-this.promptT * 10) * Math.cos(this.promptT * 26);
     const padConnected = [...(navigator.getGamepads?.() ?? [])].some((p) => p && p.connected);
-    const key = this.landKey === 'L' && padConnected ? 'L · D-PAD ▼' : this.landKey;
+    const key = this.landKey === 'TAB' && padConnected ? 'TAB · D-PAD ▼' : this.landKey;
     const title = 'AUTO-LAND';
     const sub = active ? `${key}  TAKE CONTROL` : 'PAD IN RANGE';
     g.save();

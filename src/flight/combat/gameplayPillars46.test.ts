@@ -350,7 +350,7 @@ describe('Pillar 6B — Enemy Polish (Bomber Payload Chain-Detonations & Rival A
       'KeyM',
       'KeyN',
       'KeyU',
-      'KeyL',
+      'Tab',
       'KeyV',
       'KeyR',
       'KeyF',

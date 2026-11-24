@@ -120,7 +120,7 @@ describe('applyTouch', () => {
   it('binds every button to a code the keyboard / mouse already uses', () => {
     expect(TOUCH_BINDINGS).toEqual({
       boost: 'ShiftLeft', brake: 'KeyX', fire: 'Mouse0', missile: 'Mouse2',
-      unibeam: 'Space', flares: 'KeyF', launcher: 'KeyG', camera: 'KeyV', wave: 'KeyN', land: 'KeyL',
+      unibeam: 'Space', flares: 'KeyF', launcher: 'KeyG', camera: 'KeyV', wave: 'KeyN', land: 'Tab',
     });
   });
 });

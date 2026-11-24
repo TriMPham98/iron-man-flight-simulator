@@ -51,7 +51,7 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
     ['J', 'missions'],
     ['M', 'multiplayer'],
     ['U', 'R&D refit (on the pad)'],
-    ['L', 'auto-land (near the pad)'],
+    ['TAB', 'auto-land (near the pad)'],
     ['ESC', 'pause'],
   ],
 };

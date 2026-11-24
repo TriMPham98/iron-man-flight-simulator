@@ -297,7 +297,7 @@ describe('Cross-Pillar Integration (Pillars 1–3)', () => {
       resetOrRedeploy: 'KeyR',
       cameraCycle: 'KeyV',
       callWave: 'KeyN',
-      autoLand: 'KeyL',
+      autoLand: 'Tab',
       flares: 'KeyF',
       launchers: 'KeyG',
       unibeam: 'Space',

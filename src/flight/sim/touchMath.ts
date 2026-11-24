@@ -25,7 +25,7 @@ export const TOUCH_BINDINGS = {
   launcher: 'KeyG',
   camera: 'KeyV',
   wave: 'KeyN',
-  land: 'KeyL',
+  land: 'Tab',
 } as const;
 
 export type TouchAction = keyof typeof TOUCH_BINDINGS;

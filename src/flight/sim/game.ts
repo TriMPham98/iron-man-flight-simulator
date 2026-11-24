@@ -204,7 +204,7 @@ export class Game {
     }
     // Backing up in a hover: S with the throttle already closed
     i.forward = c.forward + (c.throttle < 0 && this.model.speedCmd < 1 ? -1 : 0);
-    if (c.pressed.has('KeyL')) this.toggleAutoLand();
+    if (c.pressed.has('Tab')) this.toggleAutoLand();
     // A hand on the stick, the throttle or the boost takes it back (once
     // they've been let go: whatever was held as L went in doesn't count)
     if (this.autoLand) {
