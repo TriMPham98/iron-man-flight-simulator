@@ -1,0 +1,13 @@
+name = "stark-flight-mp"
+main = "worker.ts"
+compatibility_date = "2026-01-01"
+
+[durable_objects]
+bindings = [
+  { name = "FLIGHT_ROOM", class_name = "FlightRoom" }
+]
+
+# SQLite-backed Durable Objects are required on the Cloudflare Workers Free Plan ($0/mo).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FlightRoom"]

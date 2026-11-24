@@ -48,6 +48,7 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
     ['R', 'reset to the house'],
     ['N', 'call a wave (sky clear)'],
     ['J', 'missions'],
+    ['M', 'multiplayer'],
     ['U', 'R&D refit (on the pad)'],
     ['L', 'auto-land (near the pad)'],
     ['ESC', 'pause'],
@@ -108,6 +109,8 @@ export interface PauseActions {
   forceResume?: () => void;
   /** Open the JARVIS Mission Selector drawer. */
   openMissions?: () => void;
+  /** Open the JARVIS Multiplayer Uplink drawer. */
+  openMultiplayer?: () => void;
 }
 
 /** The R&D refit bay's ledger and gate (wired by the app). */
@@ -248,6 +251,7 @@ export class Screens {
               <button class="fp-btn" data-act="restart">RESTART <small>at the house</small></button>
               <button class="fp-btn" data-act="camera">CAMERA <span class="val" data-cam-name></span></button>
               <button class="fp-btn" data-act="missions" hidden>MISSIONS <kbd>J</kbd></button>
+              <button class="fp-btn" data-act="multiplayer" hidden>MULTIPLAYER <kbd>M</kbd></button>
               <button class="fp-btn" data-act="refit" hidden>R&amp;D REFIT <span class="val" data-rd-pts></span></button>
               <div class="fp-sep"></div>
               <button class="fp-btn" data-tab="controls" role="tab" aria-selected="true" aria-controls="fp-controls">CONTROLS</button>
@@ -402,6 +406,9 @@ export class Screens {
       else if (act === 'missions') {
         this.setPaused(false, () => {});
         this.actions.openMissions?.();
+      } else if (act === 'multiplayer') {
+        this.setPaused(false, () => {});
+        this.actions.openMultiplayer?.();
       } else if (act === 'restart') {
         this.actions.restart?.();
         this.resume();
@@ -690,6 +697,10 @@ export class Screens {
       this.setPaused(false, () => {});
       this.actions.openMissions();
     }
+    else if (e.code === 'KeyM' && !e.repeat && this.actions.openMultiplayer) {
+      this.setPaused(false, () => {});
+      this.actions.openMultiplayer();
+    }
     else if (k === 'Enter' || k === ' ') {
       const el = document.activeElement as HTMLElement | null;
       if (el && this.pause.contains(el) && !(el instanceof HTMLInputElement)) el.click();
@@ -811,6 +822,8 @@ export class Screens {
       this.showCamera();
       const mBtn = this.pause.querySelector<HTMLElement>('[data-act="missions"]');
       if (mBtn) mBtn.hidden = !this.actions.openMissions;
+      const mpBtn = this.pause.querySelector<HTMLElement>('[data-act="multiplayer"]');
+      if (mpBtn) mpBtn.hidden = !this.actions.openMultiplayer;
       this.syncInputs();
       this.refitMsg = '';
       this.renderRefit();

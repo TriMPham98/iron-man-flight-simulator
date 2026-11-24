@@ -16,6 +16,8 @@ import { Upgrades } from './sim/upgrades';
 import { Hud } from './ui/hud';
 import { MissionManager } from './missions/missionManager';
 import { MissionHud } from './ui/missionHud';
+import { MultiplayerSession } from './net/multiplayer';
+import { MultiplayerHud } from './ui/multiplayerHud';
 import { SuitWireframe } from './ui/suitWireframe';
 import { TouchControls } from './ui/touchControls';
 import type { Screens } from './ui/screens';
@@ -87,6 +89,8 @@ export class FlightApp {
   hud!: Hud;
   missions!: MissionManager;
   missionHud!: MissionHud;
+  multiplayer!: MultiplayerSession;
+  multiplayerHud!: MultiplayerHud;
   /** The suit's R&D: points earned in the air, upgrades fitted on the pad. */
   readonly upgrades = new Upgrades();
   /** Holds the sim and opens the R&D refit bay (wired by the settings). */
@@ -269,6 +273,7 @@ export class FlightApp {
     this.applySettings();
     bindFlightSettings(this);
     this.bindMissions();
+    this.bindMultiplayer();
 
     const q = this.query;
     this.lens = {
@@ -543,9 +548,12 @@ export class FlightApp {
       if (code === 'KeyN') game.combat.callWave();
       if (code === 'KeyU' && game.onPad) this.refitMenu();
       if (code === 'KeyJ' && !director && !this.autopilot) this.openMissionsMenu();
+      if (code === 'KeyM' && !director && !this.autopilot) this.openMultiplayerMenu();
     }
     game.applyControls(c);
-    if (!this.paused) {
+    // In multiplayer, opening Esc or a drawer frees the mouse without freezing physics/network sync
+    const simPaused = this.paused && !this.multiplayer?.active;
+    if (!simPaused) {
       game.update(dt);
       this.missions.update(dt, {
         vertical: c.vertical,
@@ -555,6 +563,7 @@ export class FlightApp {
         aimY: game.input.aim.y,
       });
     }
+    this.multiplayer?.update(dt, c.fire && this.engaged && !this.paused);
     this.cameraOverride?.(camera, dt);
     world.update(dt, camera);
     this.updateLens(dt);
@@ -587,6 +596,7 @@ export class FlightApp {
         : null;
     hud.draw(dt, camera, game.model, game.combat, game.ground, game.rig.mode === 'helmet');
     this.missionHud.update(camera, game.model.pos, this.missions.telemetry, this.engaged && !director && !cinematic);
+    this.multiplayerHud?.update(camera, game.model.pos, this.engaged && !director && !cinematic);
     this.sounds.update(dt, game.model, game.combat, camera, game.rig.mode === 'helmet', game.combat.weapons.unibeamOn);
     this.post.render(dt, this.lens);
   }
@@ -688,6 +698,7 @@ export class FlightApp {
   /** Opens the JARVIS Mission Selector drawer, holding the sim without stacking the pause screen. */
   openMissionsMenu(): void {
     if (!this.engaged || this.director || this.autopilot || this.game.combat.lost) return;
+    if (this.multiplayerHud?.open) this.multiplayerHud.setOpen(false);
     if (this.missionHud.open) {
       this.missionHud.setOpen(false);
       this.paused = false;
@@ -696,8 +707,61 @@ export class FlightApp {
       return;
     }
     this.paused = true;
-    this.audio.setPaused(true);
+    this.audio.setPaused(!this.multiplayer?.active);
     this.missionHud.setOpen(true);
+    this.input?.releaseLock();
+  }
+
+  /** Wires 2-player Iron Man + War Machine multiplayer session & JARVIS lobby drawer. */
+  private bindMultiplayer(): void {
+    const { game, world, screens, query } = this;
+    this.multiplayer = new MultiplayerSession(game, world.atmosphere.uniforms);
+    this.scene.add(this.multiplayer.group);
+
+    // Apply URL invite parameters (?suit=warmachine&mode=duel&mp=local&room=XXXXX)
+    const suitParam = query.get('suit');
+    if (suitParam === 'warmachine' || suitParam === 'ironman') {
+      this.multiplayer.setSuit(suitParam);
+    }
+    const modeParam = query.get('mode');
+    if (modeParam === 'duel' || modeParam === 'coop') {
+      this.multiplayer.setMode(modeParam);
+    }
+    if (query.get('mp') === 'local') {
+      this.multiplayer.setBackend('local');
+    }
+    const roomParam = query.get('room');
+    if (roomParam) {
+      this.multiplayer.joinRoom(roomParam);
+    }
+
+    const closeDrawer = () => {
+      this.multiplayerHud.setOpen(false);
+      this.paused = false;
+      this.audio.setPaused(false);
+      if (!this.touch) this.input?.requestLock();
+    };
+    this.multiplayerHud = new MultiplayerHud(this.multiplayer, {
+      onRequestOpen: () => this.openMultiplayerMenu(),
+      onClose: closeDrawer,
+    });
+    screens.actions.openMultiplayer = () => this.openMultiplayerMenu();
+  }
+
+  /** Opens the JARVIS Multiplayer Uplink drawer (M key or top-left chip). */
+  openMultiplayerMenu(): void {
+    if (!this.engaged || this.director || this.autopilot) return;
+    if (this.missionHud?.open) this.missionHud.setOpen(false);
+    if (this.multiplayerHud.open) {
+      this.multiplayerHud.setOpen(false);
+      this.paused = false;
+      this.audio.setPaused(false);
+      if (!this.touch) this.input?.requestLock();
+      return;
+    }
+    this.paused = true;
+    this.audio.setPaused(!this.multiplayer.active);
+    this.multiplayerHud.setOpen(true);
     this.input?.releaseLock();
   }
 
@@ -759,13 +823,14 @@ export class FlightApp {
     document.addEventListener('pointerlockchange', () => {
       const locked = document.pointerLockElement === canvas;
       if (this.engaged && !locked && !this.autopilot && !this.director) {
-        if (this.missionHud?.open) return;
+        if (this.missionHud?.open || this.multiplayerHud?.open) return;
         this.paused = true;
-        this.audio.setPaused(true);
+        this.audio.setPaused(!this.multiplayer?.active);
         screens.setPaused(true, () => this.input?.requestLock());
       } else if (locked) {
         this.paused = false;
         this.missionHud?.setOpen(false);
+        this.multiplayerHud?.setOpen(false);
         screens.setPaused(false, () => {});
         this.audio.setPaused(false);
         void this.audio.unlock();
@@ -788,6 +853,7 @@ export class FlightApp {
       suit: this.suit,
       hud: this.hud,
       missions: this.missions,
+      multiplayer: this.multiplayer,
       audio: this.audio,
       lens: this.lens,
       setAutopilot: (fn: FlightApp['autopilot']) => {
