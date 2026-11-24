@@ -318,4 +318,47 @@ describe('RivalSuit (Pillar 3A — Supersonic Rival Ace Boss)', () => {
     // Supersonic boost target exceeds Mach 1
     expect(RIVAL_DASH_SPEED).toBeGreaterThan(340);
   });
+
+  it('never clips or gets stuck below the map during steep supersonic dives, beam stances, or 180° recovery', () => {
+    // Rising mountain ridge terrain under the ace
+    const h = makeHarness(0);
+    h.ground.surface = (x, z) => (x > -200 && z < 400 ? 180 : 20);
+    h.player.pos.set(0, 185, 0);
+    h.player.vel.set(0, 0, 0);
+
+    // 1. Steep supersonic dash straight into a 180 m cliff
+    const rival = new RivalSuit(v(0, 260, 260), v(0, -0.7, -0.7));
+    rival.mode = 'dash';
+    rival.vel.set(0, -300, -310);
+    let t = 0;
+    for (let i = 0; i < 180; i++) {
+      t = stepRival(rival, h, 1 / 60, 1 / 60, t);
+      const floor = Math.max(h.ground.surface(rival.pos.x, rival.pos.z), 0);
+      expect(rival.pos.y).toBeGreaterThanOrEqual(floor + 17.9);
+    }
+
+    // 2. Diving straight into beamCharge -> beamFire near the ridge must not coast underground
+    rival.pos.set(0, 202, 50);
+    rival.vel.set(0, -180, -60);
+    rival.mode = 'beamCharge';
+    rival.chargingBeam = true;
+    for (let i = 0; i < 200; i++) {
+      t = stepRival(rival, h, 1 / 60, 1 / 60, t);
+      const floor = Math.max(h.ground.surface(rival.pos.x, rival.pos.z), 0);
+      expect(rival.pos.y).toBeGreaterThanOrEqual(floor + 17.9);
+    }
+    // After beamFire finishes with near-zero velocity, must resume flying instead of freezing
+    expect(rival.mode).toBe('strafe');
+    t = stepRival(rival, h, 0.5, 1 / 60, t);
+    expect(rival.vel.length()).toBeGreaterThan(50);
+
+    // 3. Antiparallel straight-down dive starting underground recovers immediately and climbs out
+    rival.pos.set(0, -80, 0);
+    rival.vel.set(0, -250, 0);
+    rival.mode = 'stalk';
+    t = stepRival(rival, h, 1.5, 1 / 60, t);
+    const floor = Math.max(h.ground.surface(rival.pos.x, rival.pos.z), 0);
+    expect(rival.pos.y).toBeGreaterThan(floor + 30);
+    expect(rival.vel.y).toBeGreaterThan(0);
+  });
 });

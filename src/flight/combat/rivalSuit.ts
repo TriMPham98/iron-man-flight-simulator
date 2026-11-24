@@ -46,6 +46,8 @@ export const RIVAL_FLIGHT_POSTURE = 1.42;
 export const RIVAL_CRUISE_SPEED = 230;
 export const RIVAL_DASH_SPEED = 435;
 const RIVAL_MAX_G = 14;
+/** Hard minimum clearance above terrain/ocean while alive and powered (m). */
+const MIN_FLOOR_CLEARANCE = 18;
 const REPULSOR_SPEED = 960;
 const REPULSOR_DMG = 6;
 const BEAM_RANGE = 1800;
@@ -589,7 +591,9 @@ export class RivalSuit implements Hostile {
     const dist = Math.max(0.01, toP.length());
     const toPDir = this._a.copy(toP).divideScalar(dist);
     const speed = this.vel.length();
-    const dir = this._dir.copy(this.vel).divideScalar(Math.max(speed, 1e-3));
+    const dir = speed > 1e-2
+      ? this._dir.copy(this.vel).divideScalar(speed)
+      : this._dir.set(toPDir.x, Math.max(0.25, toPDir.y), toPDir.z).normalize();
 
     // Supersonic flyby audio cue
     if (!this.flybyDone && dist < 110 && speed > 220) {
@@ -653,7 +657,7 @@ export class RivalSuit implements Hostile {
 
     // ── Unibeam Charge & Sweep State Machine ──────────────────────────
     if (this.mode === 'beamCharge') {
-      this.updateBeamCharge(dt, t, player, toPDir, dist, particles, events);
+      this.updateBeamCharge(dt, t, player, ground, toPDir, dist, particles, events);
       this.updateFrostMaterial();
       return;
     }
@@ -702,9 +706,10 @@ export class RivalSuit implements Hostile {
         targetSpeed = dist < 260 ? RIVAL_CRUISE_SPEED * 0.75 : RIVAL_CRUISE_SPEED * 1.08;
 
         // Transitions: Unibeam clash/sweep, Supersonic dash, or Stalk if separated
+        const localSurf = Math.max(ground.surface(this.pos.x, this.pos.z), 0);
         if (dist > 1400) {
           this.setMode('stalk');
-        } else if (player.alive && this.beamCooldown <= 0 && dist > 180 && dist < 1300) {
+        } else if (player.alive && this.beamCooldown <= 0 && dist > 180 && dist < 1300 && this.pos.y >= localSurf + 35) {
           this.startBeamCharge(toPDir, events);
           return;
         } else if (this.dashCooldown <= 0 && this.modeT > 3.5 && player.alive) {
@@ -740,14 +745,23 @@ export class RivalSuit implements Hostile {
       }
     }
 
-    // Terrain avoidance: pull up smoothly well before hitting land or ocean
-    const ahead = this._b.copy(this.pos).addScaledVector(this.vel, 1.8);
-    const floor = Math.max(ground.surface(ahead.x, ahead.z), ground.surface(this.pos.x, this.pos.z), 0);
-    const clearance = this.pos.y - floor;
-    const safe = 95;
+    // Terrain avoidance: sample along the path and account for dive pull-out loss
+    const floor = Math.max(
+      0,
+      ground.surface(this.pos.x, this.pos.z),
+      ground.surface(this.pos.x + this.vel.x * 0.6, this.pos.z + this.vel.z * 0.6),
+      ground.surface(this.pos.x + this.vel.x * 1.4, this.pos.z + this.vel.z * 1.4),
+      ground.surface(this.pos.x + this.vel.x * 2.5, this.pos.z + this.vel.z * 2.5),
+    );
+    const sink = Math.max(0, -this.vel.y) / Math.max(speed, 1);
+    const pullOut = ((speed * speed) / (RIVAL_MAX_G * GRAVITY)) * (1 - Math.sqrt(Math.max(0, 1 - sink * sink)));
+    const clearance = this.pos.y - floor - pullOut * 1.3;
+    const safe = 130;
     if (clearance < safe) {
-      want.y = Math.max(want.y, 0.35 + ((safe - clearance) / safe) * 0.85);
-      want.normalize();
+      // Pull up along horizontal travel so turning for a low/behind target never dives into terrain
+      const h = Math.max(Math.hypot(dir.x, dir.z), 1e-3);
+      const pull = 0.35 + Math.min(2.5, ((safe - clearance) / safe) * 1.1);
+      want.set(dir.x / h + 0.25 * want.x, Math.max(want.y, pull), dir.z / h + 0.25 * want.z).normalize();
     }
 
     // High-G banking flight integration
@@ -755,10 +769,13 @@ export class RivalSuit implements Hostile {
     const ang = dir.angleTo(want);
     if (ang > 1e-4) {
       const axis = this._b.crossVectors(dir, want);
-      if (axis.lengthSq() > 1e-8) {
-        axis.normalize();
-        dir.applyAxisAngle(axis, Math.min(ang, maxTurnRate * dt));
+      if (axis.lengthSq() <= 1e-8) {
+        // Antiparallel fallback: never stall straight down when want is 180° opposite dir
+        axis.set(-dir.z, 0, dir.x);
+        if (axis.lengthSq() <= 1e-8) axis.set(1, 0, 0);
       }
+      axis.normalize();
+      dir.applyAxisAngle(axis, Math.min(ang, maxTurnRate * dt));
     }
     const accelRate = boosting ? 2.6 : 1.4;
     const nextSpeed = speed + (targetSpeed - speed) * (1 - Math.exp(-dt * accelRate));
@@ -767,6 +784,9 @@ export class RivalSuit implements Hostile {
 
     this.vel.copy(dir).multiplyScalar(nextSpeed);
     this.pos.addScaledVector(this.vel, dt);
+    if (this.enforceFloor(ground, MIN_FLOOR_CLEARANCE, 35)) {
+      dir.copy(this.vel).normalize();
+    }
 
     // Posture smoothly tilts upright in hover vs prone at supersonic speed
     const flightness = THREE.MathUtils.smoothstep(nextSpeed, 25, 160);
@@ -835,10 +855,20 @@ export class RivalSuit implements Hostile {
     }
   }
 
+  /** Hard safety net preventing powered flight or beam hover from clipping/getting stuck under the map. */
+  private enforceFloor(ground: SurfaceQuery, minClear: number, climbBoost: number): boolean {
+    const surf = Math.max(ground.surface(this.pos.x, this.pos.z), 0);
+    if (this.pos.y >= surf + minClear) return false;
+    this.pos.y = surf + minClear;
+    if (this.vel.y < climbBoost) this.vel.y = climbBoost;
+    return true;
+  }
+
   private updateBeamCharge(
     dt: number,
     t: number,
     player: PlayerTarget,
+    ground: SurfaceQuery,
     toPDir: THREE.Vector3,
     dist: number,
     particles: Particles,
@@ -853,6 +883,7 @@ export class RivalSuit implements Hostile {
     // Flare upright into combat stance, bleeding speed
     this.vel.multiplyScalar(Math.exp(-dt * 2.6));
     this.pos.addScaledVector(this.vel, dt);
+    this.enforceFloor(ground, MIN_FLOOR_CLEARANCE, 0);
     this.posture += (0 - this.posture) * (1 - Math.exp(-dt * 7));
     this.roll *= Math.exp(-dt * 6);
 
@@ -914,6 +945,7 @@ export class RivalSuit implements Hostile {
   ): void {
     this.vel.multiplyScalar(Math.exp(-dt * 2.2));
     this.pos.addScaledVector(this.vel, dt);
+    this.enforceFloor(ground, MIN_FLOOR_CLEARANCE, 0);
     this.posture += (0 - this.posture) * (1 - Math.exp(-dt * 6));
 
     // Sweep beam toward player at bounded angular rate (dodgeable!)
