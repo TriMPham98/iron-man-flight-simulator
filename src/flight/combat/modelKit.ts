@@ -220,3 +220,71 @@ export function glowMaterial(): THREE.MeshStandardMaterial {
   m.customProgramCacheKey = () => 'glowVertexColour';
   return m;
 }
+
+export type Axis = 'x' | 'y' | 'z';
+
+/** An octagonal ring in the plane across `axis`: a w × h rectangle with its corners cut by `c`. */
+export function octRing(axis: Axis, at: number, w: number, h: number, c: number, cx: number, cy: number, cz: number): V3[] {
+  const a = w / 2;
+  const b = h / 2;
+  const k = Math.min(c, a * 0.95, b * 0.95);
+  const flat: Array<[number, number]> = [
+    [a, b - k], [a - k, b], [-a + k, b], [-a, b - k],
+    [-a, -b + k], [-a + k, -b], [a - k, -b], [a, -b + k],
+  ];
+  return flat.map(([u, v]): V3 => {
+    if (axis === 'z') return [cx + u, cy + v, cz + at];
+    if (axis === 'y') return [cx + u, cy + at, cz + v];
+    return [cx + at, cy + v, cz + u];
+  });
+}
+
+/**
+ * A hard-surface block with every edge chamfered by `c` (reads as machined
+ * armour instead of a raw cube). Built as four octagonal rings along `axis`.
+ */
+export function chamfer(
+  w: number, h: number, l: number, c: number, color: Paint | ((edge: number, seg: number) => Paint),
+  x: number, y: number, z: number, axis: Axis = 'z',
+): THREE.BufferGeometry {
+  // Ring size across the axis: (w, h) for z, (w, l) for y, (l, h) for x
+  const [u, v, len] = axis === 'z' ? [w, h, l] : axis === 'y' ? [w, l, h] : [l, h, w];
+  const k = Math.min(c, len * 0.45);
+  return loft(
+    [
+      octRing(axis, -len / 2, u - 2 * k, v - 2 * k, c * 0.6, x, y, z),
+      octRing(axis, -len / 2 + k, u, v, c, x, y, z),
+      octRing(axis, len / 2 - k, u, v, c, x, y, z),
+      octRing(axis, len / 2, u - 2 * k, v - 2 * k, c * 0.6, x, y, z),
+    ],
+    color,
+  );
+}
+
+/** A cylinder of radius r0 → r1 and length `len` along `axis`, centred at (x, y, z). */
+export function cyl(r0: number, r1: number, len: number, seg: number, color: Paint, axis: Axis, x: number, y: number, z: number, gain = 1): THREE.BufferGeometry {
+  const g = new THREE.CylinderGeometry(r1, r0, len, seg);
+  if (axis === 'z') g.rotateX(Math.PI / 2);
+  else if (axis === 'x') g.rotateZ(-Math.PI / 2);
+  return paint(g.translate(x, y, z), color, gain);
+}
+
+/** A row of hex-head bolts along a line (heads face `axis`). */
+export function bolts(from: V3, to: V3, n: number, axis: Axis, color: Paint): THREE.BufferGeometry[] {
+  const out: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = n === 1 ? 0.5 : i / (n - 1);
+    out.push(cyl(0.0055, 0.0055, 0.006, 6, color, axis, from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t));
+  }
+  return out;
+}
+
+/** Parallel louvre slats laid across a face (vent grilles, radiator fins). */
+export function slats(n: number, w: number, h: number, d: number, step: number, color: Paint, x: number, y: number, z: number, along: Axis = 'y'): THREE.BufferGeometry[] {
+  const out: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < n; i++) {
+    const o = (i - (n - 1) / 2) * step;
+    out.push(box(w, h, d, color, x + (along === 'x' ? o : 0), y + (along === 'y' ? o : 0), z + (along === 'z' ? o : 0)));
+  }
+  return out;
+}

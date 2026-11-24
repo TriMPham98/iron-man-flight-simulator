@@ -183,6 +183,43 @@ describe('War Machine Unique Weapons, Animations & Soundscape', () => {
     expect(pack.anim.barrelSpeed).toBeLessThan(speedAtRelease);
   });
 
+  it('lays the M134 straight down the flight path when the suit is prone, and level ahead when upright', () => {
+    const lay = (chestQ: THREE.Quaternion, aim: THREE.Vector3) => {
+      const pack = buildWarMachinePack();
+      pack.root.quaternion.copy(chestQ);
+      for (let i = 0; i < 90; i++) {
+        animateWarMachinePack(pack, 1 / 60, {
+          aimWorld: aim,
+          chestWorldQuat: chestQ,
+          minigunFiring: false,
+          minigunShot: false,
+          podOpen: 0,
+          podArmed: 0,
+          podLoaded: 6,
+          ventOpen: 0,
+          wristDeploy: 0,
+          wristLoaded: [true, true],
+          wristLock: [0, 0],
+          flakSweepActive: false,
+        });
+      }
+      pack.root.updateMatrixWorld(true);
+      const pos = new THREE.Vector3();
+      const bore = new THREE.Vector3();
+      pack.minigunMuzzle(pos, bore);
+      return bore;
+    };
+    const ahead = new THREE.Vector3(0, 0, 1);
+    // Prone (chest pitched forward 90°: its front faces the ground, its spine runs along the flight path)
+    const prone = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+    expect(lay(prone, ahead).dot(ahead)).toBeGreaterThan(0.98);
+    // Upright hover
+    expect(lay(new THREE.Quaternion(), ahead).dot(ahead)).toBeGreaterThan(0.98);
+    // Diving prone at 30°
+    const dive = new THREE.Vector3(0, -0.5, Math.sqrt(0.75));
+    expect(lay(prone, dive).dot(dive)).toBeGreaterThan(0.98);
+  });
+
   it('Space fires the auto-locking M134 shoulder minigun instead of Unibeam, tracking off-axis targets and shredding them', () => {
     const h = makeHarness();
     // Place an enemy 25° off boresight (outside Mk III 4.5° repulsor assist, well inside War Machine's 45° Vulcan auto-lock!)

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Particles } from '../fx/particles';
 import { patchLogDepth } from '../render/depth';
 import { hazeAll } from '../render/haze';
-import { beam, box, frustum, glowMaterial, loft, merge, paint, type V3 } from '../combat/modelKit';
+import { beam, bolts, box, chamfer, cyl, frustum, glowMaterial, loft, merge, paint, slats, type V3 } from '../combat/modelKit';
 import { FLIGHT_POSTURE } from '../sim/flightModel';
 import { SPEED_OF_SOUND } from '../world/config';
 import { SuitFlag, type SuitNetState, type SuitVariant } from './protocol';
@@ -48,11 +48,11 @@ const PALETTES: Record<SuitVariant, SuitPalette> = {
     spriteColor: 0x9fdcff,
   },
   warmachine: {
-    armor: 0x3b424c,
-    plate: 0x555f6d,
+    armor: 0x444c57,
+    plate: 0x5b6471,
     dark: 0x22272f,
     joint: 0x15181d,
-    accent: 0x9aa4b2,
+    accent: 0x858e9a,
     trim: 0xb82820,
     reactorGlow: new THREE.Color(1.0, 0.34, 0.18),
     visorGlow: new THREE.Color(1.0, 0.25, 0.15),
@@ -151,8 +151,12 @@ function buildSuitGeo(variant: SuitVariant): SuitGeo {
   torso.push(paint(new THREE.TorusGeometry(0.078, 0.016, 6, 12).translate(0, 0.42, 0.188 * bulk), C.dark));
   torsoGlow.push(paint(new THREE.CircleGeometry(0.066, 12).translate(0, 0.42, 0.196 * bulk), C.reactorGlow, 7));
 
-  // Pauldrons & dorsal flaps
+  // Pauldrons & dorsal flaps (War Machine gets its own layered armour below)
   for (const s of [-1, 1]) {
+    if (variant === 'warmachine') {
+      torso.push(box(0.03, 0.36, 0.18, C.dark, s * 0.11, 0.42, -0.2));
+      continue;
+    }
     torso.push(
       frustum(
         {
@@ -208,6 +212,8 @@ function buildSuitGeo(variant: SuitVariant): SuitGeo {
     );
   }
 
+  if (variant === 'warmachine') warMachineArmor(C, bulk, torso);
+
   // ── Articulated Arms ──
   const makeArm = (side: -1 | 1): { body: THREE.BufferGeometry; glow: THREE.BufferGeometry } => {
     const parts: THREE.BufferGeometry[] = [
@@ -230,6 +236,17 @@ function buildSuitGeo(variant: SuitVariant): SuitGeo {
       ),
       box(0.085, 0.085, 0.095, C.plate, side * 0.02, -0.59, 0.01),
     ];
+    if (variant === 'warmachine') {
+      parts.push(
+        // Outer bicep plate, elbow cap and the gauntlet's knuckle guard
+        chamfer(0.022, 0.17, 0.11, 0.007, C.armor, side * 0.093, -0.15, 0),
+        box(0.006, 0.12, 0.012, C.trim, side * 0.105, -0.15, 0.03),
+        cyl(0.042, 0.042, 0.022, 12, C.accent, 'x', side * 0.082, -0.295, -0.005),
+        cyl(0.02, 0.02, 0.026, 8, C.dark, 'x', side * 0.09, -0.295, -0.005),
+        chamfer(0.09, 0.03, 0.07, 0.008, C.plate, side * 0.02, -0.6, 0.045),
+        ...slats(3, 0.07, 0.006, 0.004, 0.012, C.dark, side * 0.02, -0.4, 0.083),
+      );
+    }
     const glow = paint(
       new THREE.CircleGeometry(0.04, 10).rotateX(Math.PI / 2).translate(side * 0.02, -0.635, 0.01),
       C.palmGlow,
@@ -251,6 +268,72 @@ function buildSuitGeo(variant: SuitVariant): SuitGeo {
   };
   geoCache.set(variant, built);
   return built;
+}
+
+/**
+ * War Machine's heavier plate over the shared body: layered pauldrons, pec
+ * and abdominal plates, a raised collar, thigh / knee / shin armour, calf
+ * thruster housings and the faceplate's grille and ear discs.
+ */
+function warMachineArmor(C: SuitPalette, bulk: number, out: THREE.BufferGeometry[]): void {
+  // Helmet: faceplate grille, brow ridge and ear discs
+  out.push(
+    ...slats(3, 0.06, 0.005, 0.008, 0.013, C.dark, 0, 0.795, 0.137),
+    chamfer(0.15, 0.022, 0.03, 0.008, C.plate, 0, 0.965, 0.115),
+    cyl(0.034, 0.034, 0.022, 12, C.accent, 'x', 0.118, 0.88, -0.005),
+    cyl(0.034, 0.034, 0.022, 12, C.accent, 'x', -0.118, 0.88, -0.005),
+    // Raised armoured collar
+    loft(
+      [
+        [[0.13, 0.62, 0.11], [0.15, 0.62, 0], [0.13, 0.62, -0.12], [-0.13, 0.62, -0.12], [-0.15, 0.62, 0], [-0.13, 0.62, 0.11]],
+        [[0.11, 0.69, 0.09], [0.13, 0.69, 0], [0.11, 0.69, -0.1], [-0.11, 0.69, -0.1], [-0.13, 0.69, 0], [-0.11, 0.69, 0.09]],
+      ],
+      (e) => (e === 5 || e === 0 ? C.plate : C.armor),
+    ),
+  );
+  // Chest: pecs either side of the reactor, silver lower edges, abdominal bands, belt buckle
+  for (const s of [-1, 1]) {
+    out.push(
+      chamfer(0.13, 0.1, 0.03, 0.014, C.plate, s * 0.118, 0.54, 0.183 * bulk),
+      box(0.11, 0.01, 0.012, C.accent, s * 0.118, 0.487, 0.193 * bulk),
+      ...bolts([s * 0.06, 0.575, 0.2 * bulk], [s * 0.17, 0.575, 0.2 * bulk], 2, 'z', C.accent),
+      ...slats(3, 0.006, 0.012, 0.09, 0.03, C.dark, s * 0.265 * bulk, 0.48, 0.0, 'y'),
+    );
+  }
+  for (let i = 0; i < 3; i++) {
+    const y = 0.2 + i * 0.058;
+    out.push(chamfer(0.2 - i * 0.012 + 0.03, 0.046, 0.03, 0.01, i === 1 ? C.plate : C.armor, 0, y, (0.135 + i * 0.008) * bulk));
+  }
+  out.push(chamfer(0.065, 0.05, 0.024, 0.008, C.dark, 0, 0.06, 0.12), box(0.03, 0.008, 0.006, C.trim, 0, 0.06, 0.133));
+
+  // Layered pauldrons
+  for (const s of [-1, 1]) {
+    const x = s * 0.36 * bulk;
+    out.push(
+      chamfer(0.18, 0.06, 0.27, 0.024, C.plate, x, 0.705, 0),
+      chamfer(0.19, 0.05, 0.25, 0.02, C.armor, x + s * 0.008, 0.655, 0),
+      chamfer(0.17, 0.045, 0.22, 0.018, C.dark, x + s * 0.012, 0.612, 0),
+      box(0.006, 0.028, 0.18, C.accent, x + s * 0.105, 0.655, 0),
+      box(0.045, 0.012, 0.008, C.trim, x, 0.712, 0.136),
+      ...bolts([x - 0.06, 0.737, -0.09], [x + 0.06, 0.737, -0.09], 3, 'y', C.accent),
+    );
+  }
+
+  // Legs: thigh plates, knee caps, shin plates, calf thruster housings
+  for (const s of [-1, 1]) {
+    const x = s * 0.145;
+    out.push(
+      chamfer(0.11, 0.17, 0.028, 0.012, C.plate, x * 1.02, -0.27, 0.112 * bulk),
+      box(0.006, 0.13, 0.008, C.accent, x * 1.02 + s * 0.04, -0.27, 0.128 * bulk),
+      chamfer(0.022, 0.16, 0.1, 0.007, C.armor, x * 1.02 + s * 0.1 * bulk, -0.29, 0),
+      chamfer(0.09, 0.08, 0.03, 0.013, C.armor, x * 1.03, -0.52, 0.112),
+      cyl(0.016, 0.016, 0.008, 8, C.accent, 'z', x * 1.03, -0.52, 0.13),
+      chamfer(0.08, 0.2, 0.024, 0.01, C.plate, x * 1.04, -0.73, 0.106 * bulk),
+      ...slats(3, 0.05, 0.005, 0.004, 0.016, C.dark, x * 1.04, -0.66, 0.122 * bulk),
+      chamfer(0.08, 0.15, 0.04, 0.012, C.dark, x * 1.04, -0.72, -0.105 * bulk),
+      cyl(0.016, 0.02, 0.02, 8, C.joint, 'y', x * 1.04, -0.8, -0.11 * bulk),
+    );
+  }
 }
 
 let sharedPlumeTex: THREE.Texture | null = null;
@@ -418,7 +501,7 @@ export class RemoteSuit {
     if (variant === 'warmachine') {
       this.wmPack = buildWarMachinePack(this.hazeUniforms);
       // Align dorsal pack to RemoteSuit torso coordinates (chest centre ~ y = 0.44)
-      this.wmPack.root.position.set(0, 0.44, -0.02);
+      this.wmPack.root.position.set(0, 0.5, -0.02);
       this.visualRoot.add(this.wmPack.root);
       // Attach twin forearm gauntlet weapon pods to RemoteSuit forearms
       this.wmPack.wristL.root.position.set(0.085, -0.42, 0.0);

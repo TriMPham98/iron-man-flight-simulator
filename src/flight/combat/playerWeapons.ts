@@ -90,7 +90,8 @@ interface Flare extends Decoy {
 
 type Shot =
   | { kind: 'bolt'; side: 'L' | 'R' }
-  | { kind: 'minigun' }
+  /** `late`: how long ago (s) inside this frame the round was due; it leaves the muzzle that far along. */
+  | { kind: 'minigun'; late: number }
   | { kind: 'rocket'; target: Hostile | null }
   | { kind: 'launcher'; side: 0 | 1; target: Hostile | null }
   | { kind: 'flare'; side: 'L' | 'R'; sweep: number }
@@ -106,6 +107,8 @@ export const MINIGUN_LOCK_RANGE = 2200;
 export const MINIGUN_LOCK_CONE = Math.cos(THREE.MathUtils.degToRad(45));
 const MINIGUN_HEAT_TIME = 4.6;
 const MINIGUN_SPREAD = 0.0055;
+/** Drawn length of one M134 tracer (m): about one round's spacing at full cadence. */
+const TRACER_REACH = MINIGUN_SPEED * MINIGUN_INTERVAL * 0.9;
 const MINIGUN_RECOIL = 0.14;
 const MINIGUN_KNOCK = 3.2;
 const TRACER_HOT = new THREE.Color(16, 10, 3);
@@ -607,11 +610,19 @@ export class PlayerWeapons {
       }
       this.minigunFiring = gunNow;
       this.minigunT -= dt;
+      // Idle, the cadence clock waits at zero: the first round leaves on the
+      // first firing frame, not a backlog of them
+      if (!this.minigunFiring) this.minigunT = Math.max(0, this.minigunT);
       if (this.minigunFiring) {
-        if (this.minigunT <= 0) {
-          this.pending.push({ kind: 'minigun' });
-          this.minigunT = MINIGUN_INTERVAL * this.spec.repulsorInterval * mods.repulsorInterval;
+        // Rounds keep their true cadence whatever the frame rate: every round
+        // due this frame is fired, each already that far down range, so the
+        // stream is evenly spaced instead of bunching on frame boundaries
+        const interval = MINIGUN_INTERVAL * this.spec.repulsorInterval * mods.repulsorInterval;
+        for (let n = 0; this.minigunT <= 0 && n < 4; n++) {
+          this.pending.push({ kind: 'minigun', late: Math.min(-this.minigunT, dt) });
+          this.minigunT += interval;
         }
+        if (this.minigunT <= 0) this.minigunT = interval;
         if (!overcharged) {
           this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (MINIGUN_HEAT_TIME * this.spec.unibeamTime));
           if (this.unibeamHeat >= 1) {
@@ -850,7 +861,7 @@ export class PlayerWeapons {
 
     for (const s of this.pending) {
       if (s.kind === 'bolt') this.fireBolt(s.side, this.aimDir);
-      else if (s.kind === 'minigun') this.fireMinigun(this.aimDir);
+      else if (s.kind === 'minigun') this.fireMinigun(this.aimDir, s.late);
       else if (s.kind === 'rocket') this.fireRocket(s.target);
       else if (s.kind === 'flare') this.popFlare(s.side, s.sweep);
       else if (s.kind === 'laserCutter') {
@@ -1073,7 +1084,7 @@ export class PlayerWeapons {
    * muzzle onto `minigunTarget`'s lead point (or manual aim if no target),
    * ejecting glowing brass casings sideways with gun exhaust & breech kick.
    */
-  private fireMinigun(aim: THREE.Vector3): void {
+  private fireMinigun(aim: THREE.Vector3, late = 0): void {
     const from = new THREE.Vector3();
     const bore = new THREE.Vector3();
     if (this.wmPack) {
@@ -1123,7 +1134,10 @@ export class PlayerWeapons {
     this.model.vel.addScaledVector(dir, -MINIGUN_RECOIL * (this.model.grounded ? BRACED : 1));
     const vs = this.model.vel.clone();
     const v = dir.clone().multiplyScalar(MINIGUN_SPEED).add(vs);
-    this.bolts.push({ p: from.clone(), o: from, vs, v, life: 2.1, side: 'R', kind: 'tracer', age: 0, laid: 0 });
+    // `o` rides with the suit from the barrel tip, `p` starts as far down range
+    // as the round has flown since it was due (relative to the suit)
+    const p = from.clone().addScaledVector(dir, MINIGUN_SPEED * late);
+    this.bolts.push({ p, o: from, vs, v, life: 2.1, side: 'R', kind: 'tracer', age: late, laid: 0 });
     this.events.emit('minigunFire', { at: from, side: 'R', value: locked ? 1 : 0 });
   }
 
@@ -1538,12 +1552,18 @@ export class PlayerWeapons {
       const sp = b.v.length();
       const out = b.p.distanceTo(b.o);
       if (b.kind === 'tracer') {
-        // War Machine M134 Vulcan tungsten-incendiary tracer: long bright amber-gold needle with white-hot tip
-        const len = Math.min(0.032, out / Math.max(sp, 1));
+        // War Machine M134 Vulcan tungsten-incendiary tracer: long bright amber-gold needle with white-hot tip.
+        // The tail runs back along the round's path relative to the suit and is
+        // pinned at the barrel tip while the round is young, so the stream
+        // always reads as leaving the muzzle (never starting behind or short
+        // of it); each needle spans about one round's spacing so the burst
+        // reads as one continuous chain.
+        if (out < 1e-3) continue;
+        const reach = Math.min(1, TRACER_REACH / out);
         const fl = 0.88 + 0.24 * Math.sin(b.age * 110);
-        const tail = this._a.copy(b.p).addScaledVector(b.v, -len);
-        S.add(tail, b.p, 11, 5.2, 1.0, 0.78, 0.025, 0.22 * fl);
-        const head = this._b.copy(b.p).addScaledVector(b.v, -len * 0.35);
+        const tail = this._a.copy(b.p).lerp(b.o, reach);
+        S.add(tail, b.p, 11, 5.2, 1.0, 0.78, 0.02, 0.2 * fl);
+        const head = this._b.copy(b.p).lerp(b.o, reach * 0.3);
         S.add(head, b.p, 18, 13, 6, 1, 0.05, 0.14 * fl);
       } else {
         const len = Math.min(0.022, out / sp);
