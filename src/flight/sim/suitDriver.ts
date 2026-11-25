@@ -26,7 +26,9 @@ export interface ArmsState {
    * over the shoulder, behind — is shot with the hand on that side.
    */
   aimSide: number;
-  /** Palm discharge flash / charge 0–1. */
+  /** War Machine: the raised arm is a gun (fist closed, forearm on the line), not a palm. */
+  guns: boolean;
+  /** Palm discharge flash (a gun arm's recoil) / charge 0–1. */
   flashL: number;
   flashR: number;
   chargeL: number;
@@ -55,6 +57,7 @@ export const IDLE_ARMS = (): ArmsState => ({
   aimL: 0,
   aimR: 0,
   aimSide: 0,
+  guns: false,
   flashL: 0,
   flashR: 0,
   chargeL: 0,
@@ -87,6 +90,9 @@ const COM = new THREE.Vector3(0, 1.0, 0);
  * the fingers skyward — the flat "stop" hand — rather than out to the side.
  */
 const AIM_TWIST = -Math.PI / 2;
+/** A gun arm's closed fist (thumb … pinky), and the wrist that carries it level with the forearm. */
+const GUN_FIST = [1, 1.3, 1.35, 1.35, 1.35];
+const GUN_WRIST = 0.3;
 /** Turn assist: the arm rolled so the palm faces forward (into the hand's sweep). */
 const ASSIST_TWIST = Math.PI / 2;
 /** Forearm roll for the braking arms (palms to the travel, elbows soft). */
@@ -196,6 +202,16 @@ export function aimArm(at: readonly number[], normal: readonly number[], t: THRE
     wrist = clamp(wrist + err, 0.6, 1.9);
   }
   return [abd, flex, wrist];
+}
+
+/**
+ * Left arm onto the aim `t` as a gun (War Machine's forearm cannons): the
+ * shoulder angles that lay the forearm itself, not the palm, along the line.
+ */
+export function gunArm(t: THREE.Vector3, twist: number, elbow: number): [number, number] {
+  const [, E, W] = ARM_JOINTS;
+  _p.copy(W).sub(E).applyAxisAngle(_X, -elbow).applyAxisAngle(_Y, twist);
+  return shoulderOnto(_p, t);
 }
 
 /**
@@ -749,7 +765,9 @@ export class SuitDriver {
     // comfortable reach — an aim beyond it is fired from the nearest line
     // the arm can make (the bolt still flies true from the palm). The
     // elbow folds on the way up and drives straight at the end (a punch,
-    // not a stiff swing from the shoulder)
+    // not a stiff swing from the shoulder). War Machine's arms come up the
+    // same way but as guns: fist closed, wrist straight, the forearm (and the
+    // barrels on it) along the line
     const chestQ = torsoQuaternion(this._qt, yaw, pitch, roll, spineYaw, spineBend, spineSide).invert();
     for (const [side, k] of [
       ['L', arms.aimL],
@@ -774,9 +792,9 @@ export class SuitDriver {
       const out = 0.5 * smooth01((Math.abs(tc.y) - 0.3) / 0.6);
       const tgt = clampReach(tc.set(s * tc.x - 0.03 + out, tc.y, tc.z).normalize());
       const palm = suit.palms[0] ?? { at: [0.35, 0.96, 0.03], normal: [-0.94, -0.34, -0.04] };
-      const [abd, flex, aimWrist] = aimArm(palm.at, palm.normal, tgt, AIM_TWIST, elbow, 1.4);
+      const [abd, flex, aimWrist] = arms.guns ? [...gunArm(tgt, AIM_TWIST, elbow), GUN_WRIST] : aimArm(palm.at, palm.normal, tgt, AIM_TWIST, elbow, 1.4);
       // Flat, firm hand: fingers straight and together, a slight natural splay
-      const hand = [-0.1, -0.06, -0.04, -0.02, 0.02];
+      const hand = arms.guns ? GUN_FIST : [-0.1, -0.06, -0.04, -0.02, 0.02];
       if (side === 'L') {
         limbs.armL = lerp(limbs.armL, abd, ka);
         limbs.armFlexL = lerp(limbs.armFlexL, flex, ka);
@@ -1034,8 +1052,8 @@ export class SuitDriver {
     const pb = this.outputs.palmBoost;
     const palmsL = lerp(palms, this.outputs.bootL, pb);
     const palmsR = lerp(palms, this.outputs.bootR, pb);
-    this.outputs.palmL = clamp01(Math.max(palmsL * (1 - 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimL) * (1 - ub), assistL, flickL, brakeL, arms.flashL));
-    this.outputs.palmR = clamp01(Math.max(palmsR * (1 + 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimR) * (1 - ub), assistR, flickR, brakeR, arms.flashR));
+    this.outputs.palmL = clamp01(Math.max(palmsL * (1 - 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimL) * (1 - ub), assistL, flickL, brakeL, arms.guns ? 0 : arms.flashL));
+    this.outputs.palmR = clamp01(Math.max(palmsR * (1 + 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimR) * (1 - ub), assistR, flickR, brakeR, arms.guns ? 0 : arms.flashR));
 
     const pose: FlightPose = {
       stance: 0,

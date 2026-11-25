@@ -21,9 +21,9 @@ import {
 import { GRAVITY } from '../world/config';
 import type { Heightfield } from '../world/heightfield';
 import type { SuitVariant } from '../net/protocol';
-import { animateWarMachinePack, WM_POD_TUBES, type WarMachinePack } from '../net/suitVisuals';
+import { animateWarMachinePack, WM_POD_TUBES, type WarMachinePack, type WarMachineWristPod } from '../net/suitVisuals';
 import type { Explosions } from './explosions';
-import { segmentToCore } from './hitShape';
+import { coreDistance, segmentToCore } from './hitShape';
 import { LaserCutterFx } from './laserCutterFx';
 import { paintLock } from './locks';
 import type { Missiles } from './missiles';
@@ -56,13 +56,19 @@ import { UnibeamFx } from './unibeamFx';
  * speed).
  */
 
+/**
+ * Projectile family: Iron Man's plasma repulsor, and War Machine's rounds —
+ * the M134's tracer, the gauntlet cannons' 20 mm shell and the Bunker-Buster's
+ * armour-piercing penetrator.
+ */
+type RoundKind = 'repulsor' | 'tracer' | 'cannon' | 'buster';
+
 interface Bolt {
   p: THREE.Vector3;
   v: THREE.Vector3;
   life: number;
   side: 'L' | 'R';
-  /** Projectile family: Iron Man plasma repulsor vs War Machine M134 tungsten-incendiary tracer. */
-  kind: 'repulsor' | 'tracer';
+  kind: RoundKind;
   /** Where it left the muzzle, carried on with the suit: the streak never reaches back past it. */
   o: THREE.Vector3;
   /** The suit's velocity when it fired (the bolt carries it too). */
@@ -70,6 +76,10 @@ interface Bolt {
   /** Age (s) and path laid since the last wisp of trail (m). */
   age: number;
   laid: number;
+  /** Bunker-Buster: what it was fired at, what it has gone through, and how many more it can. */
+  target?: Hostile | null;
+  through?: Set<Hostile>;
+  pierce?: number;
 }
 
 interface Flare extends Decoy {
@@ -92,6 +102,7 @@ type Shot =
   | { kind: 'bolt'; side: 'L' | 'R' }
   /** `late`: how long ago (s) inside this frame the round was due; it leaves the muzzle that far along. */
   | { kind: 'minigun'; late: number }
+  | { kind: 'cannon'; side: 'L' | 'R'; late: number }
   | { kind: 'rocket'; target: Hostile | null }
   | { kind: 'launcher'; side: 0 | 1; target: Hostile | null }
   | { kind: 'flare'; side: 'L' | 'R'; sweep: number }
@@ -113,17 +124,29 @@ const MINIGUN_RECOIL = 0.14;
 const MINIGUN_KNOCK = 3.2;
 const TRACER_HOT = new THREE.Color(16, 10, 3);
 const TRACER_COOL = new THREE.Color(7, 2.0, 0.28);
-const WM_REPULSOR_HOT = new THREE.Color(15, 6.5, 2.2);
-const WM_REPULSOR_COOL = new THREE.Color(4.2, 0.9, 0.2);
 const BRASS_HOT = new THREE.Color(7.5, 5.2, 1.4);
 const BRASS_COOL = new THREE.Color(2.4, 1.3, 0.25);
-/** War Machine heavier gauntlet repulsors & ordnance tuning. */
-const WM_REPULSOR_DAMAGE = 58;
-const WM_REPULSOR_INTERVAL = 0.2;
+/** War Machine's twin gauntlet autocannons (LMB): light shells, both arms up, the two taking turns. */
+export const CANNON_SPEED = 1000;
+export const CANNON_DAMAGE = 26;
+export const CANNON_INTERVAL = 0.09;
+const CANNON_SPREAD = 0.003;
+const CANNON_REACH = 26;
+const CANNON_RECOIL = 0.18;
+const CANNON_KNOCK = 5;
+/** Concussive capstone: cannon shells land over twice as often as repulsor bolts, so it takes twice the hits. */
+const CANNON_PULSE_HITS = 2;
+/** War Machine ordnance tuning. */
 const WM_POD_DAMAGE = 155;
 const WM_POD_BLAST = 5.8;
-const WM_BUNKER_DAMAGE = 340;
-const WM_BUNKER_BLAST = 9.5;
+/** Bunker-Buster: an unguided armour-piercing round that punches through what it kills and bursts on what stops it. */
+export const BUSTER_SPEED = 2000;
+export const BUSTER_DAMAGE = 340;
+export const BUSTER_BLAST = 9.5;
+const BUSTER_PIERCE = 2;
+const BUSTER_REACH = 60;
+const BUSTER_RECOIL = 2.2;
+const BUSTER_KNOCK = 26;
 const WM_SHOULDER_FALLBACK: [number, number, number] = [-0.24, 1.66, 0.42];
 const WM_POD_FALLBACK: [number, number, number] = [0.23, 1.61, 0.05];
 /** The aim snaps to a target this close to the sight line or its lead pip (deg), keeps it out to ASSIST_KEEP, within ASSIST_RANGE (m). */
@@ -220,6 +243,14 @@ function flareTexture(): THREE.Texture {
 
 const SIDES = ['L', 'R'] as const;
 
+/** Each round's speed (m/s), slack on its hit test (m), shove (m/s) and the spacing of its trail (m). */
+const ROUNDS: Record<RoundKind, { speed: number; pad: number; knock: number; trail: number }> = {
+  repulsor: { speed: BOLT_SPEED, pad: 0, knock: REPULSOR_KNOCK, trail: 7 },
+  tracer: { speed: MINIGUN_SPEED, pad: 0.65, knock: MINIGUN_KNOCK, trail: 14 },
+  cannon: { speed: CANNON_SPEED, pad: 0.5, knock: CANNON_KNOCK, trail: 16 },
+  buster: { speed: BUSTER_SPEED, pad: 1.8, knock: BUSTER_KNOCK, trail: 6 },
+};
+
 export class PlayerWeapons {
   readonly arms: ArmsState = IDLE_ARMS();
   readonly group = new THREE.Group();
@@ -278,8 +309,15 @@ export class PlayerWeapons {
   private minigunT = 0;
   private minigunShotFrame = false;
   private minigunSmokeAcc = 0;
-  private wristKickL = false;
-  private wristKickR = false;
+  /** War Machine's gauntlet cannons are up and firing this frame. */
+  cannonsFiring = false;
+  private cannonT = 0;
+  /** The barrel of its pair each gauntlet fires next (L, R). */
+  private readonly cannonBarrel: [0 | 1, 0 | 1] = [0, 0];
+  private wristKickL = 0;
+  private wristKickR = 0;
+  /** Gauntlet the flak sweep's next burst leaves from. */
+  private flakSide: 0 | 1 = 1;
   private readonly _chestQ = new THREE.Quaternion();
   private nextSide: 'L' | 'R' = 'R';
   private holdL = 0;
@@ -393,6 +431,8 @@ export class PlayerWeapons {
       this.events.emit('unibeamEnd', { at: this.model.pos });
     }
     this.chargeSide = null;
+    this.cannonsFiring = false;
+    this.arms.guns = wm;
     this.arms.silos = wm ? 0 : this.siloOpen;
     this.arms.launchers = wm ? 0 : this.launcherOut;
   }
@@ -430,6 +470,11 @@ export class PlayerWeapons {
   /** True while the unibeam wants the suit upright and slowed. */
   get stance(): boolean {
     return this.unibeamHold > 0;
+  }
+
+  /** Speed of the primary's round (m/s): what the lead pip is solved for. */
+  private get primarySpeed(): number {
+    return this.variant === 'warmachine' ? CANNON_SPEED : BOLT_SPEED;
   }
 
   get repulsorBusy(): boolean {
@@ -480,17 +525,17 @@ export class PlayerWeapons {
 
     const mods = this.reactorMods;
 
-    // ── Repulsors (Iron Man Mk III cyan plasma / War Machine Mk II heavy amber-crimson) ──
+    // ── LMB: Iron Man's palm repulsors  vs  War Machine's gauntlet cannons ──
     this.repulsorT -= dt;
     const fire = enabled && c.fire && !this.unibeamOn;
-    if (fire && this.repulsorT <= 0 && !this.chargeSide) {
+    if (isWM) this.updateCannons(dt, fire);
+    if (fire && !isWM && this.repulsorT <= 0 && !this.chargeSide) {
       // A target well off to one side (over the shoulder, behind) is shot
       // with the hand on that side (the suit driver's call); else alternate
       this.chargeSide = A.aimSide > 0 ? 'L' : A.aimSide < 0 ? 'R' : this.nextSide;
       this.chargeT = 0;
       this.nextSide = this.chargeSide === 'L' ? 'R' : 'L';
-      const baseInt = isWM ? WM_REPULSOR_INTERVAL : REPULSOR_INTERVAL;
-      this.repulsorT = baseInt * this.spec.repulsorInterval * mods.repulsorInterval;
+      this.repulsorT = REPULSOR_INTERVAL * this.spec.repulsorInterval * mods.repulsorInterval;
       this.events.emit('repulsorCharge', { side: this.chargeSide });
     }
     if (this.chargeSide) {
@@ -765,6 +810,35 @@ export class PlayerWeapons {
     if (!this.posedExternally) this.afterPose(true);
   }
 
+  /**
+   * War Machine's gauntlet cannons: both arms come up onto the aim and the
+   * two take turns; a target well off to one side gets that side's gun alone.
+   * Rounds keep their true cadence whatever the frame rate (as the M134's).
+   */
+  private updateCannons(dt: number, fire: boolean): void {
+    const A = this.arms;
+    const useL = fire && A.aimSide >= 0;
+    const useR = fire && A.aimSide <= 0;
+    if (useL) this.holdL = 0.45;
+    if (useR) this.holdR = 0.45;
+    const upL = useL && A.aimL > 0.75;
+    const upR = useR && A.aimR > 0.75;
+    this.cannonsFiring = upL || upR;
+    this.cannonT -= dt;
+    if (!this.cannonsFiring) {
+      this.cannonT = Math.max(0, this.cannonT);
+      return;
+    }
+    const interval = CANNON_INTERVAL * this.spec.repulsorInterval * this.reactorMods.repulsorInterval;
+    for (let n = 0; this.cannonT <= 0 && n < 4; n++) {
+      const side = upL && upR ? this.nextSide : upL ? 'L' : 'R';
+      this.nextSide = side === 'L' ? 'R' : 'L';
+      this.pending.push({ kind: 'cannon', side, late: Math.min(-this.cannonT, dt) });
+      this.cannonT += interval;
+    }
+    if (this.cannonT <= 0) this.cannonT = interval;
+  }
+
   private bayLoaded(i: 0 | 1): boolean {
     return this.launcherRounds[i] > 0 && this.bayEmpty[i] <= 0;
   }
@@ -873,6 +947,7 @@ export class PlayerWeapons {
     for (const s of this.pending) {
       if (s.kind === 'bolt') this.fireBolt(s.side, this.aimDir);
       else if (s.kind === 'minigun') this.fireMinigun(this.aimDir, s.late);
+      else if (s.kind === 'cannon') this.fireCannon(s.side, this.aimDir, s.late);
       else if (s.kind === 'rocket') this.fireRocket(s.target);
       else if (s.kind === 'flare') this.popFlare(s.side, s.sweep);
       else if (s.kind === 'laserCutter') {
@@ -888,8 +963,9 @@ export class PlayerWeapons {
       this.stepWarMachinePack(true);
     }
     this.minigunShotFrame = false;
-    this.wristKickL = false;
-    this.wristKickR = false;
+    this.wristKickL = 0;
+    this.wristKickR = 0;
+    this.flakSide = this.flakSide === 0 ? 1 : 0;
 
     // Hot M134 barrel wisps & dorsal radiator steam when cooling off
     if (isWM && (this.unibeamHeat > 0.35 || this.ventT > 0)) {
@@ -952,6 +1028,7 @@ export class PlayerWeapons {
       podLoaded: this.rockets,
       ventOpen: ventGoal,
       wristDeploy: this.launcherOut,
+      wristGuns: this.holdL > 0 || this.holdR > 0,
       wristLoaded: [this.bayLoaded(0), this.bayLoaded(1)],
       wristLock: [this.arms.lockL, this.arms.lockR],
       flakSweepActive: this.laserCutter.active,
@@ -962,7 +1039,7 @@ export class PlayerWeapons {
 
   private flakOrigin(out: THREE.Vector3): THREE.Vector3 {
     if (this.variant === 'warmachine' && this.wmPack) {
-      this.wmPack.wristR.muzzleWorld(out, this._b);
+      (this.flakSide === 0 ? this.wmPack.wristL : this.wmPack.wristR).cannonWorld(0, out, this._b);
       return out;
     }
     return this.palmMuzzle('R', out);
@@ -973,7 +1050,7 @@ export class PlayerWeapons {
    * its motion relative to the suit (projectiles carry the suit's own velocity)
    * by the flight time; for the unibeam (all but instant) just the sweep's lag.
    */
-  leadPoint(h: Hostile, out: THREE.Vector3, beam = this.unibeamHold > 0 || this.unibeamOn, projSpeed = BOLT_SPEED): THREE.Vector3 {
+  leadPoint(h: Hostile, out: THREE.Vector3, beam = this.unibeamHold > 0 || this.unibeamOn, projSpeed = this.primarySpeed): THREE.Vector3 {
     if (beam) return out.copy(h.pos).addScaledVector(h.vel, BEAM_LAG);
     const rel = this._l.copy(h.vel).sub(this.model.vel);
     // Two rounds settle the flight time onto the moving point
@@ -1051,7 +1128,6 @@ export class PlayerWeapons {
   }
 
   private fireBolt(side: 'L' | 'R', aim: THREE.Vector3): void {
-    const isWM = this.variant === 'warmachine';
     const from = this.palmMuzzle(side, new THREE.Vector3());
     let target = this.aimPoint;
     // Lead the target (the pip on the HUD is this same point)
@@ -1061,10 +1137,8 @@ export class PlayerWeapons {
     if (dir.dot(aim) < 0.5) dir.copy(aim);
     const P = this.particles;
     const vel = this.model.vel;
-    const hot = isWM ? WM_REPULSOR_HOT : REPULSOR_HOT;
-    const cool = isWM ? WM_REPULSOR_COOL : REPULSOR_COOL;
-    P.emit('flash', from, vel, { scale: isWM ? 0.055 : 0.045, color: hot, end: cool });
-    P.emit('plasma', from, vel, { scale: 0.7, life: 0.5, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+    P.emit('flash', from, vel, { scale: 0.045, color: REPULSOR_HOT, end: REPULSOR_COOL });
+    P.emit('plasma', from, vel, { scale: 0.7, life: 0.5 });
     const u = this._n.set(0, 1, 0).cross(dir);
     if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
     u.normalize();
@@ -1072,15 +1146,15 @@ export class PlayerWeapons {
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2 + Math.random() * 0.4;
       const v = this._w.copy(u).multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)).multiplyScalar(9 + Math.random() * 3).addScaledVector(dir, 3).add(vel);
-      P.emit('plasma', from, v, { scale: 0.3, life: 0.3, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+      P.emit('plasma', from, v, { scale: 0.3, life: 0.3 });
     }
     for (let i = 0; i < 4; i++) {
       const v = this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(2).addScaledVector(dir, 14 + Math.random() * 24).add(vel);
-      P.emit('plasma', from, v, { scale: 0.35 + Math.random() * 0.2, life: 0.35, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+      P.emit('plasma', from, v, { scale: 0.35 + Math.random() * 0.2, life: 0.35 });
     }
     this.muzzleLight.position.copy(from).addScaledVector(dir, 0.7);
     this.muzzleT = 0;
-    this.model.vel.addScaledVector(dir, -REPULSOR_RECOIL * (isWM ? 1.2 : 1) * (this.model.grounded ? BRACED : 1));
+    this.model.vel.addScaledVector(dir, -REPULSOR_RECOIL * (this.model.grounded ? BRACED : 1));
     const vs = this.model.vel.clone();
     const v = dir.clone().multiplyScalar(BOLT_SPEED).add(vs);
     this.bolts.push({ p: from.clone(), o: from, vs, v, life: 2.2, side, kind: 'repulsor', age: 0, laid: 0 });
@@ -1152,12 +1226,70 @@ export class PlayerWeapons {
     this.events.emit('minigunFire', { at: from, side: 'R', value: locked ? 1 : 0 });
   }
 
+  /** A gauntlet cannon's 20 mm round: out of one barrel of the pair, brass out of the side. */
+  private fireCannon(side: 'L' | 'R', aim: THREE.Vector3, late: number): void {
+    const i = side === 'L' ? 0 : 1;
+    const from = new THREE.Vector3();
+    const pod = this.wristPod(i);
+    const barrel = this.cannonBarrel[i];
+    if (pod) pod.cannonWorld(barrel, from, this._b);
+    else this.palmWorld(side, from);
+    this.cannonBarrel[i] = barrel === 0 ? 1 : 0;
+
+    const target = this.assist ? this.leadPoint(this.assist, this._w, false) : this.aimPoint;
+    const dir = target.clone().sub(from).normalize();
+    if (dir.dot(aim) < 0.5) dir.copy(aim);
+    dir
+      .add(this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(2 * CANNON_SPREAD))
+      .normalize();
+
+    const P = this.particles;
+    const vel = this.model.vel;
+    P.emit('flash', from, vel, { scale: 0.045, color: TRACER_HOT, end: TRACER_COOL });
+    P.emit('smoke', from, this._w.copy(vel).addScaledVector(dir, 8 + Math.random() * 6), { scale: 0.2, life: 0.26, alpha: 0.4 });
+    this.ejectBrass(pod, 4.5, 0.42);
+
+    this.muzzleLight.position.copy(from).addScaledVector(dir, 0.5);
+    this.muzzleT = 0;
+    if (i === 0) this.wristKickL = Math.max(this.wristKickL, 0.7);
+    else this.wristKickR = Math.max(this.wristKickR, 0.7);
+    this.kickArm(i, 0.55);
+    this.model.vel.addScaledVector(dir, -CANNON_RECOIL * (this.model.grounded ? BRACED : 1));
+    const vs = this.model.vel.clone();
+    const v = dir.clone().multiplyScalar(CANNON_SPEED).add(vs);
+    const p = from.clone().addScaledVector(dir, CANNON_SPEED * late);
+    this.bolts.push({ p, o: from, vs, v, life: 2.2, side, kind: 'cannon', age: late, laid: 0 });
+    this.events.emit('cannonFire', { at: from, side });
+  }
+
+  private wristPod(i: 0 | 1): WarMachineWristPod | null {
+    return this.wmPack ? (i === 0 ? this.wmPack.wristL : this.wmPack.wristR) : null;
+  }
+
+  /** A spent case out of a gauntlet's side. */
+  private ejectBrass(pod: WarMachineWristPod | null, speed: number, scale: number): void {
+    if (!pod) return;
+    pod.ejectWorld(this._a, this._b);
+    const v = this._w
+      .set((Math.random() - 0.5) * 1.4, 1 + Math.random() * 1.5, (Math.random() - 0.5) * 1.4)
+      .addScaledVector(this._b, speed * (0.8 + Math.random() * 0.5))
+      .add(this.model.vel);
+    this.particles.emit('spark', this._a, v, { scale, life: 0.55, color: BRASS_HOT, end: BRASS_COOL });
+  }
+
+  /** A gun's kick up the arm (0–1). */
+  private kickArm(i: 0 | 1, k: number): void {
+    if (i === 0) this.arms.flashL = Math.max(this.arms.flashL, k);
+    else this.arms.flashR = Math.max(this.arms.flashR, k);
+  }
+
   private updateBolts(dt: number, hostiles: readonly Hostile[]): void {
-    const isWM = this.variant === 'warmachine';
     for (let i = this.bolts.length - 1; i >= 0; i--) {
       const b = this.bolts[i];
       const isTracer = b.kind === 'tracer';
-      const speed = isTracer ? MINIGUN_SPEED : BOLT_SPEED;
+      const isRepulsor = b.kind === 'repulsor';
+      const isBuster = b.kind === 'buster';
+      const { speed, pad, knock, trail: spacing } = ROUNDS[b.kind];
       const prev = this._a.copy(b.p);
       b.p.addScaledVector(b.v, dt);
       b.o.addScaledVector(b.vs, dt);
@@ -1165,73 +1297,83 @@ export class PlayerWeapons {
       b.age += dt;
       // Trail wisps along the path
       b.laid += speed * dt;
-      const spacing = isTracer ? 14 : 7;
       while (b.laid > spacing) {
         b.laid -= spacing;
         const at = this._b.copy(b.p).addScaledVector(b.v, -b.laid / speed);
-        if (isTracer) {
-          this.particles.emit('smoke', at, undefined, { scale: 0.2, life: 0.22, alpha: 0.35 });
-        } else {
-          this.particles.emit('plasma', at, undefined, {
-            scale: 0.4,
-            life: 0.3,
-            color: isWM ? WM_REPULSOR_HOT : undefined,
-            end: isWM ? WM_REPULSOR_COOL : undefined,
-          });
-        }
+        if (isRepulsor) this.particles.emit('plasma', at, undefined, { scale: 0.4, life: 0.3 });
+        else if (isBuster) this.particles.emit('smoke', at, undefined, { scale: 0.34, life: 0.6, alpha: 0.4 });
+        else this.particles.emit('smoke', at, undefined, { scale: 0.2, life: 0.22, alpha: 0.35 });
       }
       let hit: THREE.Vector3 | null = null;
       let struck: Hostile | null = null;
       // Against hostiles (segment vs sphere)
       const seg = this._v.copy(b.p).sub(prev);
       const len2 = seg.lengthSq();
+      // A Bunker-Buster sent for one piece of a ship passes the rest of it (as
+      // a seeker does: the hull's capsule swallows the deck)
+      const whole = b.target?.alive ? b.target.whole : undefined;
+      let passing = false;
       for (const h of hostiles) {
-        if (!h.alive) continue;
-        const pad = isTracer ? 0.65 : 0;
+        if (!h.alive || b.through?.has(h) || (whole && h.whole === whole && h !== b.target)) continue;
         if (segmentToCore(h, prev, b.p, this._w, this._l) < (h.radius + pad) * (h.radius + pad)) {
           hit = this._w.clone().lerp(this._l, 0.6);
-          const knock = isTracer ? MINIGUN_KNOCK : REPULSOR_KNOCK;
           h.vel.addScaledVector(seg, knock / Math.sqrt(Math.max(len2, 1e-6)));
           struck = h;
           // Sensors L3/L5 Weak-Point Telemetry precision bonus on assisted / weak-point targets
           const sensorBonus = this.sensorCritMultiplier(h);
-          const dmg =
-            (isTracer
+          const base = isBuster
+            ? BUSTER_DAMAGE
+            : isTracer
               ? MINIGUN_DAMAGE * this.spec.repulsorDamage * this.reactorMods.unibeamDps
-              : (isWM ? WM_REPULSOR_DAMAGE : REPULSOR_DAMAGE) * this.spec.repulsorDamage * this.reactorMods.repulsorDamage) * sensorBonus;
-          const killed = h.damage(dmg, hit, 'repulsor');
+              : (isRepulsor ? REPULSOR_DAMAGE : CANNON_DAMAGE) * this.spec.repulsorDamage * this.reactorMods.repulsorDamage;
+          const killed = h.damage(base * sensorBonus, hit, isRepulsor ? 'repulsor' : 'bullet');
+          if (isBuster) {
+            (b.through ??= new Set()).add(h);
+            if (killed && b.pierce) {
+              b.pierce--;
+              passing = true;
+            }
+          }
           if (killed) {
             this.onKill(h);
             if (isTracer) this.reactor?.feedOvercharge(0.14, 'minigunKill', h.pos);
           }
           // Repulsors L3/L5 Capstone: Concussive Pulse / Overcharged Palm Shockwave
-          if (!isTracer && this.spec.repulsorBlastTier > 0) {
+          if (!isTracer && !isBuster && this.spec.repulsorBlastTier > 0) {
             this.repulsorHitCount++;
-            const every = this.spec.repulsorBlastTier === 2 ? 2 : 3;
+            const every = (this.spec.repulsorBlastTier === 2 ? 2 : 3) * (isRepulsor ? 1 : CANNON_PULSE_HITS);
             if (this.repulsorHitCount % every === 0) {
-              this.triggerRepulsorShockBlast(hit, h, hostiles);
+              this.triggerRepulsorShockBlast(hit, h, hostiles, isRepulsor);
             }
           }
           break;
         }
       }
       const surf = this.field.surfaceAt(b.p.x, b.p.z);
-      if (!hit && b.p.y < surf) hit = new THREE.Vector3(b.p.x, surf + 0.3, b.p.z);
+      if (!hit && b.p.y < surf) {
+        hit = isBuster ? this.surfaceHit(prev, b.p) : new THREE.Vector3(b.p.x, surf + 0.3, b.p.z);
+      }
       if (hit || b.life <= 0) {
-        if (hit) {
+        if (hit && isBuster) {
+          this.busterImpact(hit, struck, hostiles);
+        } else if (hit) {
           const P = this.particles;
           const d = this._n.copy(b.v).sub(b.vs).normalize();
           const carry = struck ? this._a.copy(struck.vel).multiplyScalar(0.6) : this._a.set(0, 0, 0);
-          if (isTracer) {
+          if (b.kind === 'cannon') {
+            // 20 mm HE-incendiary shell: a hard flash, a spray of fragments back off the plate, a puff
+            P.emit('flash', hit, carry, { scale: 0.34, color: TRACER_HOT, end: TRACER_COOL });
+            P.emit('fire', hit, carry, { scale: 0.9, life: 0.34 });
+            P.burst('spark', hit, 18, 26, this._w.copy(d).multiplyScalar(-0.7), 1.2, { color: TRACER_HOT, end: TRACER_COOL });
+            P.emit('smoke', hit, carry, { scale: 0.8, life: 0.6 });
+          } else if (isTracer) {
             // Tungsten-incendiary impact: fiery flak pop, metallic sparks, tight smoke puff
             P.emit('flash', hit, carry, { scale: 0.28, color: TRACER_HOT, end: TRACER_COOL });
             P.emit('fire', hit, carry, { scale: 0.75, life: 0.32 });
             P.burst('spark', hit, 14, 24, this._w.copy(d).multiplyScalar(-0.7), 1.1, { color: TRACER_HOT, end: TRACER_COOL });
             if (struck) P.emit('smoke', hit, carry, { scale: 0.65, life: 0.55 });
           } else {
-            const hot = isWM ? WM_REPULSOR_HOT : REPULSOR_HOT;
-            const cool = isWM ? WM_REPULSOR_COOL : REPULSOR_COOL;
-            P.emit('flash', hit, carry, { scale: 0.4, color: hot, end: cool });
+            P.emit('flash', hit, carry, { scale: 0.4, color: REPULSOR_HOT, end: REPULSOR_COOL });
             const u = this._l.set(0, 1, 0).cross(d);
             if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
             u.normalize();
@@ -1239,25 +1381,55 @@ export class PlayerWeapons {
             for (let k = 0; k < 28; k++) {
               const a = (k / 28) * Math.PI * 2;
               const v = this._w.copy(u).multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)).multiplyScalar(34).add(carry);
-              P.emit('plasma', hit, v, { scale: 0.75, life: 0.45, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+              P.emit('plasma', hit, v, { scale: 0.75, life: 0.45 });
             }
             for (let k = 0; k < 14; k++) {
               const v = this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(22).add(carry);
-              P.emit('plasma', hit, v, { scale: 1.5, life: 0.7, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+              P.emit('plasma', hit, v, { scale: 1.5, life: 0.7 });
             }
-            P.emit('plasma', hit, carry, { scale: 5, life: 0.5, color: isWM ? hot : undefined, end: isWM ? cool : undefined });
+            P.emit('plasma', hit, carry, { scale: 5, life: 0.5 });
             P.burst('spark', hit, 26, 20, this._w.copy(d).multiplyScalar(-0.6), 1);
           }
           this.impactLight.position.copy(hit);
           this.impactT = 0;
           const water = this.field.heightAt(hit.x, hit.z) < 0 && hit.y < 1;
-          if (water) this.particles.burst('spray', hit, isTracer ? 6 : 10, 6, new THREE.Vector3(0, 1.4, 0), 0.6);
-          else if (hit.y < surf + 1) this.particles.burst('dust', hit, isTracer ? 4 : 5, 4, new THREE.Vector3(0, 0.8, 0), 0.8, { scale: 0.8 });
-          this.events.emit(isTracer ? 'minigunHit' : 'repulsorHit', { at: hit, value: struck ? 1 : 0 });
+          if (water) this.particles.burst('spray', hit, isRepulsor ? 10 : 6, 6, new THREE.Vector3(0, 1.4, 0), 0.6);
+          else if (hit.y < surf + 1) this.particles.burst('dust', hit, isRepulsor ? 5 : 4, 4, new THREE.Vector3(0, 0.8, 0), 0.8, { scale: 0.8 });
+          this.events.emit(isTracer ? 'minigunHit' : isRepulsor ? 'repulsorHit' : 'cannonHit', { at: hit, value: struck ? 1 : 0 });
         }
-        this.bolts.splice(i, 1);
+        if (!passing) this.bolts.splice(i, 1);
       }
     }
+  }
+
+  /** Where the path `a` (above) → `b` (below) goes into the ground or the sea. */
+  private surfaceHit(a: THREE.Vector3, b: THREE.Vector3): THREE.Vector3 {
+    let lo = 0;
+    let hi = 1;
+    const at = new THREE.Vector3();
+    for (let i = 0; i < 6; i++) {
+      const k = (lo + hi) / 2;
+      at.lerpVectors(a, b, k);
+      if (at.y < this.field.surfaceAt(at.x, at.z)) hi = k;
+      else lo = k;
+    }
+    at.lerpVectors(a, b, hi);
+    return at.setY(this.field.surfaceAt(at.x, at.z) + 0.3);
+  }
+
+  /** A Bunker-Buster round bursting: the blast, its splash on everything near and the launcher capstone. */
+  private busterImpact(at: THREE.Vector3, struck: Hostile | null, hostiles: readonly Hostile[]): void {
+    const tier = this.spec.launcherClusterTier;
+    const blast = BUSTER_BLAST * (tier >= 1 ? 1.35 : 1);
+    this.explosions.blast(at, blast);
+    this.impactLight.position.copy(at);
+    this.impactT = 0;
+    for (const h of hostiles) {
+      if (!h.alive || h === struck) continue;
+      const d = Math.max(0, coreDistance(h, at) - h.radius);
+      if (d < blast * 3 && h.damage(BUSTER_DAMAGE * 0.5 * (1 - d / (blast * 3)), at, 'bullet')) this.onKill(h);
+    }
+    if (tier !== 0) this.onLauncherCapstoneImpact(at, tier);
   }
 
   /** World-space mouth and bore axis of a silo tube; false if the pod isn't up. */
@@ -1320,42 +1492,78 @@ export class PlayerWeapons {
     this.events.emit('missileLaunch', { at: from, side: isWM ? 'L' : SIDES[side] });
   }
 
+  /**
+   * War Machine's Bunker-Buster: one armour-piercing round down the gauntlet's
+   * heavy barrel. Nothing steers it: the paint gives the gun its solution, and
+   * the round flies straight at where its target will be.
+   */
+  private fireBuster(side: 0 | 1, target: Hostile | null): void {
+    const from = new THREE.Vector3();
+    const pod = this.wristPod(side);
+    if (pod) pod.muzzleWorld(from, this._b);
+    else this.palmWorld(SIDES[side], from);
+    const mark = target ?? this.assist;
+    const goal = mark ? this.leadPoint(mark, this._w, false, BUSTER_SPEED) : this.aimPoint;
+    const dir = goal.clone().sub(from).normalize();
+    // A painted target the suit has since turned away from is out of the arm's reach
+    if (dir.dot(this.aimDir) < 0.25) dir.copy(this.aimDir);
+
+    const P = this.particles;
+    const vel = this.model.vel;
+    P.emit('flash', from, vel, { scale: 0.11, color: TRACER_HOT, end: TRACER_COOL });
+    P.emit('fire', from, this._w.copy(vel).addScaledVector(dir, 14), { scale: 0.16, life: 0.14 });
+    // The muzzle brake vents to either side
+    const u = this._n.set(0, 1, 0).cross(dir);
+    if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
+    u.normalize();
+    for (let i = 0; i < 8; i++) {
+      const s = i % 2 ? 1 : -1;
+      const puff = this._w.copy(vel).addScaledVector(u, s * (5 + Math.random() * 6)).addScaledVector(dir, 2 + Math.random() * 4);
+      P.emit('smoke', from, puff, { scale: 0.34, life: 0.6, alpha: 0.6 });
+    }
+    this.ejectBrass(pod, 6, 0.9);
+    this.muzzleLight.position.copy(from).addScaledVector(dir, 0.7);
+    this.muzzleT = 0;
+    if (side === 0) this.wristKickL = 1;
+    else this.wristKickR = 1;
+    this.kickArm(side, 1);
+    this.model.vel.addScaledVector(dir, -BUSTER_RECOIL * (this.model.grounded ? BRACED : 1));
+    const vs = this.model.vel.clone();
+    const v = dir.clone().multiplyScalar(BUSTER_SPEED).add(vs);
+    this.bolts.push({
+      p: from.clone(),
+      o: from,
+      vs,
+      v,
+      life: (1.1 * LAUNCHER_RANGE * this.spec.launcherRange) / BUSTER_SPEED,
+      side: SIDES[side],
+      kind: 'buster',
+      age: 0,
+      laid: 0,
+      target,
+      pierce: BUSTER_PIERCE,
+    });
+    this.events.emit('launcherFire', { at: from, side: SIDES[side] });
+  }
+
   private fireLauncher(side: 0 | 1, target: Hostile | null): void {
-    const isWM = this.variant === 'warmachine';
+    if (this.variant === 'warmachine') return this.fireBuster(side, target);
     const from = new THREE.Vector3();
     const dir = new THREE.Vector3();
-    let caliber = 0.007;
-    let length = 0.11;
-    if (isWM) {
-      if (this.wmPack) {
-        const pod = side === 0 ? this.wmPack.wristL : this.wmPack.wristR;
-        pod.muzzleWorld(from, dir);
-      } else {
-        this.palmWorld(SIDES[side], from);
-        dir.copy(this.aimDir);
-      }
-      caliber = 0.022;
-      length = 0.34;
-      if (side === 0) this.wristKickL = true;
-      else this.wristKickR = true;
+    const hw = this.suit.weaponHardware;
+    const r = hw.fx.launcherMuzzle(SIDES[side], from, dir);
+    let { caliber, length } = r;
+    if (r.ok) {
+      from.applyMatrix4(hw.modelWorld);
+      dir.transformDirection(hw.modelWorld);
     } else {
-      const hw = this.suit.weaponHardware;
-      const r = hw.fx.launcherMuzzle(SIDES[side], from, dir);
-      caliber = r.caliber;
-      length = r.length;
-      if (r.ok) {
-        from.applyMatrix4(hw.modelWorld);
-        dir.transformDirection(hw.modelWorld);
-      } else {
-        this.palmWorld(SIDES[side], from);
-        dir.copy(this.aimDir);
-        caliber = 0.007;
-        length = 0.11;
-      }
+      this.palmWorld(SIDES[side], from);
+      dir.copy(this.aimDir);
+      caliber = 0.007;
+      length = 0.11;
     }
-    const v = this.model.vel.clone().addScaledVector(dir, LAUNCHER_KICK * (isWM ? 1.15 : 1));
-    const baseBlast = isWM ? WM_BUNKER_BLAST : 6.5;
-    const blast = this.spec.launcherClusterTier >= 1 ? baseBlast * 1.35 : isWM ? WM_BUNKER_BLAST : undefined;
+    const v = this.model.vel.clone().addScaledVector(dir, LAUNCHER_KICK);
+    const blast = this.spec.launcherClusterTier >= 1 ? 6.5 * 1.35 : undefined;
     const clusterTier = this.spec.launcherClusterTier;
     this.missiles.launch({
       team: 'player',
@@ -1367,16 +1575,14 @@ export class PlayerWeapons {
       coast: 0.1,
       caliber,
       length,
-      style: isWM ? 'warmachine' : 'ironman',
-      damage: isWM ? WM_BUNKER_DAMAGE : undefined,
       blast,
       onImpact:
         clusterTier !== 0
           ? (at) => this.onLauncherCapstoneImpact(at, clusterTier)
           : undefined,
     });
-    this.explosions.muzzle(from, dir, isWM ? 0.65 : 0.45);
-    this.particles.burst('smoke', from, isWM ? 6 : 3, isWM ? 6 : 4, dir.clone().negate(), 0.7, { scale: isWM ? 0.42 : 0.25, life: isWM ? 0.75 : 0.5 });
+    this.explosions.muzzle(from, dir, 0.45);
+    this.particles.burst('smoke', from, 3, 4, dir.clone().negate(), 0.7, { scale: 0.25, life: 0.5 });
     this.events.emit('launcherFire', { at: from, side: SIDES[side] });
   }
 
@@ -1595,25 +1801,27 @@ export class PlayerWeapons {
         S.add(tail, b.p, 11, 5.2, 1.0, 0.78, 0.02, 0.2 * fl);
         const head = this._b.copy(b.p).lerp(b.o, reach * 0.3);
         S.add(head, b.p, 18, 13, 6, 1, 0.05, 0.14 * fl);
+      } else if (b.kind === 'cannon' || b.kind === 'buster') {
+        // Gauntlet rounds: the cannon's short fat shell, the Bunker-Buster's
+        // long white-hot penetrator (the tail pinned at the muzzle, as above)
+        if (out < 1e-3) continue;
+        const heavy = b.kind === 'buster';
+        const reach = Math.min(1, (heavy ? BUSTER_REACH : CANNON_REACH) / out);
+        const fl = 0.9 + 0.2 * Math.sin(b.age * 100 + (b.side === 'L' ? 0 : 2));
+        const tail = this._a.copy(b.p).lerp(b.o, reach);
+        const head = this._b.copy(b.p).lerp(b.o, reach * (heavy ? 0.45 : 0.3));
+        S.add(tail, b.p, 12, 4.6, 0.8, 0.75, 0.02, (heavy ? 0.5 : 0.28) * fl);
+        S.add(head, b.p, 20, 15, 8, 1, 0.05, (heavy ? 0.34 : 0.18) * fl);
       } else {
         const len = Math.min(0.022, out / sp);
         const fl = (0.85 + 0.3 * Math.sin(b.age * 90 + (b.side === 'L' ? 0 : 2))) * THREE.MathUtils.lerp(0.3, 1, Math.min(1, out / 4));
         const tail = this._a.copy(b.p).addScaledVector(b.v, -len);
-        if (isWM) {
-          // War Machine heavy amber-crimson gauntlet repulsor bolt
-          S.add(tail, b.p, 11, 2.8, 0.9, 0.65, 0.045, 0.62 * fl);
-          const mid = this._b.copy(b.p).addScaledVector(b.v, -len * 0.4);
-          S.add(mid, b.p, 15, 7.5, 2.5, 1, 0.035, 0.19);
-          const head = this._b.copy(b.p).addScaledVector(b.v, -Math.min(0.35, out) / sp);
-          S.add(head, b.p, 18, 12, 6, 1, 0.26 * fl, 0.32 * fl);
-        } else {
-          // Iron Man Mk III white-hot slug in a cyan-blue plasma sheath
-          S.add(tail, b.p, 1.6, 3.6, 10, 0.6, 0.04, 0.6 * fl);
-          const mid = this._b.copy(b.p).addScaledVector(b.v, -len * 0.4);
-          S.add(mid, b.p, 9, 11, 14, 1, 0.03, 0.17);
-          const head = this._b.copy(b.p).addScaledVector(b.v, -Math.min(0.35, out) / sp);
-          S.add(head, b.p, 10, 13, 18, 1, 0.24 * fl, 0.3 * fl);
-        }
+        // Iron Man Mk III white-hot slug in a cyan-blue plasma sheath
+        S.add(tail, b.p, 1.6, 3.6, 10, 0.6, 0.04, 0.6 * fl);
+        const mid = this._b.copy(b.p).addScaledVector(b.v, -len * 0.4);
+        S.add(mid, b.p, 9, 11, 14, 1, 0.03, 0.17);
+        const head = this._b.copy(b.p).addScaledVector(b.v, -Math.min(0.35, out) / sp);
+        S.add(head, b.p, 10, 13, 18, 1, 0.24 * fl, 0.3 * fl);
       }
     }
     // Each flare's white-hot core, smeared a touch along its flight; a
@@ -1663,8 +1871,8 @@ export class PlayerWeapons {
     return 1;
   }
 
-  /** Repulsors L3/L5 Capstone: concussive plasma shockwave around the impact point. */
-  private triggerRepulsorShockBlast(at: THREE.Vector3, primary: Hostile, hostiles: readonly Hostile[]): void {
+  /** Repulsors L3/L5 Capstone: concussive shockwave around the impact point (plasma, or a cannon shell's fragments). */
+  private triggerRepulsorShockBlast(at: THREE.Vector3, primary: Hostile, hostiles: readonly Hostile[], plasma: boolean): void {
     const tier = this.spec.repulsorBlastTier;
     const radius = tier === 2 ? 32 : 18;
     const splashDmg = tier === 2 ? 55 : 28;
@@ -1683,14 +1891,20 @@ export class PlayerWeapons {
       if ('destabilized' in h && typeof (h as { destabilized?: number }).destabilized === 'number') {
         (h as { destabilized: number }).destabilized = Math.max((h as { destabilized: number }).destabilized, tier === 2 ? 1.6 : 0.9);
       }
-      if (h.damage(splashDmg * fall, at, 'repulsor')) this.onKill(h);
+      if (h.damage(splashDmg * fall, at, plasma ? 'repulsor' : 'bullet')) this.onKill(h);
     }
 
     // L5 Palm Shockwave also vents a bit of unibeam/minigun heat on every shock pulse
     if (tier === 2 && !this.reactor?.overchargeActive && this.unibeamHeat > 0) {
       this.unibeamHeat = Math.max(0, this.unibeamHeat - 0.08);
     }
-    this.particles.burst('plasma', at, tier === 2 ? 22 : 12, tier === 2 ? 28 : 18, undefined, 1, { scale: tier === 2 ? 1.3 : 0.9 });
+    const n = tier === 2 ? 22 : 12;
+    const spread = tier === 2 ? 28 : 18;
+    if (plasma) this.particles.burst('plasma', at, n, spread, undefined, 1, { scale: tier === 2 ? 1.3 : 0.9 });
+    else {
+      this.particles.burst('spark', at, n * 2, spread, undefined, 1.2, { color: TRACER_HOT, end: TRACER_COOL });
+      this.particles.burst('fire', at, 6, 8, undefined, 1, { scale: 1.1, life: 0.4 });
+    }
     this.events.emit('repulsorPulse', { at, value: tier });
   }
 

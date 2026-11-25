@@ -117,6 +117,8 @@ export class Game {
       else if (e.kind === 'laserCutterFire') this.rig.shake += 0.35;
       else if (e.kind === 'minigunStart') this.rig.shake += 0.1;
       else if (e.kind === 'minigunFire') this.rig.shake = Math.min(0.45, this.rig.shake + 0.045);
+      else if (e.kind === 'cannonFire') this.rig.shake = Math.min(0.35, this.rig.shake + 0.04);
+      else if (e.kind === 'launcherFire' && this.combat.weapons.variant === 'warmachine') this.rig.shake += 0.55;
       else if (e.kind === 'payloadDetonation') this.rig.shake += 1.4;
       else if (e.kind === 'hotSwapCatch') this.rig.shake += 1.6;
       else if (e.kind === 'reactivePulse') this.rig.shake += 0.9;

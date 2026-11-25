@@ -166,7 +166,7 @@ export class Missiles {
     length?: number;
     /** Visual style for player ordnance (gunmetal/crimson for War Machine). */
     style?: 'ironman' | 'warmachine';
-    /** Optional damage / blast overrides (e.g. War Machine shoulder pod & Bunker-Buster). */
+    /** Optional damage / blast overrides (e.g. War Machine's shoulder pod). */
     damage?: number;
     blast?: number;
   }): void {

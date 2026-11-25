@@ -93,9 +93,24 @@ const FLAK_SPARK_COOL = new THREE.Color(8, 2.4, 0.25);
 const ARC_HOT = new THREE.Color(8, 12, 18);
 const ARC_COOL = new THREE.Color(1.5, 4.5, 11);
 
-/** War Machine wider flak-plasma sweep arc (rad) and damage bonus. */
+/** War Machine's flak sweep: a wider arc (rad) and a damage bonus. */
 export const WM_FLAK_SWEEP_ARC_RAD = THREE.MathUtils.degToRad(64);
 export const WM_FLAK_SWEEP_DAMAGE_MULT = 1.12;
+
+/** Its rounds: how many leave a second, how fast (m/s), their spread (rad) and drawn length (m). */
+const FLAK_RATE = 75;
+const FLAK_SPEED = 1300;
+const FLAK_SPREAD = 0.014;
+const FLAK_REACH = 18;
+
+interface FlakRound {
+  p: THREE.Vector3;
+  from: THREE.Vector3;
+  dir: THREE.Vector3;
+  flown: number;
+  /** Where its fuse goes off, or the ground does (m). */
+  fuse: number;
+}
 
 /** Eased sweep angle (rad) across `[-arc/2, +arc/2]` for normalized progress `u` in `[0, 1]`. */
 export function sweepProgressAngle(u: number, totalArcRad = LASER_CUTTER_ARC_RAD): number {
@@ -147,6 +162,8 @@ export class LaserCutterFx {
   private time = 0;
   private isWarmachine = false;
   private flakPopAcc = 0;
+  private flakAcc = 0;
+  private readonly flak: FlakRound[] = [];
 
   private readonly ribbon: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
   private readonly light = new THREE.PointLight(0xff4030, 0, 24, 2);
@@ -203,13 +220,12 @@ export class LaserCutterFx {
     this.group.add(this.ribbon, this.light);
   }
 
-  /** Switch between Iron Man's crimson wrist laser cutter and War Machine's amber-gold flak-plasma sweep. */
+  /** Switch between Iron Man's crimson wrist laser cutter and War Machine's flak sweep (a fan of cannon fire, no beam). */
   setVariant(variant: 'ironman' | 'warmachine'): void {
     this.isWarmachine = variant === 'warmachine';
+    this.flak.length = 0;
     const u = this.ribbon.material.uniforms;
     if (this.isWarmachine) {
-      (u.uBladeCol.value as THREE.Vector3).set(1.0, 0.56, 0.14);
-      (u.uHaloCol.value as THREE.Vector3).set(1.0, 0.34, 0.06);
       this.light.color.setHex(0xff9830);
     } else {
       (u.uBladeCol.value as THREE.Vector3).set(1.0, 0.22, 0.12);
@@ -218,12 +234,13 @@ export class LaserCutterFx {
     }
   }
 
-  /** Begin a sweeping cutting laser / flak-plasma burst anchored to the aim frame. */
+  /** Begin a sweeping cutting laser / flak burst anchored to the aim frame. */
   trigger(origin: THREE.Vector3, forward: THREE.Vector3, up: THREE.Vector3, damageMult: number, cooldownDuration: number): void {
     this.active = true;
     this.elapsed = 0;
     this.prevU = 0;
     this.flakPopAcc = 0;
+    this.flakAcc = 0;
     this.duration = LASER_CUTTER_DURATION;
     this.cooldown = cooldownDuration;
     this.damageMult = damageMult * (this.isWarmachine ? WM_FLAK_SWEEP_DAMAGE_MULT : 1);
@@ -252,6 +269,7 @@ export class LaserCutterFx {
   ): { slicedHostiles: number; slicedMissiles: number } {
     this.time += dt;
     this.cooldown = Math.max(0, this.cooldown - dt);
+    this.stepFlak(dt, particles, streaks);
     if (!this.active) {
       this.ribbon.visible = false;
       this.light.intensity = 0;
@@ -323,7 +341,7 @@ export class LaserCutterFx {
             else particles.burst('spark', end, 6, 16, new THREE.Vector3(0, 0.8, 0), 1.0, { color: hotCol, end: coolCol });
           }
           particles.emit('flash', origin, undefined, { scale: 0.05, color: hotCol, end: coolCol });
-          // War Machine flak-plasma sweep pops staggered incendiary airburst clouds along the arc
+          // War Machine's flak pops staggered incendiary airbursts along the arc
           if (this.isWarmachine) {
             this.flakPopAcc += dt * 16;
             while (this.flakPopAcc >= 1) {
@@ -343,25 +361,21 @@ export class LaserCutterFx {
     this.prevU = curU;
     // Envelope: quick snap-in, crisp cut-out
     const env = THREE.MathUtils.smoothstep(curU, 0, 0.08) * (1 - THREE.MathUtils.smoothstep(curU, 0.88, 1));
-    this.ribbon.visible = env > 0.01;
+    this.ribbon.visible = env > 0.01 && !this.isWarmachine;
+    if (this.isWarmachine) this.fireFlak(dt, field);
     const uniforms = this.ribbon.material.uniforms;
     (uniforms.uA.value as THREE.Vector3).copy(this.beamFrom);
     (uniforms.uB.value as THREE.Vector3).copy(this.beamEnd);
     const len = this.beamFrom.distanceTo(this.beamEnd);
-    const wide = this.isWarmachine ? 1.35 : 1.0;
-    (uniforms.uWidth.value as THREE.Vector2).set(0.16 * wide * env, (0.28 + len * 0.001) * wide * env);
+    (uniforms.uWidth.value as THREE.Vector2).set(0.16 * env, (0.28 + len * 0.001) * env);
     uniforms.uTime.value = this.time;
     uniforms.uPower.value = env * 1.15;
     this.light.position.copy(this.beamFrom).addScaledVector(this.beamDir, 1.2);
     this.light.intensity = 65 * env;
 
     // Add a bright streak core along the cut line for extra punch
-    if (streaks && env > 0.05) {
-      if (this.isWarmachine) {
-        streaks.add(this.beamFrom, this.beamEnd, 16 * env, 8.5 * env, 2.2 * env, env, 0.06, 0.22);
-      } else {
-        streaks.add(this.beamFrom, this.beamEnd, 14 * env, 2.5 * env, 1.5 * env, env, 0.04, 0.14);
-      }
+    if (streaks && env > 0.05 && !this.isWarmachine) {
+      streaks.add(this.beamFrom, this.beamEnd, 14 * env, 2.5 * env, 1.5 * env, env, 0.04, 0.14);
     }
 
     if (curU >= 1) {
@@ -372,8 +386,51 @@ export class LaserCutterFx {
     return { slicedHostiles, slicedMissiles };
   }
 
+  /** Rounds off the gauntlet along the sweep: each flies on down the line it was fired on. */
+  private fireFlak(dt: number, field: LaserCutterRaycaster | Heightfield): void {
+    this.flakAcc += dt * FLAK_RATE;
+    while (this.flakAcc >= 1) {
+      this.flakAcc -= 1;
+      const dir = this.beamDir
+        .clone()
+        .add(this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(2 * FLAK_SPREAD))
+        .normalize();
+      const ground = field.raycast(this.beamFrom, dir, LASER_CUTTER_RANGE);
+      const flown = Math.random() * dt * FLAK_SPEED;
+      this.flak.push({
+        p: this.beamFrom.clone().addScaledVector(dir, flown),
+        from: this.beamFrom.clone(),
+        dir,
+        flown,
+        fuse: ground > 0 ? ground : LASER_CUTTER_RANGE * (0.6 + 0.4 * Math.random()),
+      });
+    }
+  }
+
+  private stepFlak(dt: number, particles: Particles | null, streaks: Streaks | null): void {
+    for (let i = this.flak.length - 1; i >= 0; i--) {
+      const r = this.flak[i];
+      r.flown += FLAK_SPEED * dt;
+      if (r.flown >= r.fuse) {
+        if (particles) {
+          const at = this._w.copy(r.from).addScaledVector(r.dir, r.fuse);
+          particles.emit('flash', at, undefined, { scale: 0.3, color: FLAK_SPARK_HOT, end: FLAK_SPARK_COOL });
+          particles.emit('smoke', at, undefined, { scale: 0.9, life: 0.7 });
+        }
+        this.flak.splice(i, 1);
+        continue;
+      }
+      r.p.copy(r.from).addScaledVector(r.dir, r.flown);
+      if (streaks) {
+        const tail = this._v.copy(r.p).addScaledVector(r.dir, -Math.min(FLAK_REACH, r.flown));
+        streaks.add(tail, r.p, 13, 6, 1.2, 0.85, 0.02, 0.22);
+      }
+    }
+  }
+
   reset(): void {
     this.active = false;
+    this.flak.length = 0;
     this.elapsed = 0;
     this.prevU = 0;
     this.cooldown = 0;

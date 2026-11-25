@@ -22,9 +22,9 @@ import type { SuitVariant } from './protocol';
  *    shoulder (with hinged blast lid, 6 animated warheads, and arming LEDs)
  *  - Mounts dorsal thermal radiator vent fins on the ammo spine (flare open
  *    during Thermal Unibeam discharge & overheat venting)
- *  - Mounts twin heavy forearm gauntlet cannon / Bunker-Buster rail pods on
- *    `forearm.L` and `forearm.R` (with sliding autocannon rails, hinged
- *    shrouds, Bunker-Buster warheads, crimson targeting lasers, and recoil).
+ *  - Mounts twin 20 mm gauntlet autocannons round a heavy Bunker-Buster gun on
+ *    `forearm.L` and `forearm.R` (with a sliding barrel carriage, hinged breech
+ *    shrouds, chambered shells, crimson targeting lasers, and recoil).
  */
 
 export const WM_POD_TUBES = 6;
@@ -32,18 +32,24 @@ export const WM_POD_TUBES = 6;
 export interface WarMachineWristPod {
   readonly side: 'L' | 'R';
   readonly root: THREE.Group;
-  /** Sliding twin-barrel autocannon + rail carriage (translates along +Y). */
+  /** Sliding barrel carriage: the twin autocannons and the heavy barrel between them (translates along +Y). */
   readonly slide: THREE.Group;
-  /** Hinged armored top cowl over the Bunker-Buster warhead. */
+  /** Hinged armored top cowl over the Bunker-Buster breech. */
   readonly shroud: THREE.Group;
-  /** Heavy Bunker-Buster warhead seated on the rail (hidden while bay reloads). */
-  readonly warhead: THREE.Object3D;
-  /** Amber-orange muzzle flash cone for twin wrist autocannons / launch blast. */
+  /** Bunker-Buster shell in the open breech (hidden while it reloads). */
+  readonly shell: THREE.Object3D;
+  /** Amber-orange muzzle flash cones of the twin autocannons. */
   readonly muzzleGlow: THREE.Mesh;
   /** Crimson targeting laser beam during Bunker-Buster lock. */
   readonly laser: THREE.Mesh;
-  /** World-space muzzle position and bore direction (along forearm +Y). */
+  /** The heavy barrel's muzzle flash. */
+  readonly heavyGlow: THREE.Mesh;
+  /** World-space muzzle and bore (along forearm +Y) of the heavy barrel … */
   muzzleWorld(outPos: THREE.Vector3, outDir: THREE.Vector3): void;
+  /** … and of either autocannon. */
+  cannonWorld(barrel: 0 | 1, outPos: THREE.Vector3, outDir: THREE.Vector3): void;
+  /** World-space ejection port and the way the brass goes. */
+  ejectWorld(outPos: THREE.Vector3, outDir: THREE.Vector3): void;
 }
 
 export interface WarMachineAnimState {
@@ -63,17 +69,19 @@ export interface WarMachineAnimState {
   podLoaded: number;
   /** Dorsal thermal radiator vent flare (0 closed → 1 wide open during unibeam / venting). */
   ventOpen: number;
-  /** Forearm Bunker-Buster deploy (0 stowed → 1 rails extended & shroud open). */
+  /** Forearm Bunker-Buster deploy (0 stowed → 1 barrel run out & breech open). */
   wristDeploy: number;
-  /** Bunker-Buster warhead loaded per arm [L, R]. */
+  /** Gauntlet cannons up: the barrels run out, the breech stays shut. */
+  wristGuns?: boolean;
+  /** Bunker-Buster shell chambered per arm [L, R]. */
   wristLoaded: readonly [boolean, boolean];
   /** Crimson target laser intensity per arm [L, R] (0–1). */
   wristLock: readonly [number, number];
   /** Dual-gauntlet flak sweep active (drives rapid reciprocating wrist barrel fire). */
   flakSweepActive: boolean;
-  /** One-frame launch recoil kick on wrist [L, R]. */
-  wristKickL?: boolean;
-  wristKickR?: boolean;
+  /** One-frame recoil kick on wrist [L, R] (0–1: a Bunker-Buster's is 1). */
+  wristKickL?: number;
+  wristKickR?: number;
 }
 
 export interface WarMachinePack {
@@ -101,7 +109,7 @@ export interface WarMachinePack {
   /** Dorsal thermal radiator cooling vents (L / R). */
   readonly ventL: THREE.Group;
   readonly ventR: THREE.Group;
-  /** Twin forearm armored autocannon + Bunker-Buster pods. */
+  /** Forearm gun pods: twin autocannons + Bunker-Buster. */
   readonly wristL: WarMachineWristPod;
   readonly wristR: WarMachineWristPod;
   /** Live animation state (updated by `animateWarMachinePack`). */
@@ -175,7 +183,8 @@ interface PackGeo {
   wristHousing: THREE.BufferGeometry;
   wristSlide: THREE.BufferGeometry;
   wristShroud: THREE.BufferGeometry;
-  wristWarhead: THREE.BufferGeometry;
+  wristShell: THREE.BufferGeometry;
+  wristHeavyGlow: THREE.BufferGeometry;
   wristMuzzleGlow: THREE.BufferGeometry;
 }
 
@@ -415,7 +424,7 @@ function buildPackGeometry(): PackGeo {
     cyl(0.007, 0.007, 0.13, 8, WM.silver, 'y', 0, 0, 0),
   ]);
 
-  // ── Twin forearm gauntlet autocannon / Bunker-Buster rail pod ──
+  // ── Forearm gun pod: twin autocannons / Bunker-Buster ──
   // Local frame: +X outward from forearm, +Y along forearm toward hand, +Z lateral
   const wristHousing = merge([
     chamfer(0.038, 0.175, 0.072, 0.009, WM.gunmetal, 0, 0, 0, 'y'),
@@ -431,7 +440,7 @@ function buildPackGeometry(): PackGeo {
     chamfer(0.042, 0.02, 0.07, 0.006, WM.steel, 0.002, -0.093, 0, 'y'),
   ]);
 
-  // Sliding twin autocannon barrels + central Bunker-Buster launch rail (+Y = forward)
+  // Sliding twin autocannon barrels + the Bunker-Buster's heavy barrel between them (+Y = forward)
   const wristSlide = merge([
     chamfer(0.024, 0.15, 0.058, 0.005, WM.dark, 0.018, 0.015, 0, 'y'),
     cyl(0.0095, 0.0085, 0.175, 10, WM.barrel, 'y', 0.018, 0.06, 0.024),
@@ -443,28 +452,41 @@ function buildPackGeometry(): PackGeo {
     box(0.026, 0.005, 0.004, WM.dark, 0.018, 0.14, -0.0365),
     // Barrel support collar
     box(0.03, 0.012, 0.07, WM.steel, 0.018, 0.09, 0),
+    // Heavy barrel: chamber, tapering tube, slab-sided muzzle brake with its baffles
+    cyl(0.0165, 0.0165, 0.036, 12, WM.steel, 'y', 0.032, 0.094, 0),
+    cyl(0.0125, 0.0142, 0.115, 12, WM.barrel, 'y', 0.032, 0.163, 0),
+    chamfer(0.03, 0.034, 0.036, 0.004, WM.gunmetal, 0.032, 0.226, 0, 'y'),
+    box(0.032, 0.005, 0.038, WM.dark, 0.032, 0.219, 0),
+    box(0.032, 0.005, 0.038, WM.dark, 0.032, 0.233, 0),
   ]);
 
-  // Hinged top shroud over the central Bunker-Buster bay (pivots near elbow y = -0.065)
+  // Hinged top shroud over the Bunker-Buster breech (pivots near elbow y = -0.065)
   const wristShroud = merge([
     chamfer(0.012, 0.135, 0.044, 0.004, WM.silver, 0.006, 0.068, 0, 'y'),
     box(0.014, 0.022, 0.046, WM.accent, 0.006, 0.11, 0),
     ...slats(3, 0.014, 0.004, 0.03, 0.012, WM.dark, 0.007, 0.05, 0),
   ]);
 
-  // Oversized Bunker-Buster ("EX-WIFE") heavy warhead seated in the forearm bay
-  const wristWarhead = merge([
-    cyl(0.0135, 0.0135, 0.095, 12, WM.plate, 'y', 0, 0.02, 0),
-    paint(new THREE.ConeGeometry(0.0135, 0.038, 12).translate(0, 0.086, 0), WM.accent),
-    cyl(0.0145, 0.0145, 0.012, 12, WM.brass, 'y', 0, 0.056, 0),
-    box(0.034, 0.016, 0.003, WM.dark, 0, -0.02, 0),
-    box(0.003, 0.016, 0.034, WM.dark, 0, -0.02, 0),
+  // Bunker-Buster shell in the breech: extractor rim, brass case, crimson-tipped penetrator
+  const wristShell = merge([
+    cyl(0.0148, 0.0148, 0.005, 12, WM.brass, 'y', 0, -0.0325, 0),
+    cyl(0.0128, 0.0138, 0.062, 12, WM.brass, 'y', 0, 0.001, 0),
+    cyl(0.0095, 0.0128, 0.01, 12, WM.brass, 'y', 0, 0.037, 0),
+    cyl(0.0092, 0.0092, 0.012, 12, WM.steel, 'y', 0, 0.047, 0),
+    paint(new THREE.ConeGeometry(0.0092, 0.022, 12).translate(0, 0.064, 0), WM.accent),
   ]);
 
   // Dual-barrel amber muzzle flash cone (along +Y)
   const wristMuzzleGlow = merge([
     paint(new THREE.ConeGeometry(0.026, 0.12, 7).translate(0.018, 0.21, 0.024), new THREE.Color(1.0, 0.68, 0.24), 5),
     paint(new THREE.ConeGeometry(0.026, 0.12, 7).translate(0.018, 0.21, -0.024), new THREE.Color(1.0, 0.68, 0.24), 5),
+  ]);
+
+  const wristHeavyGlow = merge([
+    paint(new THREE.ConeGeometry(0.05, 0.24, 8).translate(0.032, 0.37, 0), new THREE.Color(1.0, 0.72, 0.3), 6),
+    // The brake's side jets
+    paint(new THREE.ConeGeometry(0.022, 0.1, 6).rotateX(Math.PI / 2).translate(0.032, 0.226, 0.066), new THREE.Color(1.0, 0.6, 0.2), 4),
+    paint(new THREE.ConeGeometry(0.022, 0.1, 6).rotateX(-Math.PI / 2).translate(0.032, 0.226, -0.066), new THREE.Color(1.0, 0.6, 0.2), 4),
   ]);
 
   packGeoCache = {
@@ -482,8 +504,9 @@ function buildPackGeometry(): PackGeo {
     wristHousing,
     wristSlide,
     wristShroud,
-    wristWarhead,
+    wristShell,
     wristMuzzleGlow,
+    wristHeavyGlow,
   };
   return packGeoCache;
 }
@@ -506,13 +529,15 @@ function buildWristPod(
   slideMesh.castShadow = true;
   slide.add(slideMesh);
 
-  const warhead = new THREE.Mesh(g.wristWarhead, mat);
-  warhead.position.set(0.032, 0.02, 0);
-  slide.add(warhead);
+  const shell = new THREE.Mesh(g.wristShell, mat);
+  shell.position.set(0.032, 0.005, 0);
+  slide.add(shell);
 
   const muzzleGlow = new THREE.Mesh(g.wristMuzzleGlow, glowMat);
   muzzleGlow.visible = false;
-  slide.add(muzzleGlow);
+  const heavyGlow = new THREE.Mesh(g.wristHeavyGlow, glowMat);
+  heavyGlow.visible = false;
+  slide.add(muzzleGlow, heavyGlow);
 
   // Crimson targeting laser along +Y
   const laserLen = 2.2;
@@ -527,7 +552,7 @@ function buildWristPod(
     toneMapped: false,
   });
   const laser = new THREE.Mesh(laserGeo, laserMat);
-  laser.position.set(0.032, 0.125, 0);
+  laser.position.set(0.032, 0.245, 0);
   laser.visible = false;
   slide.add(laser);
 
@@ -540,22 +565,29 @@ function buildWristPod(
   shroud.add(shroudMesh);
   root.add(shroud);
 
-  const muzzleLocal = new THREE.Vector3(0.024, 0.165, 0);
+  const muzzleLocal = new THREE.Vector3(0.032, 0.25, 0);
+  const cannonLocal = [new THREE.Vector3(0.018, 0.158, 0.024), new THREE.Vector3(0.018, 0.158, -0.024)] as const;
+  const ejectLocal = new THREE.Vector3(0.036, -0.01, 0.026);
   const boreLocal = new THREE.Vector3(0, 1, 0);
+  const ejectDirLocal = new THREE.Vector3(0.85, -0.2, 0.48).normalize();
+  const place = (at: THREE.Vector3, dir: THREE.Vector3, outPos: THREE.Vector3, outDir: THREE.Vector3) => {
+    slide.updateWorldMatrix(true, false);
+    outPos.copy(at).applyMatrix4(slide.matrixWorld);
+    outDir.copy(dir).transformDirection(slide.matrixWorld).normalize();
+  };
 
   return {
     side,
     root,
     slide,
     shroud,
-    warhead,
+    shell,
     muzzleGlow,
+    heavyGlow,
     laser,
-    muzzleWorld(outPos: THREE.Vector3, outDir: THREE.Vector3) {
-      slide.updateWorldMatrix(true, false);
-      outPos.copy(muzzleLocal).applyMatrix4(slide.matrixWorld);
-      outDir.copy(boreLocal).transformDirection(slide.matrixWorld).normalize();
-    },
+    muzzleWorld: (outPos, outDir) => place(muzzleLocal, boreLocal, outPos, outDir),
+    cannonWorld: (barrel, outPos, outDir) => place(cannonLocal[barrel], boreLocal, outPos, outDir),
+    ejectWorld: (outPos, outDir) => place(ejectLocal, ejectDirLocal, outPos, outDir),
   };
 }
 
@@ -746,7 +778,7 @@ const TURRET_PITCH_DOWN = 0.75;
  *  - Rotary barrel inertia spin-up/down + reciprocating breech recoil + barrel heat glow
  *  - Left-shoulder 6-tube missile pod elevation + blast lid hinge + warhead slide-out & LEDs
  *  - Dorsal thermal radiator vent fin flare
- *  - Forearm Bunker-Buster / twin autocannon rail extension, shroud hinge, recoil & laser.
+ *  - Forearm Bunker-Buster / twin autocannon barrel run-out, shroud hinge, recoil & laser.
  */
 export function animateWarMachinePack(pack: WarMachinePack, dt: number, s: WarMachineAnimState): void {
   const a = pack.anim;
@@ -834,11 +866,11 @@ export function animateWarMachinePack(pack: WarMachinePack, dt: number, s: WarMa
   pack.ventL.rotation.y = -0.78 * a.ventOpen;
   pack.ventR.rotation.y = 0.78 * a.ventOpen;
 
-  // ── 4. Twin forearm gauntlet autocannon / Bunker-Buster rail pods ──
-  const wantWrist = Math.max(s.wristDeploy, s.flakSweepActive ? 1 : 0);
+  // ── 4. Forearm gun pods: twin autocannons / Bunker-Buster ──
+  const wantWrist = Math.max(s.wristDeploy, s.flakSweepActive || s.wristGuns ? 1 : 0);
   a.wristDeploy += (THREE.MathUtils.clamp(wantWrist, 0, 1) - a.wristDeploy) * (1 - Math.exp(-dt * 14));
-  if (s.wristKickL) a.wristRecoilL = 1;
-  if (s.wristKickR) a.wristRecoilR = 1;
+  a.wristRecoilL = Math.max(a.wristRecoilL, s.wristKickL ?? 0);
+  a.wristRecoilR = Math.max(a.wristRecoilR, s.wristKickR ?? 0);
   if (s.flakSweepActive) {
     // Alternating rapid twin-gauntlet flak cannon reciprocation during C sweep
     a.wristRecoilL = Math.max(a.wristRecoilL, 0.5 + 0.5 * Math.sin(a.time * 58));
@@ -849,15 +881,19 @@ export function animateWarMachinePack(pack: WarMachinePack, dt: number, s: WarMa
 
   const updateWrist = (pod: WarMachineWristPod, loaded: boolean, lock: number, recoil: number, phase: number) => {
     pod.slide.position.y = 0.048 * a.wristDeploy - 0.032 * recoil;
-    // Armored top shroud hinges open for Bunker-Buster deployment
+    // The shroud hinges open off the Bunker-Buster's breech
     pod.shroud.rotation.z = -1.35 * THREE.MathUtils.smoothstep(s.wristDeploy, 0.1, 0.8);
-    pod.warhead.visible = loaded;
+    pod.shell.visible = loaded;
     const laserOn = s.wristDeploy > 0.85 && lock > 0.05 && loaded;
     pod.laser.visible = laserOn;
     if (laserOn) {
       (pod.laser.material as THREE.MeshBasicMaterial).opacity = THREE.MathUtils.clamp(lock, 0.15, 1) * 0.85;
     }
-    const flash = (s.flakSweepActive && Math.sin(a.time * 68 + phase) > -0.15) || recoil > 0.55;
+    // A full kick is the heavy barrel's; the autocannons' is lighter
+    const heavy = !s.flakSweepActive && recoil > 0.72;
+    pod.heavyGlow.visible = heavy;
+    if (heavy) pod.heavyGlow.scale.setScalar(0.75 + 0.35 * recoil);
+    const flash = !heavy && ((s.flakSweepActive && Math.sin(a.time * 68 + phase) > -0.15) || recoil > 0.5);
     pod.muzzleGlow.visible = flash;
     if (flash) {
       const sc = 0.85 + 0.35 * Math.sin(a.time * 95 + phase);

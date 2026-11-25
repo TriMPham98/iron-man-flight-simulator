@@ -30,7 +30,7 @@ export interface Hostile {
   damage(amount: number, at: THREE.Vector3, kind: DamageKind): boolean;
 }
 
-export type DamageKind = 'repulsor' | 'missile' | 'unibeam' | 'launcher' | 'ram';
+export type DamageKind = 'repulsor' | 'bullet' | 'missile' | 'unibeam' | 'launcher' | 'ram';
 
 /** The player as hostiles see it. */
 export interface PlayerTarget {

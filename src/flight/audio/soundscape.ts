@@ -202,6 +202,7 @@ export class Soundscape {
   /** War Machine shoulder Vulcan CIWS buzz-saw crossfade & impact throttle timestamps (sim s). */
   private lastWmCiws = -99;
   private lastWmHit = -99;
+  private lastWmCannonHit = -99;
   private readonly _r = new THREE.Vector3();
   private readonly _c = new THREE.Vector3();
   private started = false;
@@ -412,27 +413,28 @@ export class Soundscape {
       case 'repulsorCharge':
         break;
       case 'repulsorFire':
-        if (wm) {
-          // War Machine heavy gauntlet repulsors: familiar Stark pulse pitched lower & punchier with metallic snap
-          A.play(SFX.repulsor, { at, gain: 0.82, rate: 0.78, vary: 0.06, ref: 10, offset: 0.04, lowpass: 8500 });
-          A.play(SFX.repulsorZap, { at, gain: 0.28, rate: 0.68, vary: 0.07, ref: 10, lowpass: 5500 });
-          A.play(SFX.heroThud, { at, gain: 0.44, rate: 1.25, vary: 0.06, lowpass: 720, ref: 10, duration: 0.26 });
-        } else {
-          A.play(SFX.repulsor, { at, gain: 0.75, vary: 0.07, ref: 10, offset: 0.05 });
-          A.play(SFX.repulsorZap, { at, gain: 0.22, vary: 0.08, ref: 10, rate: 0.85 });
-          // The blast has weight: a short low punch under the whine
-          A.play(SFX.heroThud, { at, gain: 0.3, rate: 1.7, vary: 0.06, lowpass: 900, ref: 10, duration: 0.25 });
-        }
+        A.play(SFX.repulsor, { at, gain: 0.75, vary: 0.07, ref: 10, offset: 0.05 });
+        A.play(SFX.repulsorZap, { at, gain: 0.22, vary: 0.08, ref: 10, rate: 0.85 });
+        // The blast has weight: a short low punch under the whine
+        A.play(SFX.heroThud, { at, gain: 0.3, rate: 1.7, vary: 0.06, lowpass: 900, ref: 10, duration: 0.25 });
         break;
       case 'repulsorHit':
-        if (wm) {
-          A.play(SFX.explosionNear, { at, gain: 0.35, rate: 1.22, vary: 0.08, ref: 26, duration: 0.65 });
-          A.play(SFX.sparkCrackle, { at, gain: 0.55, rate: 0.88, vary: 0.1, ref: 25 });
-          A.play(pick([SFX.ping1, SFX.ping2, SFX.ping3, SFX.ping4]), { at, gain: 0.32, rate: 0.82, vary: 0.1, ref: 25 });
-        } else {
-          A.play(SFX.explosionNear, { at, gain: 0.28, rate: 1.5, vary: 0.08, ref: 25, duration: 0.6 });
-          A.play(SFX.sparkCrackle, { at, gain: 0.5, vary: 0.1, ref: 25 });
-          A.play(pick([SFX.ping1, SFX.ping2, SFX.ping3, SFX.ping4]), { at, gain: 0.35, vary: 0.1, ref: 25 });
+        A.play(SFX.explosionNear, { at, gain: 0.28, rate: 1.5, vary: 0.08, ref: 25, duration: 0.6 });
+        A.play(SFX.sparkCrackle, { at, gain: 0.5, vary: 0.1, ref: 25 });
+        A.play(pick([SFX.ping1, SFX.ping2, SFX.ping3, SFX.ping4]), { at, gain: 0.35, vary: 0.1, ref: 25 });
+        break;
+      case 'cannonFire':
+        // Each 20 mm round its own report (the gun take, dropped in pitch), the
+        // breech slamming under it
+        A.play(SFX.gun, { at, propagate: false, gain: 0.58, rate: 0.84, vary: 0.05, ref: 14, duration: 0.28 });
+        A.play(SFX.heroThud, { at, propagate: false, gain: 0.2, rate: 1.5, vary: 0.06, lowpass: 750, ref: 10, duration: 0.14 });
+        break;
+      case 'cannonHit':
+        // Shells land as fast as they leave: no more than one voice every 70 ms
+        if (e.t < this.lastWmCannonHit || e.t - this.lastWmCannonHit >= 0.07) {
+          this.lastWmCannonHit = e.t;
+          A.play(SFX.explosionNear, { at, gain: 0.28, rate: 1.5, vary: 0.1, ref: 28, duration: 0.4 });
+          if (e.value) A.play(SFX.bulletRing, { at, gain: 0.32, rate: 0.82, vary: 0.12, ref: 28 });
         }
         break;
       case 'minigunStart':
@@ -517,12 +519,15 @@ export class Soundscape {
         break;
       case 'launcherFire':
         if (wm) {
-          // Bunker-Buster heavy forearm ordnance: thunderous SAM ignition + sub-bass concussion
-          A.play(SFX.weaponLock, { at, gain: 0.75, rate: 0.74, ref: 6 });
-          A.play(SFX.samLaunch, { at, gain: 0.72, rate: 0.92, ref: 12, duration: 0.95, echo: 0.25 });
-          A.play(SFX.rocket1, { at, gain: 0.92, rate: 0.62, ref: 10, delay: 0.03 });
-          A.play(SFX.deepBoom, { at, gain: 0.62, lowpass: 900, ref: 12 });
+          // Bunker-Buster: an anti-materiel gun's report (the gun take dropped an
+          // octave over a sub-bass concussion, echoing off the hills), the round's
+          // supersonic crack, then the breech cycling and the case rattling clear
+          A.play(SFX.gun, { at, gain: 1.15, rate: 0.46, vary: 0.03, ref: 16, duration: 0.9, echo: 0.4 });
+          A.play(pick(BULLET_CRACKS), { at, gain: 0.55, rate: 0.8, ref: 14 });
+          A.play(SFX.deepBoom, { at, gain: 0.7, lowpass: 900, ref: 12 });
           A.play(SFX.explosionSub, { at, gain: 0.55, ref: 10 });
+          A.play(SFX.weaponLock, { at: m.pos, gain: 0.6, rate: 0.8, ref: 6, delay: 0.16 });
+          A.play(SFX.metalClang, { at: m.pos, gain: 0.2, rate: 1.4, ref: 6, delay: 0.3 });
         } else {
           A.play(SFX.weaponLock, { at, gain: 0.7, ref: 6 });
           A.play(SFX.rocket1, { at, gain: 1, rate: 0.75, ref: 10, delay: 0.03 });
@@ -548,11 +553,9 @@ export class Soundscape {
         break;
       case 'laserCutterFire':
         if (wm) {
-          // Dual-Gauntlet Flak-Plasma Sweep: deep zap + staggered heavy flak cannon airbursts
-          A.play(SFX.repulsorZap, { at: at ?? m.pos, gain: 0.82, rate: 0.76, lowpass: 6500, ref: 10 });
-          A.play(SFX.sparkCrackle, { at: at ?? m.pos, gain: 0.78, rate: 0.85, ref: 10 });
-          for (let i = 0; i < 4; i++) {
-            A.play(SFX.gun, { at: at ?? m.pos, gain: 0.62, rate: 0.78, vary: 0.07, ref: 12, delay: i * 0.11, duration: 0.3 });
+          // Dual-gauntlet flak sweep: both cannons flat out, the airbursts behind them
+          for (let i = 0; i < 8; i++) {
+            A.play(SFX.gun, { at: at ?? m.pos, gain: 0.62, rate: 0.78, vary: 0.07, ref: 12, delay: i * 0.08, duration: 0.3 });
           }
           A.play(SFX.explosionNear, { at: at ?? m.pos, gain: 0.45, rate: 1.12, ref: 16, delay: 0.15, duration: 0.5 });
         } else {

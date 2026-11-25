@@ -33,6 +33,9 @@ export type SimEventKind =
   | 'minigunFire'
   | 'minigunStop'
   | 'minigunHit'
+  /** War Machine's gauntlet autocannons. */
+  | 'cannonFire'
+  | 'cannonHit'
   | 'siloOpen'
   | 'siloClose'
   | 'lockTick'

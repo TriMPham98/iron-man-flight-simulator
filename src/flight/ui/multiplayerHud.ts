@@ -576,7 +576,7 @@ export class MultiplayerHud {
           </button>
           <button type="button" class="mp-choice wm${s.suit === 'warmachine' ? ' on' : ''}" data-act="suit" data-val="warmachine">
             <div class="mp-choice-title">WAR MACHINE · MK II</div>
-            <div class="mp-choice-sub">Auto-lock M134 Vulcan (Space) · 6-tube missile pod · Bunker-Busters · Flak sweep</div>
+            <div class="mp-choice-sub">Twin 20 mm gauntlet cannons · Auto-lock M134 Vulcan (Space) · Bunker-Buster AP rounds (G) · 6-tube missile pod · Flak sweep</div>
           </button>
         </div>
       </div>

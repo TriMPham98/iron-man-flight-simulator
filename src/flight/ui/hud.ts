@@ -285,6 +285,7 @@ export class Hud {
         break;
       case 'repulsorHit':
       case 'minigunHit':
+      case 'cannonHit':
         if (e.value) {
           this.hit();
           if (this.tally) this.tally.hits++;
@@ -295,6 +296,7 @@ export class Hud {
         if (this.tally) this.tally.shots++;
         break;
       case 'minigunFire':
+      case 'cannonFire':
         this.recoil = Math.max(this.recoil, 0.55);
         if (this.tally) this.tally.shots++;
         break;
@@ -2079,7 +2081,7 @@ export class Hud {
         g.restore();
         this.text(g, `${n}`, x - size - 6 * s, y - size + 6 * s, 9 * s, WHITE, 'right');
       }
-      // Lead pip (repulsors, or the unibeam's short sweep lag) on every
+      // Lead pip (repulsors / cannons, or the unibeam's short sweep lag) on every
       // target in gun range, tied to it by a line: put the sight on the pip.
       // The assisted one is bold, with a dot at its centre
       if (dist < W.assistRange) {
@@ -2523,7 +2525,8 @@ export class Hud {
       y += 26 * s;
     };
     const isWM = W.variant === 'warmachine';
-    row(isWM ? 'HVY REPULSORS' : 'REPULSORS', W.repulsorBusy ? 'FIRING' : 'READY', W.repulsorBusy ? WHITE : isWM ? AMBER : CYAN);
+    const primaryOn = isWM ? W.cannonsFiring : W.repulsorBusy;
+    row(isWM ? '20MM CANNONS' : 'REPULSORS', primaryOn ? 'FIRING' : 'READY', primaryOn ? WHITE : isWM ? AMBER : CYAN);
     // Pods: Mk III 4+4 internal traps vs War Machine 6-tube left-shoulder box pod
     row(isWM ? 'SHOULDER POD' : 'MICRO-MISSILES', `${W.rockets}/${W.rocketCapacity}`, W.rockets ? (isWM ? AMBER : CYAN) : RED, (bx, by) => {
       if (isWM) {
