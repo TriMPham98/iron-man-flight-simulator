@@ -42,9 +42,14 @@ const C = {
   storeNose: 0x2e3134,
 };
 
-let geoCache: { body: THREE.BufferGeometry; glow: THREE.BufferGeometry } | null = null;
+let geoCache: {
+  body: THREE.BufferGeometry;
+  glow: THREE.BufferGeometry;
+  loBody: THREE.BufferGeometry;
+  proxyBody: THREE.BufferGeometry;
+} | null = null;
 
-/** The airframe, nose +Z: two merged geometries shared by every drone. */
+/** The airframe, nose +Z: full, simplified lo, and ultra-simple proxy geometries shared by every drone. */
 function droneGeometry() {
   if (geoCache) return geoCache;
   const body: THREE.BufferGeometry[] = [];
@@ -146,7 +151,55 @@ function droneGeometry() {
   body.push(paint(new THREE.SphereGeometry(0.1, 12, 8).translate(0, -0.11, 1.55), C.glass));
   glow.push(paint(new THREE.CircleGeometry(0.06, 12).scale(1.4, 0.8, 1).translate(0, -0.11, 1.656), new THREE.Color(1, 0.06, 0.02), 6));
 
-  geoCache = { body: merge(body), glow: merge(glow) };
+  // Lo LOD (350–1400 m): clean delta dart without pylons/missiles/sensor-ball/intake/bay details
+  const loBody: THREE.BufferGeometry[] = [];
+  const loSec = (z: number, w: number, t: number, b: number): V3[] => [
+    [0, t, z], [w, 0, z], [0, b, z], [-w, 0, z],
+  ];
+  loBody.push(
+    loft(
+      [
+        loSec(2.3, 0.04, 0.02, -0.02),
+        loSec(1.2, 0.45, 0.28, -0.16),
+        loSec(-0.3, 0.58, 0.33, -0.2),
+        loSec(-2.0, 0.27, 0.14, -0.1),
+      ],
+      (e) => (e === 0 || e === 3 ? C.top : C.belly),
+    ),
+  );
+  const loWing = (x: number, zLE: number, zTE: number, th: number, y: number): V3[] => [
+    [x, y, zLE], [x, y + th, (zLE + zTE) * 0.5], [x, y, zTE], [x, y - th * 0.5, (zLE + zTE) * 0.5],
+  ];
+  for (const s of [-1, 1]) {
+    loBody.push(
+      loft(
+        [loWing(s * 0.25, 0.66, -1.2, 0.09, -0.04), loWing(s * 2.05, -0.86, -1.2, 0.025, 0.02)],
+        (e) => (e >= 2 ? C.belly : C.top),
+        [false, true],
+      ),
+      loft(
+        [
+          [[0.02, 0, -0.8], [0, 0, -1.6], [-0.02, 0, -0.8], [0, 0, -0.55]].map(([x, y, z]) => [x, y, z] as V3),
+          [[0.012, 0.6, -1.36], [0, 0.6, -1.63], [-0.012, 0.6, -1.36], [0, 0.6, -1.26]].map(([x, y, z]) => [x, y, z] as V3),
+        ],
+        (_e, seg) => (seg >= 0 ? C.side : C.red),
+      )
+        .rotateZ(-s * 0.55)
+        .translate(s * 0.26, 0.13, 0),
+    );
+  }
+
+  // Ultra-simple proxy (> 1400 m): minimal delta dart silhouette (8 triangles)
+  const proxyBody = loft(
+    [
+      loSec(2.3, 0.05, 0.03, -0.03),
+      loSec(-1.1, 2.05, 0.22, -0.14),
+      loSec(-2.0, 0.3, 0.14, -0.08),
+    ],
+    (e) => (e === 0 || e === 3 ? C.top : C.belly),
+  );
+
+  geoCache = { body: merge(body), glow: merge(glow), loBody: merge(loBody), proxyBody };
   return geoCache;
 }
 
@@ -257,7 +310,7 @@ function bodyMaterial(type: DroneType): THREE.MeshStandardMaterial {
   return m;
 }
 
-let radomeGeo: { body: THREE.BufferGeometry; glow: THREE.BufferGeometry } | null = null;
+let radomeGeo: { body: THREE.BufferGeometry; glow: THREE.BufferGeometry; loBody: THREE.BufferGeometry } | null = null;
 /** The jammer's emitter: a flat dish on a pylon over the spine, an amber ring round its rim. */
 function radome() {
   if (radomeGeo) return radomeGeo;
@@ -267,6 +320,10 @@ function radome() {
       paint(new THREE.CylinderGeometry(0.95, 1.05, 0.14, 20).translate(0, 0.64, -0.2), C.edge),
     ]),
     glow: merge([paint(new THREE.TorusGeometry(1.02, 0.03, 6, 28).rotateX(Math.PI / 2).translate(0, 0.64, -0.2), new THREE.Color(1, 0.55, 0.08), 4)]),
+    loBody: merge([
+      box(0.1, 0.34, 0.45, C.dark, 0, 0.42, -0.2),
+      paint(new THREE.CylinderGeometry(0.98, 1.05, 0.14, 8).translate(0, 0.64, -0.2), C.edge),
+    ]),
   };
   return radomeGeo;
 }
@@ -333,13 +390,32 @@ export class Drone implements Hostile {
     this.cruise = sp.cruise[0] + Math.random() * sp.cruise[1];
     this.missileT = sp.seekers ? sp.seekers[0] + Math.random() * sp.seekers[1] : Infinity;
     const g = droneGeometry();
+    const bMat = bodyMaterial(type);
     // (the airframe in its own group, so the build's scale leaves the exhaust sprite alone)
     const frame = new THREE.Group();
-    frame.add(new THREE.Mesh(g.body, bodyMaterial(type)), new THREE.Mesh(g.glow, mats.glow));
+    const lod = new THREE.LOD();
+
+    const hi = new THREE.Group();
+    hi.add(new THREE.Mesh(g.body, bMat), new THREE.Mesh(g.glow, mats.glow));
     if (sp.role === 'jammer') {
       const r = radome();
-      frame.add(new THREE.Mesh(r.body, bodyMaterial(type)), new THREE.Mesh(r.glow, mats.glow));
+      hi.add(new THREE.Mesh(r.body, bMat), new THREE.Mesh(r.glow, mats.glow));
     }
+    lod.addLevel(hi, 0);
+
+    const lo: THREE.Object3D =
+      sp.role === 'jammer'
+        ? (() => {
+            const grp = new THREE.Group();
+            grp.add(new THREE.Mesh(g.loBody, bMat), new THREE.Mesh(radome().loBody, bMat));
+            return grp;
+          })()
+        : new THREE.Mesh(g.loBody, bMat);
+    lod.addLevel(lo, 350);
+
+    lod.addLevel(new THREE.Mesh(g.proxyBody, bMat), 1400);
+    frame.add(lod);
+
     if (sp.role === 'bomber') {
       this.bayMesh = new THREE.Mesh(bombBayCore(), mats.glow);
       this.bayMesh.visible = false;

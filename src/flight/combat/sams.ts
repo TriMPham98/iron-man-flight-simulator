@@ -55,6 +55,8 @@ const HOUSE_RANGE = 3600;
 
 interface SamGeometry {
   body: THREE.BufferGeometry;
+  bodyLo: THREE.BufferGeometry;
+  bodyCoarse: THREE.BufferGeometry;
   glass: THREE.BufferGeometry;
   wheel: THREE.BufferGeometry;
   jack: THREE.BufferGeometry;
@@ -190,8 +192,39 @@ function samGeometry(): SamGeometry {
   ];
   for (const x of [-0.5, 0, 0.5]) radar.push(paint(new THREE.BoxGeometry(0.03, 0.98, 0.02).translate(x, 0, 0.123).rotateX(-0.25).translate(0, 0.62, 0.05), C.dark));
 
+  // Lo chassis (450–1800 m): omits wheel lugs, wheel arches, mirrors, lamps, mudflaps, exhaust, fuel tank/toolbox, jacks
+  // and bakes dark cab windows + 6 simplified lugless wheels into a single draw call.
+  const bodyLo: THREE.BufferGeometry[] = [
+    box(2.5, 0.18, 5.6, C.olive, 0, LIFT + 0.34, -1.5),
+    frustum(cabLow, C.olive),
+    frustum(cabHigh, (e) => (e === 0 ? C.oliveDark : C.olive)),
+    panelOn(cabHigh, 'f', -0.9, 0.9, 0.12, 0.85, C.dark, 0.02),
+    box(2.62, 0.28, 0.3, C.dark, 0, LIFT - 0.05, 4.42),
+  ];
+  for (const s of [-1, 1]) {
+    bodyLo.push(
+      box(0.22, 0.32, 8.2, C.dark, s * 0.55, LIFT - 0.12, 0),
+      box(0.06, 0.34, 5.6, C.oliveDark, s * 1.24, LIFT + 0.12, -1.5),
+    );
+    for (const z of AXLES) {
+      bodyLo.push(
+        paint(new THREE.CylinderGeometry(WHEEL_R, WHEEL_R, 0.44, 8).rotateZ(Math.PI / 2).translate(s * 1.25, WHEEL_R, z), C.rubber),
+      );
+    }
+  }
+
+  // Coarse silhouette (> 1800 m): minimal cab + bed + wheel-strip proxy
+  const bodyCoarse: THREE.BufferGeometry[] = [
+    box(2.5, 0.55, 8.2, C.oliveDark, 0, LIFT + 0.1, 0),
+    box(2.5, 1.7, 2.0, C.olive, 0, LIFT + 1.1, 3.3),
+    box(0.45, WHEEL_R * 2, 6.2, C.rubber, -1.25, WHEEL_R, 0),
+    box(0.45, WHEEL_R * 2, 6.2, C.rubber, 1.25, WHEEL_R, 0),
+  ];
+
   geoCache = {
     body: merge(body),
+    bodyLo: merge(bodyLo),
+    bodyCoarse: merge(bodyCoarse),
     glass: merge(glass),
     wheel: merge(wheel).rotateZ(Math.PI / 2),
     jack: merge(jack),
@@ -261,13 +294,15 @@ export class SamSite implements Hostile {
     private readonly home: THREE.Vector2,
   ) {
     const g = samGeometry();
-    this.body.add(new THREE.Mesh(g.body, mats.paint), new THREE.Mesh(g.glass, mats.glass));
+    const chassisLod = new THREE.LOD();
+    const chassisHi = new THREE.Group();
+    chassisHi.add(new THREE.Mesh(g.body, mats.paint), new THREE.Mesh(g.glass, mats.glass));
     for (const z of AXLES) {
       for (const sx of [-1, 1]) {
         const w = new THREE.Mesh(g.wheel, mats.paint);
         w.position.set(sx * 1.25, WHEEL_R, z);
         this.wheels.push(w);
-        this.body.add(w);
+        chassisHi.add(w);
       }
     }
     // Outrigger jacks at the corners of the bed: they swing down to the ground
@@ -275,8 +310,12 @@ export class SamSite implements Hostile {
       const j = new THREE.Mesh(g.jack, mats.paint);
       j.position.set(x, LIFT, z);
       this.jacks.push(j);
-      this.body.add(j);
+      chassisHi.add(j);
     }
+    chassisLod.addLevel(chassisHi, 0);
+    chassisLod.addLevel(new THREE.Mesh(g.bodyLo, mats.paint), 450);
+    chassisLod.addLevel(new THREE.Mesh(g.bodyCoarse, mats.paint), 1800);
+    this.body.add(chassisLod);
     // The launcher: turntable on the bed, the canisters on an elevating cradle
     this.turret.position.set(0, LIFT + 0.6, -1.6);
     this.turret.add(new THREE.Mesh(g.turret, mats.paint));

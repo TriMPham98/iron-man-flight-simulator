@@ -139,7 +139,10 @@ export class BossPart implements Hostile {
 
 interface Geo {
   hull: THREE.BufferGeometry;
+  hullLo: THREE.BufferGeometry;
+  hullCoarse: THREE.BufferGeometry;
   glow: THREE.BufferGeometry;
+  glowLo: THREE.BufferGeometry;
   pod: THREE.BufferGeometry;
   podGlow: THREE.BufferGeometry;
   turretBase: THREE.BufferGeometry;
@@ -305,9 +308,74 @@ function geometry(): Geo {
   for (let k = 0; k < 3; k++) ribs.push(paint(new THREE.TorusGeometry(5.3, 0.3, 6, 24).rotateY((k * Math.PI) / 3), C.edge));
   ribs.push(paint(new THREE.TorusGeometry(5.3, 0.3, 6, 24).rotateX(Math.PI / 2), C.edge));
 
+  // Lo LOD (450–1800 m): fewer stations, 1-seg wings & fins, no small intake/running-light greebles
+  const hullLo: THREE.BufferGeometry[] = [
+    loft(
+      [
+        sec(62, 1.4, 0.5, -0.5),
+        sec(32, 13.5, 6, -4.4, -0.3),
+        sec(6, 17, 7.5, -5.6),
+        sec(-32, 15.5, 6.5, -5.0),
+        sec(-63, 7.5, 3, -2.4),
+      ],
+      (e, s) => {
+        if (s < 0 || s > 3) return C.edge;
+        if (e === 0 || e === 7) return C.top;
+        if (e === 1 || e === 6) return C.side;
+        return C.belly;
+      },
+    ),
+    frustum(bridge, (e, s) => (s < 0 ? C.edge : e === 0 ? C.side : C.top)),
+    box(4.2, 1.6, 36, C.side, 0, 7.2, -22),
+    box(10, 3, 14, C.edge, AT.core[0], AT.core[1] + 5, AT.core[2]),
+  ];
+  const glowLo: THREE.BufferGeometry[] = [
+    paint(new THREE.CircleGeometry(0.9, 6).scale(1.6, 0.7, 1).translate(0, 0, 61.4), new THREE.Color(1, 0.06, 0.02), 6),
+  ];
+  for (const s of [-1, 1]) {
+    hullLo.push(
+      loft(
+        [wingSec(s * 13, 24, -32, 3.4, -0.6), wingSec(s * 50, -18, -40, 0.7, 0.4)],
+        (e) => (e === 0 || e === 5 ? C.edge : e >= 3 ? C.belly : C.top),
+        [false, true],
+      ),
+      loft(
+        [
+          [[0.5, 0, -40], [0, 0, -58], [-0.5, 0, -40], [0, 0, -34]].map(([x, y, z]) => [x, y, z] as V3),
+          [[0.2, 11, -53], [0, 11, -60.5], [-0.2, 11, -53], [0, 11, -50]].map(([x, y, z]) => [x, y, z] as V3),
+        ],
+        (_e, seg) => (seg >= 0 ? C.side : C.red),
+      )
+        .rotateZ(-s * 0.4)
+        .translate(s * 9, 4.6, 0),
+    );
+    glowLo.push(paint(new THREE.BoxGeometry(0.6, 0.35, 0.9).translate(s * 49.6, 0.6, -30), s < 0 ? 0xff2010 : 0x20ff40, 4));
+  }
+
+  // Coarse silhouette (> 1800 m): minimal manta diamond + swept wings + bridge block
+  const cSec = (z: number, w: number, t: number, b: number): V3[] => [
+    [0, t, z], [w, 0, z], [0, b, z], [-w, 0, z],
+  ];
+  const cWing = (x: number, zLE: number, zTE: number, th: number): V3[] => [
+    [x, 0, zLE], [x, th, (zLE + zTE) * 0.5], [x, 0, zTE], [x, -th * 0.6, (zLE + zTE) * 0.5],
+  ];
+  const hullCoarse: THREE.BufferGeometry[] = [
+    loft([cSec(62, 1.5, 0.6, -0.6), cSec(0, 17, 7.5, -5.6), cSec(-63, 7.5, 3, -2.4)], (e) => (e === 0 || e === 3 ? C.top : C.belly)),
+    frustum(bridge, C.side),
+  ];
+  for (const s of [-1, 1]) {
+    hullCoarse.push(
+      loft([cWing(s * 13, 24, -32, 3.2), cWing(s * 50, -18, -40, 0.8)], (e) => (e >= 2 ? C.belly : C.top), [false, true]),
+      box(0.5, 10, 14, C.side, s * 10, 9.5, -52),
+    );
+  }
+
   geoCache = {
     hull: merge(hull),
+    hullLo: merge(hullLo),
+    hullCoarse: merge(hullCoarse),
     glow: merge(glow),
+    glowLo: merge(glowLo),
     pod: merge(pod),
     podGlow,
     turretBase,
@@ -431,7 +499,15 @@ export class Dreadnought {
   // ── Model ────────────────────────────────────────────────────────────
   private build(): void {
     const g = geometry();
-    this.mesh.add(new THREE.Mesh(g.hull, mats.paint), new THREE.Mesh(g.glow, mats.glow));
+    const hullLod = new THREE.LOD();
+    const hullHi = new THREE.Group();
+    hullHi.add(new THREE.Mesh(g.hull, mats.paint), new THREE.Mesh(g.glow, mats.glow));
+    const hullLo = new THREE.Group();
+    hullLo.add(new THREE.Mesh(g.hullLo, mats.paint), new THREE.Mesh(g.glowLo, mats.glow));
+    hullLod.addLevel(hullHi, 0);
+    hullLod.addLevel(hullLo, 450);
+    hullLod.addLevel(new THREE.Mesh(g.hullCoarse, mats.paint), 1800);
+    this.mesh.add(hullLod);
     const add = (role: Role, at: V3, visual: THREE.Object3D, aim?: V3): BossPart => {
       visual.position.set(at[0], at[1], at[2]);
       this.mesh.add(visual);

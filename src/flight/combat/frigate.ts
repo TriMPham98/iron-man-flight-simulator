@@ -141,6 +141,8 @@ const CIWS_PIVOT = new THREE.Vector3(0, 0.9, 0.5);
 
 interface FrigateGeometry {
   hull: THREE.BufferGeometry;
+  hullLo: THREE.BufferGeometry;
+  hullCoarse: THREE.BufferGeometry;
   glass: THREE.BufferGeometry;
   number: THREE.BufferGeometry;
   lid: THREE.BufferGeometry;
@@ -330,8 +332,66 @@ function frigateGeometry(): FrigateGeometry {
   number.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   number.computeVertexNormals();
 
+  const hullLo: THREE.BufferGeometry[] = [];
+  const loZs = [STERN, -20, 10, 30, 44, 54, BOW];
+  hullLo.push(
+    loft(
+      loZs.map((z) => hullRing(station(z))),
+      (e, seg) => (seg < 0 ? C.hull : e === 5 ? C.deck : e === 3 || e === 4 || e === 6 || e === 7 ? C.hull : C.boot),
+      [true, false],
+      (c) => c.set(0, THREE.MathUtils.clamp(c.y, -2, DECK - 1), c.z),
+    ),
+    // Simplified bow gun (no base ring or muzzle brake)
+    loft(
+      [
+        gun(DECK + 0.3, [[1.0, 2.4], [-1.0, 2.4], [-1.8, 0.2], [-1.6, -2.3], [1.6, -2.3], [1.8, 0.2]]),
+        gun(DECK + 2.0, [[0.6, 1.7], [-0.6, 1.7], [-1.35, 0.1], [-1.25, -2.0], [1.25, -2.0], [1.35, 0.1]]),
+      ],
+      (e, seg) => (seg === 1 ? C.hullLight : e === 0 ? C.hull : C.hullLight),
+    ),
+    paint(new THREE.CylinderGeometry(0.14, 0.18, 6.2, 6).rotateX(Math.PI / 2).translate(0, DECK + 1.05, 50), C.dark),
+    // Simplified harpoon racks (block proxies) + VLS deck block
+    box(5.4, 0.8, 8.4, C.deck, VLS_AT.x, DECK + 0.4, VLS_AT.z),
+    // Superstructure blocks + baked dark window strips
+    frustum(BRIDGE, C.hull),
+    frustum(PILOTHOUSE, C.hullLight),
+    frustum(MAST, C.hull),
+    panelOn(BRIDGE, 'f', -0.82, 0.82, 0.78, 0.9, C.boot),
+    panelOn(PILOTHOUSE, 'f', -0.8, 0.8, 0.4, 0.72, C.boot),
+    box(4.0, 0.35, 4.0, C.hull, 0, DECK + 24.75, -6),
+    paint(new THREE.CylinderGeometry(0.55, 0.7, 2.4, 6).translate(0, DECK + 26.1, -6), C.hull),
+    // Funnel + Hangar + simple flight deck cross lines
+    loft([oct(DECK, 3.0, 3.3, -18), oct(DECK + 7.6, 2.4, 2.75, -18.8), oct(DECK + 8.6, 2.3, 2.65, -18.9)], (_e, seg) => (seg >= 1 ? C.dark : C.hull)),
+    frustum(HANGAR, C.hull),
+    panelOn(HANGAR, 'b', -0.68, 0.68, 0, 0.78, C.door),
+    box(0.25, 0.02, 21, C.mark, 0, DECK + 0.02, -50.5),
+    box(8, 0.02, 0.25, C.mark, 0, DECK + 0.02, -50),
+  );
+  for (const s of [-1, 1]) {
+    hullLo.push(box(1.7, 0.8, 2.2, C.hull, s * 2.6, DECK + 0.4, 17));
+    hullLo.push(paint(new THREE.BoxGeometry(1.4, 1.2, 4.4).rotateX(-0.2).rotateY(s * 0.45).translate(s * 2.6, DECK + 1.5, 17), C.hullLight));
+  }
+  for (const f of ['f', 'b', 'l', 'r'] as const) hullLo.push(panelOn(MAST, f, -0.55, 0.55, 0.52, 0.72, C.dark));
+
+  const hullCoarse: THREE.BufferGeometry[] = [
+    loft(
+      [STERN, 10, 44, BOW].map((z) => hullRing(station(z))),
+      (e, seg) => (seg < 0 ? C.hull : e === 5 ? C.deck : e === 3 || e === 4 || e === 6 || e === 7 ? C.hull : C.boot),
+      [true, false],
+      (c) => c.set(0, THREE.MathUtils.clamp(c.y, -2, DECK - 1), c.z),
+    ),
+    frustum(BRIDGE, C.hull),
+    frustum(PILOTHOUSE, C.hullLight),
+    frustum(MAST, C.hull),
+    frustum(HANGAR, C.hull),
+    box(5.2, 8.4, 6.0, C.hull, 0, DECK + 4.2, -18.4),
+    box(3.2, 1.8, 4.4, C.hullLight, 0, DECK + 1.0, 45),
+  ];
+
   geoCache = {
     hull: merge(hull),
+    hullLo: merge(hullLo),
+    hullCoarse: merge(hullCoarse),
     glass: merge(glass),
     number,
     lid: box(1.9, 0.12, 1.7, C.hull, 0, 0.06, 0),
@@ -513,7 +573,13 @@ export class Frigate {
   // ── Model ────────────────────────────────────────────────────────────
   private build(): void {
     const g = frigateGeometry();
-    this.mesh.add(new THREE.Mesh(g.hull, mats.paint), new THREE.Mesh(g.glass, mats.glass), new THREE.Mesh(g.number, numberMaterial()));
+    const hullLod = new THREE.LOD();
+    const hullHi = new THREE.Group();
+    hullHi.add(new THREE.Mesh(g.hull, mats.paint), new THREE.Mesh(g.glass, mats.glass), new THREE.Mesh(g.number, numberMaterial()));
+    hullLod.addLevel(hullHi, 0);
+    hullLod.addLevel(new THREE.Mesh(g.hullLo, mats.paint), 450);
+    hullLod.addLevel(new THREE.Mesh(g.hullCoarse, mats.paint), 1800);
+    this.mesh.add(hullLod);
 
     // VLS lids, hinged at their outboard edges
     for (const [x, z] of VLS_CELLS) {
