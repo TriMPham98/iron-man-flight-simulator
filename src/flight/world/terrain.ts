@@ -19,7 +19,7 @@ const LEAF = CELLS * TERRAIN_PITCH;
 const LEVELS = Math.round(Math.log2(WORLD_SIZE / LEAF)) + 1;
 /** LOD 0 reaches this far (m); each coarser level doubles it. */
 const RANGE0 = 320;
-const MAX_PATCHES = 3072;
+const MAX_PATCHES = 2048;
 
 interface Node {
   x: number;
@@ -88,10 +88,19 @@ const VERT_BODY = /* glsl */ `
   float h0 = terrainHeight(world);
   float range = uRange0 * exp2(aPatch.w);
   float dist = distance(vec3(world.x, h0, world.y), uEye);
-  float morph = clamp((dist - range * 0.72) / (range * 0.26), 0.0, 1.0);
-  // Odd vertices slide onto their even neighbour: the coarser grid
+  float morph = aPatch.w >= ${LEVELS - 1}.0 ? 0.0 : clamp((dist - range * 0.72) / (range * 0.26), 0.0, 1.0);
+  // Odd vertices slide onto their even neighbour: the coarser grid.
+  // Ring 2 performs a two-stage 4x morph so its 16 m grid meets ring 3's 64 m grid seamlessly.
   vec2 odd = fract(grid * 0.5) * 2.0;
-  world -= odd * morph * spacing;
+  if (abs(aPatch.w - 2.0) < 0.5) {
+    float m1 = clamp(morph * 2.0, 0.0, 1.0);
+    float m2 = clamp(morph * 2.0 - 1.0, 0.0, 1.0);
+    vec2 g1 = grid - odd * m1;
+    vec2 g2 = g1 - fract(g1 * 0.25) * 4.0 * m2;
+    world = aPatch.xy + g2 * spacing;
+  } else {
+    world -= odd * morph * spacing;
+  }
   vMorph = morph;
   // Most vertices don't morph: skip the second height lookup for them
   float h = morph > 0.0 ? terrainHeight(world) : h0;
@@ -135,12 +144,14 @@ const ALBEDO = /* glsl */ `
   tAo = mix(0.55, 1.0, bake.g);
   // The plants' own shade (world/vegetation.ts): the sky they hide from
   // the ground under them and the shadows they throw down-sun
-  vec2 shadeUv = (xz - uShadeBox.xy) * uShadeBox.z;
-  float shadeK = 1.0 - smoothstep(0.4, 0.5, max(abs(shadeUv.x), abs(shadeUv.y)));
-  if (shadeK > 0.0) {
-    vec2 plantShade = texture2D(uPlantShade, shadeUv + 0.5).rg * shadeK;
-    tAo *= 1.0 - plantShade.r;
-    tSunVis *= 1.0 - plantShade.g;
+  if (uShadeBox.z > 0.0) {
+    vec2 shadeUv = (xz - uShadeBox.xy) * uShadeBox.z;
+    float shadeK = 1.0 - smoothstep(0.4, 0.5, max(abs(shadeUv.x), abs(shadeUv.y)));
+    if (shadeK > 0.0) {
+      vec2 plantShade = texture2D(uPlantShade, shadeUv + 0.5).rg * shadeK;
+      tAo *= 1.0 - plantShade.r;
+      tSunVis *= 1.0 - plantShade.g;
+    }
   }
 
   float slope = 1.0 - wN.y;
@@ -161,8 +172,8 @@ const ALBEDO = /* glsl */ `
   if (near > 0.0 && steep > 0.0) {
     tw = pow(abs(wN), vec3(4.0));
     tw /= tw.x + tw.y + tw.z;
-    float gx = tone(vTerrainPos.zy, 6.1);
-    float gz = tone(vTerrainPos.xy, 6.1);
+    float gx = tw.x > 0.02 ? tone(vTerrainPos.zy, 6.1) : 0.6;
+    float gz = tw.z > 0.02 ? tone(vTerrainPos.xy, 6.1) : 0.6;
     grain = mix(grain, mix(0.6, tw.x * gx + tw.z * gz + tw.y * grain, near), steep);
   }
 
@@ -189,10 +200,13 @@ const ALBEDO = /* glsl */ `
   float strata = 0.5 + 0.5 * sin(hgt * 0.42 + mid * 9.0 + m1 * 14.0);
   vec3 rock = mix(vec3(0.17, 0.15, 0.13), vec3(0.34, 0.29, 0.24), strata * 0.65 + grain * 0.35);
   rock = mix(rock, vec3(0.45, 0.37, 0.28), smoothstep(110.0, 20.0, hgt) * 0.75);
-  // Subtle strata relief and dark seepage streaks down cliff faces
+  // Subtle strata relief and dark seepage streaks down cliff faces (skipped on distant hazy ridges)
   if (steep > 0.0) {
     rock *= mix(1.0, 0.86 + 0.24 * strata, steep);
-    rock *= 1.0 - 0.25 * smoothstep(0.55, 0.8, tone(vec2(xz.x * 3.0 + xz.y, hgt * 0.15), 90.0)) * steep;
+    float seepReach = 1.0 - smoothstep(1400.0, 2200.0, viewD);
+    if (seepReach > 0.0) {
+      rock *= 1.0 - 0.25 * smoothstep(0.55, 0.8, tone(vec2(xz.x * 3.0 + xz.y, hgt * 0.15), 90.0)) * steep * seepReach;
+    }
   }
   // Higher up the range the cover thins to rock and dust
   veg = mix(veg, mix(rock, grass, 0.45), smoothstep(700.0, 1250.0, hgt + mid * 160.0));
@@ -210,19 +224,23 @@ const ALBEDO = /* glsl */ `
     col = mix(col, gravel, smoothstep(6.4, 5.3, d));
   }
 
-  // Beach: pale sand, darker and glossy where the swash wets it
-  vec3 sand = mix(vec3(0.52, 0.43, 0.31), vec3(0.62, 0.53, 0.39), grain);
-  float beach = smoothstep(4.5 + mid * 3.0, 1.5, hgt) * (1.0 - smoothstep(0.25, 0.45, slope));
-  col = mix(col, sand, beach);
-  float swash = 0.35 + 0.25 * sin(uTime * 0.7 + xz.x * 0.03 + xz.y * 0.05);
-  tWet = smoothstep(swash + 0.9, swash, hgt);
-  col = mix(col, sand * 0.48, tWet);
-  // Coastal wave-splash zone on low cliff faces & sea stacks
-  float coastSplash = (1.0 - smoothstep(swash + 0.5, swash + 2.3, hgt)) * rockK;
-  col *= mix(1.0, 0.54, coastSplash * 0.75);
-  tWet = max(tWet, coastSplash * 0.7);
-  // Sea floor: sand and weed, dimmed (the water shades it from above)
-  col = mix(col, mix(vec3(0.32, 0.28, 0.2), vec3(0.08, 0.1, 0.06), mid), smoothstep(0.0, -3.0, hgt));
+  // Beach, swash, splash zone and seafloor (only near sea level: skipped on hills/mountains)
+  float beach = 0.0;
+  tWet = 0.0;
+  if (hgt < 8.0) {
+    vec3 sand = mix(vec3(0.52, 0.43, 0.31), vec3(0.62, 0.53, 0.39), grain);
+    beach = smoothstep(4.5 + mid * 3.0, 1.5, hgt) * (1.0 - smoothstep(0.25, 0.45, slope));
+    col = mix(col, sand, beach);
+    float swash = 0.35 + 0.25 * sin(uTime * 0.7 + xz.x * 0.03 + xz.y * 0.05);
+    tWet = smoothstep(swash + 0.9, swash, hgt);
+    col = mix(col, sand * 0.48, tWet);
+    // Coastal wave-splash zone on low cliff faces & sea stacks
+    float coastSplash = (1.0 - smoothstep(swash + 0.5, swash + 2.3, hgt)) * rockK;
+    col *= mix(1.0, 0.54, coastSplash * 0.75);
+    tWet = max(tWet, coastSplash * 0.7);
+    // Sea floor: sand and weed, dimmed (the water shades it from above)
+    col = mix(col, mix(vec3(0.32, 0.28, 0.2), vec3(0.08, 0.1, 0.06), mid), smoothstep(0.0, -3.0, hgt));
+  }
 
   // Per-material roughness: sunlit sandstone/granite glints at grazing angles,
   // dry grass stays matte, wet coastal sand & splash zones turn glossy
@@ -248,23 +266,34 @@ const ALBEDO = /* glsl */ `
     col *= 1.0 - gap * underfoot * 0.22;
   }
 
-  // Micro relief (normal detail, not geometry) near the eye: rough rock,
-  // lumpy brush, smoother sand. Triplanar on the faces
-  if (micro > 0.0) {
-    float amp = mix(mix(0.5, 0.22, beach), 1.1, rockK) * micro;
-    vec2 gA = texture2D(uDetailGrad, xz / (uDetailSpan * 0.032)).rg / 0.032;
-    vec2 gB = texture2D(uDetailGrad, xz / (uDetailSpan * 0.011) + 0.37).rg / 0.011;
-    vec2 gT = (gA * 0.05 + gB * 0.012) * amp;
-    if (underfoot > 0.0) {
-      // ...and the clods' own relief, a finer octave again
-      vec2 gC = texture2D(uDetailGrad, xz / (uDetailSpan * 0.0035) + 0.71).rg / 0.0035;
-      gT += gC * 0.0035 * amp * underfoot;
-    }
-    vec3 p = vec3(gT.x, 0.0, gT.y) * tw.y;
-    if (steep > 0.0) {
-      vec2 sx = texture2D(uDetailGrad, vTerrainPos.zy / (uDetailSpan * 0.032)).rg / 0.032 * 0.05 * amp;
-      vec2 sz = texture2D(uDetailGrad, vTerrainPos.xy / (uDetailSpan * 0.032)).rg / 0.032 * 0.05 * amp;
-      p += vec3(0.0, sx.y, sx.x) * tw.x + vec3(sz.x, sz.y, 0.0) * tw.z;
+  // Mid-to-close normal relief: bridges the 71 m heightfield detail to the 6 m micro crags,
+  // fading out smoothly past mid-range so far ridges skip extra gradient reads
+  float midRelief = 1.0 - smoothstep(120.0 * uDetailReach, 520.0 * uDetailReach, viewD);
+  if (midRelief > 0.0) {
+    float ampMid = mix(mix(0.45, 0.2, beach), 1.0, rockK) * midRelief;
+    vec2 gM = texture2D(uDetailGrad, xz / (uDetailSpan * 0.11) + 0.19).rg / 0.11;
+    vec3 p = vec3(gM.x, 0.0, gM.y) * (0.065 * ampMid * tw.y);
+    if (micro > 0.0) {
+      float amp = mix(mix(0.5, 0.22, beach), 1.1, rockK) * micro;
+      vec2 gA = texture2D(uDetailGrad, xz / (uDetailSpan * 0.032)).rg / 0.032;
+      vec2 gB = texture2D(uDetailGrad, xz / (uDetailSpan * 0.011) + 0.37).rg / 0.011;
+      vec2 gT = (gA * 0.05 + gB * 0.012) * amp;
+      if (underfoot > 0.0) {
+        // ...and the clods' own relief, a finer octave again
+        vec2 gC = texture2D(uDetailGrad, xz / (uDetailSpan * 0.0035) + 0.71).rg / 0.0035;
+        gT += gC * 0.0035 * amp * underfoot;
+      }
+      p += vec3(gT.x, 0.0, gT.y) * tw.y;
+      if (steep > 0.0) {
+        if (tw.x > 0.02) {
+          vec2 sx = texture2D(uDetailGrad, vTerrainPos.zy / (uDetailSpan * 0.032)).rg / 0.032 * 0.05 * amp;
+          p += vec3(0.0, sx.y, sx.x) * tw.x;
+        }
+        if (tw.z > 0.02) {
+          vec2 sz = texture2D(uDetailGrad, vTerrainPos.xy / (uDetailSpan * 0.032)).rg / 0.032 * 0.05 * amp;
+          p += vec3(sz.x, sz.y, 0.0) * tw.z;
+        }
+      }
     }
     wN = normalize(wN - p);
   }
@@ -275,17 +304,24 @@ const ALBEDO = /* glsl */ `
 export class Terrain {
   readonly mesh: THREE.Mesh;
   private readonly full: THREE.InstancedBufferGeometry;
-  private readonly half: THREE.InstancedBufferGeometry;
+  private readonly halfNear: THREE.InstancedBufferGeometry;
+  private readonly halfFar: THREE.InstancedBufferGeometry;
+  private readonly quarter: THREE.InstancedBufferGeometry;
   private readonly root: Node;
   private readonly ranges: number[] = [];
   private readonly frustum = new THREE.Frustum();
   private readonly _m = new THREE.Matrix4();
   private readonly _box = new THREE.Box3();
-  private readonly halfMesh: THREE.Mesh;
+  private readonly halfNearMesh: THREE.Mesh;
+  private readonly halfFarMesh: THREE.Mesh;
+  private readonly quarterMesh: THREE.Mesh;
   readonly material: THREE.MeshStandardMaterial;
   readonly group = new THREE.Group();
   private fullCount = 0;
-  private halfCount = 0;
+  private halfNearCount = 0;
+  private halfFarCount = 0;
+  private quarterCount = 0;
+  private lodScale = 1;
   private readonly uniforms: Record<string, THREE.IUniform>;
 
   constructor(
@@ -297,7 +333,9 @@ export class Terrain {
     for (let l = 0; l < LEVELS; l++) this.ranges.push(RANGE0 * 2 ** l);
     this.root = this.buildTree();
     this.full = patchGeometry(CELLS);
-    this.half = patchGeometry(CELLS / 2);
+    this.halfNear = patchGeometry(CELLS / 2);
+    this.halfFar = patchGeometry(CELLS / 2);
+    this.quarter = patchGeometry(CELLS / 4);
     this.uniforms = {
       ...field.uniforms,
       ...atmosphere,
@@ -341,14 +379,21 @@ export class Terrain {
         )
         .replace('#include <fog_fragment>', 'gl_FragColor.rgb = applyHaze(gl_FragColor.rgb, cameraPosition, vTerrainPos, tSunVis);');
     };
-    // Program cache key: one terrain program
+    // Program cache key: one terrain program (Three keys shadow variants separately)
     mat.customProgramCacheKey = () => 'cdlod-terrain';
     this.material = mat;
     this.mesh = new THREE.Mesh(this.full, mat);
-    this.halfMesh = new THREE.Mesh(this.half, mat);
-    for (const m of [this.mesh, this.halfMesh]) {
+    this.halfNearMesh = new THREE.Mesh(this.halfNear, mat);
+    this.halfFarMesh = new THREE.Mesh(this.halfFar, mat);
+    this.quarterMesh = new THREE.Mesh(this.quarter, mat);
+    for (const [m, shadow] of [
+      [this.mesh, true],
+      [this.halfNearMesh, true],
+      [this.halfFarMesh, false],
+      [this.quarterMesh, false],
+    ] as const) {
       m.frustumCulled = false;
-      m.receiveShadow = true;
+      m.receiveShadow = shadow;
       m.matrixAutoUpdate = false;
       this.group.add(m);
     }
@@ -406,16 +451,23 @@ export class Terrain {
     return this.frustum.intersectsBox(this._box);
   }
 
-  private add(n: Node, lod: number, halfRes: boolean, ox = n.x, oz = n.z): void {
-    const geo = halfRes ? this.half : this.full;
-    const count = halfRes ? this.halfCount : this.fullCount;
+  private add(n: Node, lod: number, child: boolean, ox = n.x, oz = n.z): void {
+    const far = lod >= 3;
+    const geo = far ? (child ? this.quarter : this.halfFar) : child ? this.halfNear : this.full;
+    const count = far ? (child ? this.quarterCount : this.halfFarCount) : child ? this.halfNearCount : this.fullCount;
     if (count >= MAX_PATCHES) return;
     const attr = geo.getAttribute('aPatch') as THREE.InstancedBufferAttribute;
-    // Spacing: the level's own vertex pitch
-    const spacing = (LEAF * 2 ** lod) / CELLS;
+    // Far rings (lod >= 3) step to 2x coarser vertex spacing (halfFar on full nodes, quarter on child quarters)
+    const spacing = (LEAF * 2 ** lod) / (far ? CELLS / 2 : CELLS);
     attr.setXYZW(count, ox, oz, spacing, lod);
-    if (halfRes) this.halfCount++;
-    else this.fullCount++;
+    if (far) {
+      if (child) this.quarterCount++;
+      else this.halfFarCount++;
+    } else if (child) {
+      this.halfNearCount++;
+    } else {
+      this.fullCount++;
+    }
   }
 
   private select(n: Node, eye: THREE.Vector3): boolean {
@@ -428,7 +480,7 @@ export class Terrain {
     }
     for (const c of n.children!) {
       // A child out of the finer range is drawn at this node's LOD: a
-      // half-resolution patch over the child's quarter
+      // half-res (near) or quarter-res (far) patch over the child's quarter
       if (!this.select(c, eye)) {
         if (this.inFrustum(c)) this.add(c, lod, true);
       }
@@ -441,13 +493,19 @@ export class Terrain {
     this._m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this._m);
     this.fullCount = 0;
-    this.halfCount = 0;
+    this.halfNearCount = 0;
+    this.halfFarCount = 0;
+    this.quarterCount = 0;
     this.select(this.root, eye);
     this.full.instanceCount = this.fullCount;
-    this.half.instanceCount = this.halfCount;
+    this.halfNear.instanceCount = this.halfNearCount;
+    this.halfFar.instanceCount = this.halfFarCount;
+    this.quarter.instanceCount = this.quarterCount;
     for (const [g, count] of [
       [this.full, this.fullCount],
-      [this.half, this.halfCount],
+      [this.halfNear, this.halfNearCount],
+      [this.halfFar, this.halfFarCount],
+      [this.quarter, this.quarterCount],
     ] as const) {
       if (count <= 0) continue;
       const attr = g.getAttribute('aPatch') as THREE.InstancedBufferAttribute;
@@ -456,10 +514,29 @@ export class Terrain {
       attr.needsUpdate = true;
     }
     this.mesh.visible = this.fullCount > 0;
-    this.halfMesh.visible = this.halfCount > 0;
+    this.halfNearMesh.visible = this.halfNearCount > 0;
+    this.halfFarMesh.visible = this.halfFarCount > 0;
+    this.quarterMesh.visible = this.quarterCount > 0;
     (this.uniforms.uEye.value as THREE.Vector3).copy(eye);
     this.uniforms.uTime.value = time;
     void this.field;
+  }
+
+  /**
+   * Scales tessellation ring distances without shrinking the horizon:
+   * lower values coarsen mid-range tessellation early for higher FPS,
+   * while the outermost root ring always reaches the full world edge.
+   */
+  setLodScale(scale: number): void {
+    const s = Math.max(0.35, Math.min(2.0, scale));
+    if (s === this.lodScale) return;
+    this.lodScale = s;
+    const r0 = RANGE0 * s;
+    this.uniforms.uRange0.value = r0;
+    for (let l = 0; l < LEVELS; l++) {
+      const r = r0 * 2 ** l;
+      this.ranges[l] = l === LEVELS - 1 ? Math.max(RANGE0 * 2 ** l, r) : r;
+    }
   }
 
   /** The vegetation's shade map and the box it covers (shared, kept current by the vegetation). */
@@ -487,6 +564,6 @@ export class Terrain {
   }
 
   get patchCount(): number {
-    return this.fullCount + this.halfCount;
+    return this.fullCount + this.halfNearCount + this.halfFarCount + this.quarterCount;
   }
 }
