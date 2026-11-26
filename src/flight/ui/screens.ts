@@ -63,10 +63,10 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
 
 export type Quality = 'low' | 'medium' | 'high' | 'ultra';
 export const QUALITY: Record<Quality, { label: string; note: string }> = {
-  low: { label: 'LOW', note: '0.7× res · no shadows' },
-  medium: { label: 'MEDIUM', note: '1.0× res' },
-  high: { label: 'HIGH', note: '1.25× res' },
-  ultra: { label: 'ULTRA', note: 'native' },
+  low: { label: 'LOW', note: '0.7× res · no shadows · 0× AA' },
+  medium: { label: 'MEDIUM', note: '1.0× res · 2× AA' },
+  high: { label: 'HIGH', note: '1.25× res · 4× AA' },
+  ultra: { label: 'ULTRA', note: 'native · 4× AA' },
 };
 
 export interface Settings {

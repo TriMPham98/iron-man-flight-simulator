@@ -104,8 +104,8 @@ function plumeMaterial(color: number, falloff: number, turbulence: number): THRE
           float along = pow(1.0 - h, ${falloff.toFixed(1)} * (1.5 - 0.6 * uPower));
           // Shock diamonds: sharp nodes, weaker and softer as the flow mixes out
           float cell = fract(h * uCells - 0.15);
-          float node = exp(-pow((cell - 0.5) * (5.0 - 2.0 * h), 2.0) * 4.0);
-          float diamonds = 0.7 + (0.25 + 0.95 * uPower) * node * (1.0 - h) * (1.0 - h);
+          float node = exp(-pow((cell - 0.5) * (5.2 - 2.0 * h), 2.0) * 4.4);
+          float diamonds = 0.7 + (0.3 + 1.05 * uPower) * node * (1.0 - h) * (1.0 - h);
           // Turbulent mixing past the core: angular streaks flowing out
           // (the angle wraps: 16 cells round the shell)
           vec2 q = vec2(vA * 16.0, h * 7.0 - uTime * (14.0 + 10.0 * uPower) + uSeed);
@@ -280,7 +280,7 @@ export class Jets {
       const k = powers[i];
       const w = this.washes[i];
       w.visible = false;
-      if (k < 0.05) return;
+      if (k < 0.05 || j.pos.y > 1600) return;
       const dy = -j.dir.y;
       if (dy < 0.2) return;
       // March down the jet line to the surface (it's short: ≤ 25 m)

@@ -165,6 +165,8 @@ export class Hud {
   private time = 0;
   private readonly lines: Line[] = [];
   private readonly _v = new THREE.Vector3();
+  private readonly _w = new THREE.Vector3();
+  private readonly _u = new THREE.Vector3();
   private readonly _p = new THREE.Vector3();
   private readonly _e = new THREE.Euler();
   /** HUD visibility 0–1 (eases in after take-off / boot). */
@@ -1344,7 +1346,7 @@ export class Hud {
       }
     }
     // Nose: where the suit points (it chases the reticle)
-    const nose = this.project(this._v.copy(m.pos).addScaledVector(m.thrustAxis(new THREE.Vector3()).lerp(m.forward(), 1 - m.flightness), 200), cam);
+    const nose = this.project(this._v.copy(m.pos).addScaledVector(m.thrustAxis(this._w).lerp(m.forward(this._u), 1 - m.flightness), 200), cam);
     if (nose && m.flightness > 0.3) {
       g.strokeStyle = CYAN_DIM;
       g.lineWidth = 1.2;

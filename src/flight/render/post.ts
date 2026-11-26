@@ -105,8 +105,9 @@ vec3 ghost(vec2 uv, vec2 at, float size, vec3 tint) {
 void main() {
   vec2 uv = vUv;
   vec2 c = uv - 0.5;
+  float c2 = dot(c, c);
   // Chromatic fringe toward the edges at speed (and in the visor)
-  float fr = (uSpeed * 0.0035 + uHelmet * 0.0012) * dot(c, c) * 4.0;
+  float fr = (uSpeed * 0.0035 + uHelmet * 0.0012) * c2 * 4.0;
   vec3 hdr;
   if (uUpscale > 0.5) {
     hdr = sceneSharp(uv);
@@ -118,6 +119,15 @@ void main() {
     hdr.r = texture2D(tScene, uv - c * fr).r;
     hdr.g = texture2D(tScene, uv).g;
     hdr.b = texture2D(tScene, uv + c * fr).b;
+  }
+  // Supersonic peripheral speed-smear: keeps the centre razor-sharp while the
+  // screen edges streak back past Mach 0.85
+  if (uSpeed > 0.04 && c2 > 0.06) {
+    float smearK = uSpeed * smoothstep(0.06, 0.32, c2);
+    vec2 stepUv = c * (0.012 * smearK);
+    vec3 s1 = texture2D(tScene, clamp(uv - stepUv, 0.001, 0.999)).rgb;
+    vec3 s2 = texture2D(tScene, clamp(uv - stepUv * 2.0, 0.001, 0.999)).rgb;
+    hdr = mix(hdr, (hdr + s1 + s2) * (1.0 / 3.0), smearK * 0.42);
   }
   hdr += texture2D(tBloom, uv).rgb;
 
@@ -200,7 +210,7 @@ void main() {
 `;
 
 export class FlightPost {
-  private readonly rt: THREE.WebGLRenderTarget;
+  private rt: THREE.WebGLRenderTarget;
   private readonly bloom: UnrealBloomPass;
   private readonly final: FullScreenQuad;
   private readonly uniforms: Record<string, THREE.IUniform>;
@@ -213,18 +223,7 @@ export class FlightPost {
     private readonly scene: THREE.Scene,
     private readonly camera: THREE.PerspectiveCamera,
   ) {
-    const depth = new THREE.DepthTexture(1, 1, THREE.FloatType);
-    this.rt = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.HalfFloatType,
-      samples: 4,
-      depthTexture: depth,
-      depthBuffer: true,
-    });
-    // The float depth is there for reversed-Z's precision, not to be read:
-    // nothing samples it, so the multisampled depth is never resolved into
-    // it (a full-size 32F blit every frame: ~1 ms at 1×, ~3 ms at 1.5× on an
-    // M1 Pro) and is discarded instead
-    this.rt.resolveDepthBuffer = false;
+    this.rt = this.makeTarget(4);
     this.bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.32, 0.5, 1.3);
     // The glow is added in the final pass, so the pass's own last step (blend
     // it back over the scene) is skipped outright: drawn invisible, it still
@@ -269,6 +268,32 @@ export class FlightPost {
       }),
     );
     this.resize();
+  }
+
+  private makeTarget(samples: number): THREE.WebGLRenderTarget {
+    const depth = new THREE.DepthTexture(1, 1, THREE.FloatType);
+    const rt = new THREE.WebGLRenderTarget(1, 1, {
+      type: THREE.HalfFloatType,
+      samples,
+      depthTexture: depth,
+      depthBuffer: true,
+    });
+    // The float depth is there for reversed-Z's precision, not to be read:
+    // nothing samples it, so the multisampled depth is never resolved into
+    // it (a full-size 32F blit every frame) and is discarded instead
+    rt.resolveDepthBuffer = false;
+    return rt;
+  }
+
+  /** Adjust MSAA samples on the HDR scene target (0, 2 or 4). */
+  setSamples(samples: number): void {
+    const clamped = Math.max(0, Math.min(4, samples));
+    if (this.rt.samples === clamped) return;
+    const prev = this.rt;
+    this.rt = this.makeTarget(clamped);
+    this.uniforms.tScene.value = this.rt.texture;
+    this.resize();
+    prev.dispose();
   }
 
   /** The scene's share of the canvas resolution; takes hold at the next {@link resize}. */

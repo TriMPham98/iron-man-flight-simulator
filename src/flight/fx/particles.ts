@@ -62,12 +62,12 @@ const PRESETS: Record<ParticleKind, Preset> = {
 };
 
 function puffTexture(glow: boolean): THREE.Texture {
-  const n = 128;
+  const n = glow ? 128 : 256;
   const c = document.createElement('canvas');
   c.width = c.height = n;
   const g = c.getContext('2d')!;
   const img = g.createImageData(n, n);
-  // Soft-edged blob with a little lumpy noise inside (smoke), or a clean
+  // Soft-edged blob with multi-octave lumpy detail inside (smoke), or a clean
   // falloff (glow)
   const rnd = new Float32Array(17 * 17).map(() => Math.random());
   const noise = (x: number, y: number) => {
@@ -80,22 +80,32 @@ function puffTexture(glow: boolean): THREE.Texture {
     const sy = ty * ty * (3 - 2 * ty);
     return at(xi, yi) * (1 - sx) * (1 - sy) + at(xi + 1, yi) * sx * (1 - sy) + at(xi, yi + 1) * (1 - sx) * sy + at(xi + 1, yi + 1) * sx * sy;
   };
+  const scale = n / 128;
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
       const u = (x + 0.5) / n - 0.5;
       const v = (y + 0.5) / n - 0.5;
       const r = Math.sqrt(u * u + v * v) * 2;
       let a: number;
+      let occ = 255;
       if (glow) {
         a = Math.max(0, 1 - r);
         a = a * a * (0.4 + 0.6 * a);
       } else {
-        const lump = noise(x / 16, y / 16) * 0.55 + noise(x / 7 + 3, y / 7 + 5) * 0.3 + noise(x / 3, y / 3) * 0.15;
-        a = Math.max(0, 1 - r * (0.85 + lump * 0.4));
-        a = Math.pow(a, 1.4) * (0.65 + 0.35 * lump);
+        const sx = x / scale;
+        const sy = y / scale;
+        const lump =
+          noise(sx / 16, sy / 16) * 0.5 +
+          noise(sx / 8 + 3, sy / 8 + 5) * 0.28 +
+          noise(sx / 4 + 7, sy / 4 + 2) * 0.14 +
+          noise(sx / 2 + 11, sy / 2 + 9) * 0.08;
+        a = Math.max(0, 1 - r * (0.83 + lump * 0.42));
+        a = Math.pow(a, 1.35) * (0.62 + 0.38 * lump);
+        occ = Math.round(Math.min(1, 0.52 + 0.48 * lump) * 255);
       }
       const k = (y * n + x) * 4;
-      img.data[k] = img.data[k + 1] = img.data[k + 2] = 255;
+      img.data[k] = occ;
+      img.data[k + 1] = img.data[k + 2] = occ;
       img.data[k + 3] = Math.round(Math.min(1, a) * 255);
     }
   }
@@ -143,23 +153,89 @@ varying vec4 vColor;
 varying float vHaze;
 varying vec3 vHazeCol;
 void main() {
-  float a = texture2D(uMap, vUv).a * vColor.a;
+  vec4 tex = texture2D(uMap, vUv);
+  float a = tex.a * vColor.a;
   if (a < 0.004) discard;
   if (uGlow > 0.5) {
     gl_FragColor = vec4(vColor.rgb * a * (1.0 - vHaze), 1.0);
     return;
   }
-  // Light the puff as a soft sphere
+  // Light the puff as a soft sphere with internal crevice occlusion and silver-lining scatter
   vec2 p = vUv * 2.0 - 1.0;
   vec3 n = normalize(vec3(p, sqrt(max(0.0, 1.0 - dot(p, p))) + 0.35));
-  float sun = clamp(dot(n, uSunView) * 0.55 + 0.45, 0.0, 1.0);
+  float sun = clamp(dot(n, uSunView) * 0.55 + 0.45, 0.0, 1.0) * (0.72 + 0.28 * tex.r);
   // Light through the thin edges toward the sun
-  float rim = pow(1.0 - n.z, 2.0) * max(uSunView.z * -1.0, 0.0);
-  vec3 col = vColor.rgb * (uAmb + uSunCol * (sun * 0.55 + rim * 0.8));
+  float rim = pow(1.0 - n.z, 2.0) * max(-uSunView.z, 0.0) * (1.2 - 0.5 * tex.a);
+  vec3 col = vColor.rgb * (uAmb * (0.78 + 0.22 * tex.r) + uSunCol * (sun * 0.55 + rim * 0.9));
   col = mix(col, vHazeCol, vHaze);
   gl_FragColor = vec4(col, a);
 }
 `;
+
+/**
+ * Sort `order[0..count)` in descending order of `keys[order[i]]` using an
+ * inlined iterative quicksort + insertion sort (no comparator closure calls).
+ */
+export function sortIndicesDesc(order: Uint32Array | Uint16Array | Int32Array, keys: Float32Array, count: number): void {
+  if (count <= 1) return;
+  const stack = sortStack;
+  let sp = 0;
+  stack[sp++] = 0;
+  stack[sp++] = count - 1;
+  while (sp > 0) {
+    const hi = stack[--sp];
+    const lo = stack[--sp];
+    if (hi - lo <= 16) {
+      for (let i = lo + 1; i <= hi; i++) {
+        const idx = order[i];
+        const key = keys[idx];
+        let j = i - 1;
+        while (j >= lo && keys[order[j]] < key) {
+          order[j + 1] = order[j];
+          j--;
+        }
+        order[j + 1] = idx;
+      }
+      continue;
+    }
+    const mid = (lo + hi) >> 1;
+    const pivot = keys[order[mid]];
+    let i = lo;
+    let j = hi;
+    while (i <= j) {
+      while (keys[order[i]] > pivot) i++;
+      while (keys[order[j]] < pivot) j--;
+      if (i <= j) {
+        const tmp = order[i];
+        order[i] = order[j];
+        order[j] = tmp;
+        i++;
+        j--;
+      }
+    }
+    if (j - lo > hi - i) {
+      if (lo < j) {
+        stack[sp++] = lo;
+        stack[sp++] = j;
+      }
+      if (i < hi) {
+        stack[sp++] = i;
+        stack[sp++] = hi;
+      }
+    } else {
+      if (i < hi) {
+        stack[sp++] = i;
+        stack[sp++] = hi;
+      }
+      if (lo < j) {
+        stack[sp++] = lo;
+        stack[sp++] = j;
+      }
+    }
+  }
+}
+
+const sortStack = new Int32Array(128);
 
 class Pool {
   readonly max: number;
@@ -278,33 +354,46 @@ class Pool {
     }
     const n = this.count;
     // Smoke is sorted back to front; glow is additive and needs no order
-    for (let i = 0; i < n; i++) this.order[i] = i;
-    if (!this.glow && n > 1) {
+    const sort = !this.glow;
+    if (sort && n > 1) {
+      const p = this.p;
+      const keys = this.keys;
+      const order = this.order;
+      const ex = eye.x;
+      const ey = eye.y;
+      const ez = eye.z;
       for (let i = 0; i < n; i++) {
-        const dx = this.p[i * 3] - eye.x;
-        const dy = this.p[i * 3 + 1] - eye.y;
-        const dz = this.p[i * 3 + 2] - eye.z;
-        this.keys[i] = dx * dx + dy * dy + dz * dz;
+        order[i] = i;
+        const k = i * 3;
+        const dx = p[k] - ex;
+        const dy = p[k + 1] - ey;
+        const dz = p[k + 2] - ez;
+        keys[i] = dx * dx + dy * dy + dz * dz;
       }
-      const sub = this.order.subarray(0, n);
-      sub.sort((a, b) => this.keys[b] - this.keys[a]);
+      sortIndicesDesc(order, keys, n);
     }
     const pos = this.iPos.array as Float32Array;
     const col = this.iColor.array as Float32Array;
     const sr = this.iSizeRot.array as Float32Array;
     for (let o = 0; o < n; o++) {
-      const i = this.order[o];
+      const i = sort && n > 1 ? this.order[o] : o;
       const t = this.age[i] / this.life[i];
       const fi = this.fadeIn[i];
       const env = fi > 0 ? Math.min(1, t / fi) : 1;
       const fade = this.glow ? (1 - t) * (1 - t * 0.5) : 1 - t * t * (3 - 2 * t);
-      pos[o * 3] = this.p[i * 3];
-      pos[o * 3 + 1] = this.p[i * 3 + 1];
-      pos[o * 3 + 2] = this.p[i * 3 + 2];
-      for (let c = 0; c < 3; c++) col[o * 4 + c] = this.c0[i * 3 + c] + (this.c1[i * 3 + c] - this.c0[i * 3 + c]) * t;
-      col[o * 4 + 3] = this.alpha[i] * env * fade;
+      const i3 = i * 3;
+      const o3 = o * 3;
+      const o4 = o * 4;
+      pos[o3] = this.p[i3];
+      pos[o3 + 1] = this.p[i3 + 1];
+      pos[o3 + 2] = this.p[i3 + 2];
+      col[o4] = this.c0[i3] + (this.c1[i3] - this.c0[i3]) * t;
+      col[o4 + 1] = this.c0[i3 + 1] + (this.c1[i3 + 1] - this.c0[i3 + 1]) * t;
+      col[o4 + 2] = this.c0[i3 + 2] + (this.c1[i3 + 2] - this.c0[i3 + 2]) * t;
+      col[o4 + 3] = this.alpha[i] * env * fade;
       // Growth eases out (puffs bloom fast then hang)
-      sr[o * 2] = Math.max(0.01, this.size[i] + this.grow[i] * (1 - Math.pow(1 - t, 2)) * this.life[i]);
+      const omt = 1 - t;
+      sr[o * 2] = Math.max(0.01, this.size[i] + this.grow[i] * (1 - omt * omt) * this.life[i]);
       sr[o * 2 + 1] = this.rot[i];
     }
     this.geo.instanceCount = n;

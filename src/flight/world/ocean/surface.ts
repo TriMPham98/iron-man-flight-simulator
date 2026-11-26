@@ -60,6 +60,7 @@ varying vec3 vWorld;
 varying vec2 vXZ;
 varying float vHeight;
 varying float vAmp;
+varying float vBaseGround;
 ${TERRAIN_SAMPLE_GLSL}
 ${SHORE_GLSL}
 void main() {
@@ -78,9 +79,11 @@ void main() {
     float lod = log2(max(eff / texel, 1.0)) + 0.5;
     if (lod < 8.0) disp += textureLod(uDisp, vec3(xz / uCascL[c], float(c)), lod).xyz;
   }
-  float amp = shoreAmp(-terrainBase(xz));
+  float baseGround = terrainBase(xz);
+  float amp = shoreAmp(-baseGround);
   vHeight = disp.y;
   vAmp = amp;
+  vBaseGround = baseGround;
   disp *= amp;
   vec3 world = vec3(xz.x + disp.x, disp.y, xz.y + disp.z);
   vWorld = world;
@@ -116,6 +119,7 @@ varying vec3 vWorld;
 varying vec2 vXZ;
 varying float vHeight;
 varying float vAmp;
+varying float vBaseGround;
 ${TERRAIN_SAMPLE_GLSL}
 ${ATMOSPHERE_GLSL}
 const float PI = 3.14159265358979;
@@ -146,6 +150,11 @@ float foamPattern(vec2 xz, float t) {
 void main() {
   vec2 xz = vXZ;
   float amp = vAmp;
+  vec3 toEye = cameraPosition - vWorld;
+  float dist = length(toEye);
+  vec3 V = toEye / dist;
+  vec3 Ld = uSunDir;
+
   // Wind gusts ("cat's paws"): patches where the short ripples are stronger or calmer
   float gustN = texture(uFoamTex, xz * 0.011 + uWind.xy * (uTime * 0.0004)).b;
   float gust = mix(0.35, 1.2, smoothstep(0.3, 0.72, gustN));
@@ -155,13 +164,21 @@ void main() {
   float macroN = texture(uFoamTex, xz / 5300.0 + 0.37).b * 0.55 + texture(uFoamTex, mq / 13700.0).b * 0.45;
   float macro = mix(0.65, 1.3, smoothstep(0.32, 0.68, macroN));
 
+  // Fine cascades become sub-pixel in the far distance and are already covered
+  // by Cox-Munk unresolved variance, so fade and skip their array fetches out far
+  // (skip past the fade-out end so derivatives across the boundary stay zero-weighted)
+  float c3fade = 1.0 - smoothstep(450.0, 850.0, dist);
+  float c2fade = 1.0 - smoothstep(2400.0, 4200.0, dist);
+
   vec2 s = vec2(0.0);
   float jxx = 0.0, jzz = 0.0, jxz = 0.0;
   vec3 cov = vec3(0.0);
   for (int c = 0; c < ${CASCADES}; c++) {
-    vec3 uv = vec3(xz / uCascL[c], float(c));
-    float gk = c == 3 ? mix(1.0, gust, 0.5) : c == 2 ? mix(1.0, gust, 0.2) * macro : c == 1 ? mix(1.0, macro, 0.5) : 1.0;
+    if (c == 3 && dist > 900.0) continue;
+    if (c == 2 && dist > 4300.0) continue;
+    float gk = c == 3 ? mix(1.0, gust, 0.5) * c3fade : c == 2 ? mix(1.0, gust, 0.2) * macro * c2fade : c == 1 ? mix(1.0, macro, 0.5) : 1.0;
     gk *= amp;
+    vec3 uv = vec3(xz / uCascL[c], float(c));
     vec4 dv = texture(uDeriv, uv) * gk;
     vec4 mv = texture(uMom, uv) * (gk * gk);
     vec4 av = texture(uDisp, uv) * gk;
@@ -171,10 +188,6 @@ void main() {
     jxz += av.w;
     cov += vec3(max(mv.x - dv.x * dv.x, 0.0), max(mv.y - dv.y * dv.y, 0.0), mv.z - dv.x * dv.y);
   }
-  vec3 toEye = cameraPosition - vWorld;
-  float dist = length(toEye);
-  vec3 V = toEye / dist;
-  vec3 Ld = uSunDir;
 
   // Slope statistics (LEAN) plus unresolved capillary roughness, growing
   // with distance toward Cox-Munk totals in the far sheen
@@ -237,14 +250,25 @@ void main() {
   float toSun = max(dot(Ld, -V), 0.0);
   float thin = pow(clamp(0.5 - 0.5 * dot(Ld, nrm), 0.0, 1.0), 3.0);
   float k1 = uSss.w * crest * crest * pow(toSun, 4.0) * thin * exp(-dist / 600.0);
-  body += uSss.rgb * sunE * k1;
+  // Extra sun-glow through thin wave crests even off the direct sun axis
+  float crestGlow = crest * crest * (0.25 + 0.75 * pow(toSun, 2.0)) * exp(-dist / 900.0);
+  body += uSss.rgb * sunE * (k1 + crestGlow * 0.35);
 
   // ---- the shelf: sand seen through the shallows ----
-  float ground = terrainHeight(xz);
-  float depth = max(vWorld.y - ground, 0.0);
-  vec3 absorb = exp(-depth * vec3(0.45, 0.10, 0.07));
-  vec3 seabed = vec3(0.42, 0.36, 0.26) * (sunE * max(Ld.y, 0.0) * 0.9 + skyHemi * 0.6);
-  body = mix(body, seabed, absorb);
+  // Sample pixel-exact terrainBase only where the shelf/coast is within ~70 m
+  // depth; deep offshore water skips the 4+ heightfield taps completely
+  float ground = vBaseGround;
+  if (vBaseGround > -70.0) {
+    ground = terrainBase(xz);
+    if (ground > 3.5) ground = terrainHeight(xz);
+    float depth = max(vWorld.y - ground, 0.0);
+    vec3 absorb = exp(-depth * vec3(0.42, 0.095, 0.068));
+    vec3 seabed = vec3(0.44, 0.38, 0.27) * (sunE * max(Ld.y, 0.0) * 0.9 + skyHemi * 0.6);
+    // Warm turquoise scatter over shallow coastal sandbars
+    float shallow = smoothstep(14.0, 1.5, depth) * (1.0 - smoothstep(1.5, 0.1, depth));
+    body += vec3(0.018, 0.085, 0.08) * (skyHemi + sunE * 0.35) * shallow;
+    body = mix(body, seabed, absorb);
+  }
 
   // ---- foam ----
   // persistent foam from the world-space clipmaps (near: fine, far: coarse),
@@ -253,8 +277,8 @@ void main() {
   float cheb = max(dc.x, dc.y);
   float w0 = 1.0 - smoothstep(0.30 * uFoamLevels.x, 0.45 * uFoamLevels.x, cheb);
   float w1 = 1.0 - smoothstep(0.30 * uFoamLevels.y, 0.45 * uFoamLevels.y, cheb);
-  vec4 fw0 = texture(uFoamW0, xz / uFoamLevels.x);
-  vec4 fw1 = texture(uFoamW1, xz / uFoamLevels.y);
+  vec4 fw0 = w0 > 0.001 ? texture(uFoamW0, xz / uFoamLevels.x) : vec4(0.0);
+  vec4 fw1 = w1 > 0.001 ? texture(uFoamW1, xz / uFoamLevels.y) : vec4(0.0);
   vec4 fwl = mix(fw1, fw0, w0) * w1 * amp;
   float fresh = clamp((uFoamP.x - J) * uFoamP.y, 0.0, 1.0);
   float cover = clamp((max(fwl.r, fresh * (1.0 - w1 * 0.7)) + fwl.g * 0.6) * uFoamP.z, 0.0, 1.5);

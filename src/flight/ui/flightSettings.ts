@@ -24,6 +24,14 @@ export const QUALITY_GROUND: Record<Quality, { reach: number; anisotropy: number
   ultra: { reach: 2.6, anisotropy: 16 },
 };
 
+/** HDR scene MSAA samples per preset (low skips multisample resolve for fill-rate speed). */
+export const QUALITY_SAMPLES: Record<Quality, number> = {
+  low: 0,
+  medium: 2,
+  high: 4,
+  ultra: 4,
+};
+
 export function bindFlightSettings(app: FlightApp): void {
   const { screens, game, audio, renderer, resolution } = app;
   // ── Graphics preset: cap whatever the adaptive resolution asks for ──
@@ -38,6 +46,7 @@ export function bindFlightSettings(app: FlightApp): void {
     cap = QUALITY_DPR[q];
     const ground = QUALITY_GROUND[q];
     app.world.terrain.setDetail(ground.reach, ground.anisotropy, renderer);
+    app.post?.setSamples(QUALITY_SAMPLES[q]);
     const shadows = q !== 'low';
     if (renderer.shadowMap.enabled !== shadows) {
       renderer.shadowMap.enabled = shadows;

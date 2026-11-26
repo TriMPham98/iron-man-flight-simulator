@@ -873,10 +873,11 @@ const SHADE_GLSL = /* glsl */ `
   reflectedLight.directDiffuse *= vegBake.r;
   reflectedLight.directSpecular *= vegBake.r;
   reflectedLight.indirectDiffuse *= mix(0.6, 1.0, vegBake.g);
-  // Backlit leaves: the low sun glowing through crowns seen against it
+  // Backlit leaves: the low golden-hour sun glowing through crowns seen against it
   vec3 vegV = normalize(vInstWorld + vec3(0.0, 4.0, 0.0) - cameraPosition);
   float vegBack = pow(max(dot(vegV, uSunDir), 0.0), 4.0);
-  reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * (vegBack * 0.35 * RECIPROCAL_PI * vegBake.r);
+  float vegRim = pow(max(dot(vegV, uSunDir), 0.0), 2.0);
+  reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * ((vegBack * 0.4 + vegRim * 0.08) * RECIPROCAL_PI * vegBake.r);
 `;
 
 // Leaf cards: cut out of the atlas, fading by shrinking every leaf
@@ -1357,6 +1358,9 @@ function strip(c: CellData, gone: Set<string>): void {
   if (imp.length !== c.imp.length) c.imp = new Float32Array(imp);
 }
 
+/** Fast integer cache key for cell coordinates in [-2048, 2047]. */
+const cellKey = (cx: number, cz: number): number => (cx + 2048) * 4096 + (cz + 2048);
+
 export class Vegetation {
   readonly group = new THREE.Group();
   /** Every species drawn, wild and planted (the impostor atlas's column order). */
@@ -1373,7 +1377,7 @@ export class Vegetation {
   private readonly impA: THREE.InstancedBufferAttribute;
   private readonly impB: THREE.InstancedBufferAttribute;
   private readonly impT: THREE.InstancedBufferAttribute;
-  private readonly cache = new Map<string, CellData>();
+  private readonly cache = new Map<number, CellData>();
   private readonly uniforms: Record<string, THREE.IUniform>;
   private readonly lastEye = new THREE.Vector3(Infinity, 0, 0);
   private readonly lastDir = new THREE.Vector3();
@@ -1384,11 +1388,11 @@ export class Vegetation {
   private readonly _vp = new THREE.Matrix4();
   private readonly _dir = new THREE.Vector3();
   /** The garden's plants by the cell they stand in, merged into it when it's planted. */
-  private readonly gardenCells = new Map<string, { near: Record<string, number[]>; imp: number[]; grass: number[]; minY: number; maxY: number }>();
+  private readonly gardenCells = new Map<number, { near: Record<string, number[]>; imp: number[]; grass: number[]; minY: number; maxY: number }>();
   /** Garden plants ("x,z") stand on the house's decks: felled, they fall no lower than this. */
   private readonly gardenFloor = new Map<string, number>();
   /** What the unibeam has taken, per cell ("x,z" of each plant), so a cell planted again stays cut. */
-  private readonly cuts = new Map<string, Set<string>>();
+  private readonly cuts = new Map<number, Set<string>>();
   /** Something was cut: rebuild the lists next frame. */
   private dirty = false;
   private lastTime = 0;
@@ -1670,7 +1674,7 @@ export class Vegetation {
     for (const p of plants) {
       const ki = this.kinds.indexOf(p.kind);
       if (ki < 0 && p.kind !== 'grass') continue;
-      const key = `${Math.floor(p.x / CELL)},${Math.floor(p.z / CELL)}`;
+      const key = cellKey(Math.floor(p.x / CELL), Math.floor(p.z / CELL));
       let g = this.gardenCells.get(key);
       if (!g) this.gardenCells.set(key, (g = { near: {}, imp: [], grass: [], minY: Infinity, maxY: -Infinity }));
       _q.setFromAxisAngle(UP, p.yaw ?? hash3(p.x, 0, p.z, 7) * Math.PI * 2);
@@ -1692,7 +1696,7 @@ export class Vegetation {
 
   /** Everything planted in one cell, computed once and cached. */
   private cell(cx: number, cz: number): CellData {
-    const key = `${cx},${cz}`;
+    const key = cellKey(cx, cz);
     const hit = this.cache.get(key);
     if (hit) return hit;
     const lists: Record<Kind, number[]> = { bush: [], oak: [], pine: [], palm: [] };
@@ -1767,7 +1771,15 @@ export class Vegetation {
     }
     const near: Record<string, Float32Array> = {};
     const planted = this.gardenCells.get(key);
-    for (const k of this.kinds) near[k] = new Float32Array([...(isKind(k) ? lists[k] : []), ...(planted?.near[k] ?? [])]);
+    for (const k of this.kinds) {
+      const wild = isKind(k) ? lists[k] : null;
+      const gard = planted?.near[k] ?? null;
+      const len = (wild?.length ?? 0) + (gard?.length ?? 0);
+      const arr = new Float32Array(len);
+      if (wild && wild.length) arr.set(wild, 0);
+      if (gard && gard.length) arr.set(gard, wild?.length ?? 0);
+      near[k] = arr;
+    }
     if (planted) {
       imp.push(...planted.imp);
       minY = Math.min(minY, planted.minY);
@@ -1823,8 +1835,16 @@ export class Vegetation {
       for (let e = 0; e < 16; e++) out.push(_m.elements[e]);
       out.push(tint[0] * v, tint[1] * v, tint[2] * v);
     }
-    grass.push(...(this.gardenCells.get(`${c.cx},${c.cz}`)?.grass ?? []));
-    c.tuft = brush.length + grass.length ? { brush: new Float32Array(brush), grass: new Float32Array(grass) } : null;
+    const garden = this.gardenCells.get(cellKey(c.cx, c.cz))?.grass;
+    const total = brush.length + grass.length + (garden?.length ?? 0);
+    if (total === 0) {
+      c.tuft = null;
+      return null;
+    }
+    const grassArr = new Float32Array(grass.length + (garden?.length ?? 0));
+    grassArr.set(grass, 0);
+    if (garden && garden.length) grassArr.set(garden, grass.length);
+    c.tuft = { brush: new Float32Array(brush), grass: grassArr };
     return c.tuft;
   }
 
@@ -1856,7 +1876,7 @@ export class Vegetation {
     const z1 = Math.floor((Math.max(from.z, ez) + pad) / CELL);
     for (let cz = z0; cz <= z1; cz++) {
       for (let cx = x0; cx <= x1; cx++) {
-        const key = `${cx},${cz}`;
+        const key = cellKey(cx, cz);
         const c = this.cache.get(key);
         if (!c || !near(c.x, c.z, CELL * Math.SQRT1_2 + pad)) continue;
         let gone: Set<string> | null = null;
@@ -1890,7 +1910,8 @@ export class Vegetation {
     if (!this.group.visible) return;
     camera.getWorldDirection(this._dir);
     const fov = (camera as THREE.PerspectiveCamera).fov ?? 0;
-    if (!this.pending && !this.dirty && eye.distanceToSquared(this.lastEye) < REBUILD_MOVE * REBUILD_MOVE && this._dir.dot(this.lastDir) > REBUILD_TURN && fov === this.lastFov) return;
+    const moveThresh = alt > 180 ? 44 : REBUILD_MOVE;
+    if (!this.pending && !this.dirty && eye.distanceToSquared(this.lastEye) < moveThresh * moveThresh && this._dir.dot(this.lastDir) > REBUILD_TURN && fov === this.lastFov) return;
     // A jump (boot, respawn, a teleport) plants the whole ring at once:
     // no point growing it in over seconds behind a cut
     const jumped = eye.distanceToSquared(this.lastEye) > 500 * 500;
@@ -1942,6 +1963,13 @@ export class Vegetation {
       (mesh.instanceMatrix.array as Float32Array).set(src.subarray(o, o + 16), at * 16);
       (mesh.instanceColor!.array as Float32Array).set(src.subarray(o + 16, o + 19), at * 3);
     };
+    const camFwdX = this._dir.x;
+    const camFwdZ = this._dir.z;
+    const horizLen = Math.hypot(camFwdX, camFwdZ);
+    const fx = horizLen > 1e-4 ? camFwdX / horizLen : 0;
+    const fz = horizLen > 1e-4 ? camFwdZ / horizLen : 1;
+    // Skip planting off-screen cells behind the camera when looking mostly forward
+    const pitchCos = horizLen;
     for (let j = -reach; j <= reach; j++) {
       for (let i = -reach; i <= reach; i++) {
         const x0 = (cx + i) * CELL;
@@ -1950,13 +1978,21 @@ export class Vegetation {
         const dz = Math.max(z0 - eye.z, 0, eye.z - (z0 + CELL));
         const flat2 = dx * dx + dz * dz;
         if (flat2 > RADIUS * RADIUS) continue;
-        // Planting a cell costs ~1 ms: past the frame's budget, cells out
-        // beyond the models' range wait for the next frame (they only grow
-        // in at the far edge anyway), so a fast pass never hitches
-        const ready = this.cache.get(`${cx + i},${cz + j}`);
-        if (!ready && flat2 > LOD_FAR * LOD_FAR && performance.now() - t0 > budgetMs) {
-          pending = true;
-          continue;
+        const cellCx = x0 + half;
+        const cellCz = z0 + half;
+        // Quick back-of-camera skip before planting an uncached cell
+        const ready = this.cache.get(cellKey(cx + i, cz + j));
+        if (!ready) {
+          if (pitchCos > 0.35) {
+            const vx = cellCx - eye.x;
+            const vz = cellCz - eye.z;
+            const d2d = Math.hypot(vx, vz);
+            if (d2d > CELL * 1.6 && vx * fx + vz * fz < -d2d * 0.35 - CELL) continue;
+          }
+          if (flat2 > LOD_FAR * LOD_FAR && performance.now() - t0 > budgetMs) {
+            pending = true;
+            continue;
+          }
         }
         const c = ready ?? this.cell(cx + i, cz + j);
         if (c.imp.length === 0 && c.tuft === null) continue;

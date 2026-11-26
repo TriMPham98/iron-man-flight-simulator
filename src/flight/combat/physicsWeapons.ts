@@ -563,9 +563,6 @@ export class PhysicsWeapons {
     this.auraPulseT -= dt;
     if (this.auraPulseT <= 0) {
       this.auraPulseT = tier === 2 ? 0.55 : 0.9;
-      const fwd = this._v.copy(model.vel);
-      if (fwd.lengthSq() > 1e-4) fwd.normalize();
-      else fwd.set(0, 0, 1);
       for (const d of drones) {
         if (!d.alive || !isLightAircraft(d.type)) continue;
         const off = this._w.copy(d.pos).sub(model.pos);
@@ -579,7 +576,6 @@ export class PhysicsWeapons {
         particles.burst('vapor', d.pos, 4, 8, off, 0.7);
         dronesPushed++;
       }
-      this.spawnAirRing(model.pos, fwd, 1.5, radius * 0.45, 0.28, tier === 2 ? 0x8be4ff : 0xd0ecff, 0.38);
     }
     return { dronesPushed, missilesShattered };
   }

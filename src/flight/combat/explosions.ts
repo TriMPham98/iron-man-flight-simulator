@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { withLogDepth } from '../render/depth';
 import type { Particles } from '../fx/particles';
 import type { EventBus } from '../sim/events';
 
@@ -27,6 +28,13 @@ interface Burner {
   acc: number;
 }
 
+interface ShockRing {
+  mesh: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  age: number;
+  dur: number;
+  maxScale: number;
+}
+
 export interface SurfaceQuery {
   surface(x: number, z: number): number;
   isWater(x: number, z: number): boolean;
@@ -37,6 +45,8 @@ export interface SurfaceQuery {
 export class Explosions {
   readonly group = new THREE.Group();
   private readonly lights: Array<{ light: THREE.PointLight; t: number; dur: number; peak: number }> = [];
+  private readonly shocks: ShockRing[] = [];
+  private shockNext = 0;
   private readonly debris: Debris[] = [];
   private readonly burners: Burner[] = [];
   private next = 0;
@@ -53,7 +63,42 @@ export class Explosions {
       this.lights.push({ light, t: 1, dur: 1, peak: 0 });
       this.group.add(light);
     }
+    const ringGeo = new THREE.RingGeometry(0.68, 1.0, 32);
+    for (let i = 0; i < 8; i++) {
+      const mat = withLogDepth(
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color(4.5, 2.6, 1.1),
+          transparent: true,
+          opacity: 0,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+        }),
+      );
+      const mesh = new THREE.Mesh(ringGeo, mat);
+      mesh.visible = false;
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 7;
+      this.shocks.push({ mesh, age: 1, dur: 1, maxScale: 1 });
+      this.group.add(mesh);
+    }
     this.group.name = 'explosions';
+  }
+
+  private spawnShock(at: THREE.Vector3, maxScale: number, dur: number, flat: boolean): void {
+    const s = this.shocks[this.shockNext++ % this.shocks.length];
+    s.mesh.position.copy(at);
+    if (flat) {
+      s.mesh.rotation.set(-Math.PI / 2, 0, 0);
+    } else {
+      s.mesh.rotation.set((Math.random() - 0.5) * 1.4, Math.random() * Math.PI, (Math.random() - 0.5) * 1.4);
+    }
+    s.mesh.scale.setScalar(0.5);
+    s.mesh.visible = true;
+    s.age = 0;
+    s.dur = dur;
+    s.maxScale = maxScale;
   }
 
   private flashLight(at: THREE.Vector3, peak: number, dur: number): void {
@@ -115,6 +160,10 @@ export class Explosions {
       });
     }
     if (opts.burn) this.burners.push({ at: new THREE.Vector3(at.x, surf + 1, at.z), life: 25, rate: 6, acc: 0 });
+    if (size >= 4) {
+      const ringAt = nearGround ? this._v.set(at.x, surf + 0.35, at.z) : at;
+      this.spawnShock(ringAt, size * (nearGround ? 3.2 : 2.6), 0.28 + size * 0.025, nearGround);
+    }
     this.flashLight(at, 400 * size, 0.35 + size * 0.03);
     this.events.emit(size > 6 ? 'bigExplosion' : 'explosion', { at, value: size });
   }
@@ -139,6 +188,18 @@ export class Explosions {
       l.t += dt;
       const k = Math.max(0, 1 - l.t / l.dur);
       l.light.intensity = l.peak * k * k;
+    }
+    for (const s of this.shocks) {
+      if (!s.mesh.visible) continue;
+      s.age += dt;
+      const u = s.age / s.dur;
+      if (u >= 1) {
+        s.mesh.visible = false;
+        continue;
+      }
+      const ease = 1 - (1 - u) * (1 - u);
+      s.mesh.scale.setScalar(0.5 + s.maxScale * ease);
+      s.mesh.material.opacity = 0.65 * (1 - u) * (1 - u);
     }
     const P = this.particles;
     for (let i = this.debris.length - 1; i >= 0; i--) {

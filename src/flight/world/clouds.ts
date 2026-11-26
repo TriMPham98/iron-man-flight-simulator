@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { sortIndicesDesc } from '../fx/particles';
 import { withLogDepth } from '../render/depth';
 import { RENDER_ORDER, sortFocus } from '../render/transparency';
 import { ATMOSPHERE_GLSL } from './atmosphere';
@@ -70,37 +71,42 @@ varying float vBaseK;
 void main() {
   // Rotate the texture per puff
   float a = vSeed * 6.2831;
-  vec2 uv = mat2(cos(a), -sin(a), sin(a), cos(a)) * (vUv - 0.5) + 0.5;
+  float ca = cos(a);
+  float sa = sin(a);
+  vec2 uv = mat2(ca, -sa, sa, ca) * (vUv - 0.5) + 0.5;
   vec4 tex = texture2D(uMap, uv);
   float density = tex.a;
   if (density * vFade < 0.01) discard;
   vec2 p = vUv * 2.0 - 1.0;
   float z = sqrt(max(0.0, 1.0 - dot(p, p)));
   vec3 n = normalize(vec3(p, z * 0.9 + 0.1));
-  // Lambert-ish wrap toward the sun, darker underneath
-  // Mostly the cloud's own height in the cluster, a little the puff's roundness
-  float lit = mix(0.62, clamp(dot(n, uSunView) * 0.6 + 0.5, 0.0, 1.0), 0.45);
-  lit *= mix(0.55, 1.0, vBaseK) * (0.75 + 0.25 * tex.r);
-  // Forward scattering: bright rims looking toward the sun
+  // Wrapped Lambert + Beer-Lambert powder darkening in deep billows
+  float sunDot = dot(n, uSunView);
+  float lit = mix(0.6, clamp(sunDot * 0.6 + 0.5, 0.0, 1.0), 0.48);
+  lit *= mix(0.5, 1.0, vBaseK) * (0.68 + 0.32 * tex.r);
+  float powder = 1.0 - 0.32 * exp(-density * 3.5) * (1.0 - max(sunDot, 0.0));
+  // Forward scattering: bright golden-silver rims when looking toward the sun
   float mu = dot(vCenterDir, uSunDir);
-  float silver = pow(max(mu, 0.0), 6.0) * (1.0 - density * 0.7) * 2.2 + pow(max(mu, 0.0), 2.0) * 0.35;
+  float silver = pow(max(mu, 0.0), 6.0) * (1.0 - density * 0.68) * 2.4 + pow(max(mu, 0.0), 2.0) * 0.38;
+  // Warm sky/ocean bounce subtle gradient on undersides vs cool zenith ambient
   vec3 amb = mix(uAmbBottom, uAmbTop, clamp(n.y * 0.5 + 0.5, 0.0, 1.0) * 0.6 + vBaseK * 0.4);
-  vec3 col = amb + uSunCol * (lit * 0.85 + silver);
+  amb += vec3(0.06, 0.045, 0.03) * (1.0 - vBaseK) * (0.5 + 0.5 * tex.g);
+  vec3 col = amb * powder + uSunCol * (lit * 0.88 + silver);
   col = mix(col, vHazeCol, vHaze);
-  gl_FragColor = vec4(col, density * vFade * 0.8);
+  gl_FragColor = vec4(col, density * vFade * 0.82);
 }
 `;
 
 function puffTexture(): THREE.Texture {
-  const n = 256;
+  const n = 384;
   const c = document.createElement('canvas');
   c.width = c.height = n;
   const g = c.getContext('2d')!;
   const img = g.createImageData(n, n);
   let s = 7;
   const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
-  // Tileable value-noise octaves → billowy fbm
-  const lattices = [4, 8, 16, 32, 64].map((k) => ({ k, v: Float32Array.from({ length: k * k }, rnd) }));
+  // Tileable value-noise octaves → billowy fbm with fine cumulus tufts
+  const lattices = [4, 8, 16, 32, 64, 128].map((k) => ({ k, v: Float32Array.from({ length: k * k }, rnd) }));
   const noise = (u: number, v: number) => {
     let sum = 0;
     let amp = 0.5;
@@ -119,7 +125,7 @@ function puffTexture(): THREE.Texture {
       sum += amp * (a + (b - a) * sy);
       amp *= 0.5;
     }
-    return sum / 0.97;
+    return sum / 0.985;
   };
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
@@ -129,11 +135,13 @@ function puffTexture(): THREE.Texture {
       // Billows: |noise| folded, eroding the edge of a soft disc
       const f = noise(u, v);
       const billow = 1 - Math.abs(f * 2 - 1);
-      const body = Math.max(0, 1 - r * r) * (0.55 + 0.45 * billow);
-      const a = Math.max(0, Math.min(1, (body - 0.18 * (1 - billow)) * 1.6));
+      const body = Math.max(0, 1 - r * r) * (0.52 + 0.48 * billow);
+      const a = Math.max(0, Math.min(1, (body - 0.17 * (1 - billow)) * 1.62));
       const i = (y * n + x) * 4;
-      img.data[i] = Math.round(255 * Math.min(1, 0.55 + 0.45 * billow));
-      img.data[i + 1] = img.data[i + 2] = img.data[i];
+      const occ = Math.round(255 * Math.min(1, 0.5 + 0.5 * billow));
+      img.data[i] = occ;
+      img.data[i + 1] = Math.round(255 * billow);
+      img.data[i + 2] = occ;
       img.data[i + 3] = Math.round(a * a * 255);
     }
   }
@@ -156,8 +164,11 @@ export class Clouds {
   private readonly nearSeed: THREE.InstancedBufferAttribute;
   /** Drifted puff centres + radii, unsorted. */
   private readonly raw: Float32Array;
-  private readonly order: number[];
+  private readonly order: Uint16Array;
   private readonly keys: Float32Array;
+  private readonly frustum = new THREE.Frustum();
+  private readonly _vp = new THREE.Matrix4();
+  private readonly _c = new THREE.Vector3();
   private readonly uniforms: Record<string, THREE.IUniform>;
   /** Wind drift (m/s). */
   private readonly drift = new THREE.Vector3(3.5, 0, -1.5);
@@ -204,7 +215,7 @@ export class Clouds {
     this.nearPuff = near.puff;
     this.nearSeed = near.seed;
     this.raw = new Float32Array(N * 4);
-    this.order = this.puffs.map((_, i) => i);
+    this.order = new Uint16Array(N);
     this.keys = new Float32Array(N);
     this.uniforms = {
       ...atmosphere,
@@ -242,53 +253,106 @@ export class Clouds {
     const eye = camera.position;
     const sv = this.uniforms.uSunView.value as THREE.Vector3;
     sv.copy(this.uniforms.uSunDir.value as THREE.Vector3).transformDirection(camera.matrixWorldInverse);
+    this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this._vp);
+    const planes = this.frustum.planes;
     let inside = 0;
+    let vis = 0;
     const N = this.puffs.length;
     const half = WORLD_SIZE * 0.6;
+    const span = 2 * half;
+    const ox = this.offset.x;
+    const oz = this.offset.z;
+    const ex = eye.x;
+    const ey = eye.y;
+    const ez = eye.z;
     for (let i = 0; i < N; i++) {
       const p = this.puffs[i];
       // Drift with the wind, wrapping round the map
-      let x = p.p.x + this.offset.x;
-      let z = p.p.z + this.offset.z;
-      x = ((((x + half) % (2 * half)) + 2 * half) % (2 * half)) - half;
-      z = ((((z + half) % (2 * half)) + 2 * half) % (2 * half)) - half;
+      let x = p.p.x + ox;
+      let z = p.p.z + oz;
+      x = ((((x + half) % span) + span) % span) - half;
+      z = ((((z + half) % span) + span) % span) - half;
+      const py = p.p.y;
+      const pr = p.r;
       this.raw[i * 4] = x;
-      this.raw[i * 4 + 1] = p.p.y;
+      this.raw[i * 4 + 1] = py;
       this.raw[i * 4 + 2] = z;
-      this.raw[i * 4 + 3] = p.r;
-      const dx = x - eye.x;
-      const dy = p.p.y - eye.y;
-      const dz = z - eye.z;
+      this.raw[i * 4 + 3] = pr;
+      const dx = x - ex;
+      const dy = py - ey;
+      const dz = z - ez;
       const d2 = dx * dx + dy * dy + dz * dz;
+      const insideR = pr * 0.8;
+      if (d2 < insideR * insideR) inside = Math.max(inside, 1 - Math.sqrt(d2) / insideR);
+      // Frustum cull billboarded puffs with generous sphere radius (1.45× covers 2× quad corners)
+      const rad = pr * 1.45;
+      this._c.set(x, py, z);
+      let culled = false;
+      for (let k = 0; k < 5; k++) {
+        if (planes[k].distanceToPoint(this._c) < -rad) {
+          culled = true;
+          break;
+        }
+      }
+      if (culled) continue;
       this.keys[i] = d2;
-      const d = Math.sqrt(d2);
-      if (d < p.r * 0.8) inside = Math.max(inside, 1 - d / (p.r * 0.8));
+      this.order[vis++] = i;
     }
     // Back to front, split at the suit: [far … | … near]
-    this.order.sort((a, b) => this.keys[b] - this.keys[a]);
+    sortIndicesDesc(this.order, this.keys, vis);
     const f = sortFocus.valid ? sortFocus.point.distanceToSquared(eye) : 0;
-    let split = N;
+    let split = vis;
     if (sortFocus.valid) {
       split = 0;
-      while (split < N && this.keys[this.order[split]] >= f) split++;
+      while (split < vis && this.keys[this.order[split]] >= f) split++;
     }
     const fp = this.iPuff.array as Float32Array;
     const fs = this.iSeed.array as Float32Array;
     const np = this.nearPuff.array as Float32Array;
     const ns = this.nearSeed.array as Float32Array;
-    for (let o = 0; o < N; o++) {
+    const raw = this.raw;
+    for (let o = 0; o < vis; o++) {
       const i = this.order[o];
-      const near = o >= split;
-      const k = near ? o - split : o;
-      (near ? np : fp).set(this.raw.subarray(i * 4, i * 4 + 4), k * 4);
-      (near ? ns : fs)[k] = this.puffs[i].seed;
+      const i4 = i * 4;
+      if (o >= split) {
+        const k = o - split;
+        const k4 = k * 4;
+        np[k4] = raw[i4];
+        np[k4 + 1] = raw[i4 + 1];
+        np[k4 + 2] = raw[i4 + 2];
+        np[k4 + 3] = raw[i4 + 3];
+        ns[k] = this.puffs[i].seed;
+      } else {
+        const k4 = o * 4;
+        fp[k4] = raw[i4];
+        fp[k4 + 1] = raw[i4 + 1];
+        fp[k4 + 2] = raw[i4 + 2];
+        fp[k4 + 3] = raw[i4 + 3];
+        fs[o] = this.puffs[i].seed;
+      }
     }
+    const nearCount = vis - split;
     this.farGeo.instanceCount = split;
-    this.nearGeo.instanceCount = N - split;
-    this.mesh.visible = true;
-    this.nearMesh.visible = split < N;
-    this.iPuff.needsUpdate = this.iSeed.needsUpdate = true;
-    if (split < N) this.nearPuff.needsUpdate = this.nearSeed.needsUpdate = true;
+    this.nearGeo.instanceCount = nearCount;
+    this.mesh.visible = split > 0;
+    this.nearMesh.visible = nearCount > 0;
+    if (split > 0) {
+      this.iPuff.clearUpdateRanges();
+      this.iPuff.addUpdateRange(0, split * 4);
+      this.iPuff.needsUpdate = true;
+      this.iSeed.clearUpdateRanges();
+      this.iSeed.addUpdateRange(0, split);
+      this.iSeed.needsUpdate = true;
+    }
+    if (nearCount > 0) {
+      this.nearPuff.clearUpdateRanges();
+      this.nearPuff.addUpdateRange(0, nearCount * 4);
+      this.nearPuff.needsUpdate = true;
+      this.nearSeed.clearUpdateRanges();
+      this.nearSeed.addUpdateRange(0, nearCount);
+      this.nearSeed.needsUpdate = true;
+    }
     return Math.min(1, inside * 1.6);
   }
 

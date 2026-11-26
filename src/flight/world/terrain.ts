@@ -114,6 +114,7 @@ ${ATMOSPHERE_GLSL}
 float tSunVis;
 float tAo;
 float tWet;
+float tRough;
 // Detail texture as a 0–1 tone at a scale (m)
 float tone(vec2 xz, float scale) { return texture2D(uDetail, xz / scale).r * 0.5 + 0.5; }
 `;
@@ -186,10 +187,13 @@ const ALBEDO = /* glsl */ `
 
   // Rock: grey-brown with strata in the cliffs, lighter sandstone on the coast
   float strata = 0.5 + 0.5 * sin(hgt * 0.42 + mid * 9.0 + m1 * 14.0);
-  vec3 rock = mix(vec3(0.17, 0.15, 0.13), vec3(0.33, 0.28, 0.23), strata * 0.65 + grain * 0.35);
-  rock = mix(rock, vec3(0.44, 0.36, 0.27), smoothstep(110.0, 20.0, hgt) * 0.75);
-  // Dark streaks of seepage and lichen down the faces
-  if (steep > 0.0) rock *= 1.0 - 0.25 * smoothstep(0.55, 0.8, tone(vec2(xz.x * 3.0 + xz.y, hgt * 0.15), 90.0)) * steep;
+  vec3 rock = mix(vec3(0.17, 0.15, 0.13), vec3(0.34, 0.29, 0.24), strata * 0.65 + grain * 0.35);
+  rock = mix(rock, vec3(0.45, 0.37, 0.28), smoothstep(110.0, 20.0, hgt) * 0.75);
+  // Subtle strata relief and dark seepage streaks down cliff faces
+  if (steep > 0.0) {
+    rock *= mix(1.0, 0.86 + 0.24 * strata, steep);
+    rock *= 1.0 - 0.25 * smoothstep(0.55, 0.8, tone(vec2(xz.x * 3.0 + xz.y, hgt * 0.15), 90.0)) * steep;
+  }
   // Higher up the range the cover thins to rock and dust
   veg = mix(veg, mix(rock, grass, 0.45), smoothstep(700.0, 1250.0, hgt + mid * 160.0));
 
@@ -213,8 +217,20 @@ const ALBEDO = /* glsl */ `
   float swash = 0.35 + 0.25 * sin(uTime * 0.7 + xz.x * 0.03 + xz.y * 0.05);
   tWet = smoothstep(swash + 0.9, swash, hgt);
   col = mix(col, sand * 0.48, tWet);
+  // Coastal wave-splash zone on low cliff faces & sea stacks
+  float coastSplash = (1.0 - smoothstep(swash + 0.5, swash + 2.3, hgt)) * rockK;
+  col *= mix(1.0, 0.54, coastSplash * 0.75);
+  tWet = max(tWet, coastSplash * 0.7);
   // Sea floor: sand and weed, dimmed (the water shades it from above)
   col = mix(col, mix(vec3(0.32, 0.28, 0.2), vec3(0.08, 0.1, 0.06), mid), smoothstep(0.0, -3.0, hgt));
+
+  // Per-material roughness: sunlit sandstone/granite glints at grazing angles,
+  // dry grass stays matte, wet coastal sand & splash zones turn glossy
+  float vegRough = mix(0.95, 0.88, clamp(scrubK + oakK, 0.0, 1.0));
+  float rockRough = mix(0.84, 0.70, strata * 0.6 + grain * 0.4);
+  tRough = mix(vegRough, rockRough, rockK);
+  tRough = mix(tRough, 0.78, beach);
+  tRough = mix(tRough, 0.28, tWet);
 
   // Underfoot: two finer octaves of tone (clods, pebbles, dry litter) so
   // the ground still has grain at a few metres, not a flat wash. Fades in
@@ -305,7 +321,7 @@ export class Terrain {
         .replace('#include <map_fragment>', ALBEDO)
         .replace(
           '#include <roughnessmap_fragment>',
-          'float roughnessFactor = mix(roughness, 0.32, tWet);',
+          'float roughnessFactor = tRough;',
         )
         .replace(
           '#include <normal_fragment_begin>',
@@ -429,7 +445,16 @@ export class Terrain {
     this.select(this.root, eye);
     this.full.instanceCount = this.fullCount;
     this.half.instanceCount = this.halfCount;
-    for (const g of [this.full, this.half]) (g.getAttribute('aPatch') as THREE.InstancedBufferAttribute).needsUpdate = true;
+    for (const [g, count] of [
+      [this.full, this.fullCount],
+      [this.half, this.halfCount],
+    ] as const) {
+      if (count <= 0) continue;
+      const attr = g.getAttribute('aPatch') as THREE.InstancedBufferAttribute;
+      attr.clearUpdateRanges();
+      attr.addUpdateRange(0, count * 4);
+      attr.needsUpdate = true;
+    }
     this.mesh.visible = this.fullCount > 0;
     this.halfMesh.visible = this.halfCount > 0;
     (this.uniforms.uEye.value as THREE.Vector3).copy(eye);
