@@ -34,10 +34,10 @@ export const QUALITY_SAMPLES: Record<Quality, number> = {
 
 /** LOD distance/density scale per preset (also forms the ceiling for adaptive LOD scaling). */
 export const QUALITY_LOD: Record<Quality, number> = {
-  low: 0.65,
-  medium: 0.85,
-  high: 1.0,
-  ultra: 1.2,
+  low: 0.58,
+  medium: 0.75,
+  high: 0.88,
+  ultra: 1.0,
 };
 
 export function bindFlightSettings(app: FlightApp): void {

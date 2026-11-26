@@ -21,10 +21,12 @@ import { SKY_AMBIENT_FRAG, SURFACE_FRAG, SURFACE_VERT } from './ocean/surface';
  */
 
 const GRID = 32;
+const FAR_GRID = GRID / 2;
+const FAR_LOD_START = 4;
 const CDLOD = {
   leaf: 4,
   grid: GRID,
-  rangeK: 6,
+  rangeK: 5,
   levels: 17,
   maxDist: 1200000,
   maxNodes: 3072,
@@ -32,22 +34,22 @@ const CDLOD = {
   sideBound: 4,
 };
 
-function gridGeometry(): THREE.InstancedBufferGeometry {
-  const pos = new Float32Array((GRID + 1) * (GRID + 1) * 3);
-  for (let j = 0; j <= GRID; j++) {
-    for (let i = 0; i <= GRID; i++) {
-      const o = (j * (GRID + 1) + i) * 3;
+function gridGeometry(grid: number): THREE.InstancedBufferGeometry {
+  const pos = new Float32Array((grid + 1) * (grid + 1) * 3);
+  for (let j = 0; j <= grid; j++) {
+    for (let i = 0; i <= grid; i++) {
+      const o = (j * (grid + 1) + i) * 3;
       pos[o] = i;
       pos[o + 2] = j;
     }
   }
-  const idx = new Uint16Array(GRID * GRID * 6);
+  const idx = new Uint16Array(grid * grid * 6);
   let k = 0;
-  for (let j = 0; j < GRID; j++) {
-    for (let i = 0; i < GRID; i++) {
-      const a = i + j * (GRID + 1);
+  for (let j = 0; j < grid; j++) {
+    for (let i = 0; i < grid; i++) {
+      const a = i + j * (grid + 1);
       const b = a + 1;
-      const c = a + GRID + 1;
+      const c = a + grid + 1;
       const d = c + 1;
       idx[k++] = a;
       idx[k++] = c;
@@ -95,11 +97,14 @@ function bakeSkyAmbient(renderer: THREE.WebGLRenderer, sky: THREE.CubeTexture, u
 
 export class Ocean {
   readonly mesh: THREE.Mesh;
+  readonly farMesh: THREE.Mesh;
   private readonly uniforms: Record<string, THREE.IUniform>;
   private readonly sim: OceanSim | null;
   private readonly cdlod: Cdlod;
   private readonly nodes: THREE.InstancedBufferAttribute;
+  private readonly farNodes: THREE.InstancedBufferAttribute;
   private readonly geo: THREE.InstancedBufferGeometry;
+  private readonly farGeo: THREE.InstancedBufferGeometry;
   private lastTime = -1;
   private readonly eye = new THREE.Vector3();
   private lodScale = 1;
@@ -145,8 +150,15 @@ export class Ocean {
         uniforms: this.uniforms,
       }),
     );
-    this.geo = gridGeometry();
-    this.nodes = new THREE.InstancedBufferAttribute(this.cdlod.data, 4);
+    const farMat = withLogDepth(
+      new THREE.ShaderMaterial({
+        vertexShader: SURFACE_VERT,
+        fragmentShader: SURFACE_FRAG,
+        uniforms: { ...this.uniforms, uGrid: { value: FAR_GRID } },
+      }),
+    );
+    this.geo = gridGeometry(GRID);
+    this.nodes = new THREE.InstancedBufferAttribute(new Float32Array(CDLOD.maxNodes * 4), 4);
     this.nodes.setUsage(THREE.DynamicDrawUsage);
     this.geo.setAttribute('aNode', this.nodes);
     this.geo.instanceCount = 0;
@@ -156,6 +168,18 @@ export class Ocean {
     // Drawn after the land so most of it fails the depth test early
     this.mesh.renderOrder = 1;
     this.mesh.visible = !!sim;
+
+    this.farGeo = gridGeometry(FAR_GRID);
+    this.farNodes = new THREE.InstancedBufferAttribute(new Float32Array(CDLOD.maxNodes * 4), 4);
+    this.farNodes.setUsage(THREE.DynamicDrawUsage);
+    this.farGeo.setAttribute('aNode', this.farNodes);
+    this.farGeo.instanceCount = 0;
+    this.farMesh = new THREE.Mesh(this.farGeo, farMat);
+    this.farMesh.frustumCulled = false;
+    this.farMesh.name = 'ocean-far';
+    this.farMesh.renderOrder = 1;
+    this.farMesh.visible = !!sim;
+    this.mesh.add(this.farMesh);
   }
 
   /** Scale CDLOD range thresholds and step simulation at half-rate when low. */
@@ -197,11 +221,43 @@ export class Ocean {
       const far = (cam as THREE.PerspectiveCamera).far;
       if (far) this.uniforms.uFarClamp.value = far * 0.9;
       const n = this.cdlod.select(cam);
-      this.geo.instanceCount = n;
-      this.nodes.clearUpdateRanges();
-      this.nodes.addUpdateRange(0, n * 4);
-      this.nodes.needsUpdate = true;
+      const data = this.cdlod.data;
+      const nearArr = this.nodes.array as Float32Array;
+      const farArr = this.farNodes.array as Float32Array;
+      let nearCount = 0;
+      let farCount = 0;
+      for (let i = 0; i < n; i++) {
+        const o = i * 4;
+        if (data[o + 3] >= FAR_LOD_START) {
+          const fo = farCount * 4;
+          farArr[fo] = data[o];
+          farArr[fo + 1] = data[o + 1];
+          farArr[fo + 2] = data[o + 2];
+          farArr[fo + 3] = data[o + 3];
+          farCount++;
+        } else {
+          const no = nearCount * 4;
+          nearArr[no] = data[o];
+          nearArr[no + 1] = data[o + 1];
+          nearArr[no + 2] = data[o + 2];
+          nearArr[no + 3] = data[o + 3];
+          nearCount++;
+        }
+      }
+      this.geo.instanceCount = nearCount;
+      if (nearCount > 0) {
+        this.nodes.clearUpdateRanges();
+        this.nodes.addUpdateRange(0, nearCount * 4);
+        this.nodes.needsUpdate = true;
+      }
+      this.farGeo.instanceCount = farCount;
+      if (farCount > 0) {
+        this.farNodes.clearUpdateRanges();
+        this.farNodes.addUpdateRange(0, farCount * 4);
+        this.farNodes.needsUpdate = true;
+      }
       this.mesh.visible = !!this.sim && n > 0;
+      this.farMesh.visible = !!this.sim && farCount > 0;
     }
   }
 
@@ -218,7 +274,9 @@ export class Ocean {
   dispose(): void {
     this.sim?.dispose();
     this.geo.dispose();
+    this.farGeo.dispose();
     (this.mesh.material as THREE.Material).dispose();
+    (this.farMesh.material as THREE.Material).dispose();
   }
 
   /** Sea surface height at a point (the swell), for spray and splashes. */

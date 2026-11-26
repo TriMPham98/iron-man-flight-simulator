@@ -93,16 +93,17 @@ void main() {
   vec3 n = normalize(vec3(p, z * 0.9 + 0.1));
   // Wrapped Lambert + Beer-Lambert powder darkening in deep billows
   float sunDot = dot(n, uSunView);
-  float lit = mix(0.6, clamp(sunDot * 0.6 + 0.5, 0.0, 1.0), 0.48);
-  lit *= mix(0.5, 1.0, vBaseK) * (0.68 + 0.32 * tex.r);
+  float lit = mix(0.55, clamp(sunDot * 0.65 + 0.52, 0.0, 1.0), 0.54);
+  lit *= mix(0.48, 1.0, vBaseK) * (0.68 + 0.32 * tex.r);
   float powder = 1.0 - 0.32 * exp(-density * 3.5) * (1.0 - max(sunDot, 0.0));
-  // Forward scattering: bright golden-silver rims when looking toward the sun
+  // Forward scattering & warm sunlit billow rims
   float mu = dot(vCenterDir, uSunDir);
-  float silver = pow(max(mu, 0.0), 6.0) * (1.0 - density * 0.68) * 2.4 + pow(max(mu, 0.0), 2.0) * 0.38;
+  float silver = pow(max(mu, 0.0), 6.0) * (1.0 - density * 0.65) * 2.8 + pow(max(mu, 0.0), 2.0) * 0.46;
+  float sunRim = smoothstep(-0.1, 0.75, sunDot) * (1.0 - z * 0.7) * (0.45 + 0.55 * tex.r) * mix(0.35, 1.0, vBaseK);
   // Warm sky/ocean bounce subtle gradient on undersides vs cool zenith ambient
   vec3 amb = mix(uAmbBottom, uAmbTop, clamp(n.y * 0.5 + 0.5, 0.0, 1.0) * 0.6 + vBaseK * 0.4);
   amb += vec3(0.06, 0.045, 0.03) * (1.0 - vBaseK) * (0.5 + 0.5 * tex.g);
-  vec3 col = amb * powder + uSunCol * (lit * 0.88 + silver);
+  vec3 col = amb * powder + uSunCol * (lit * 0.90 + silver + sunRim * 0.24 * vec3(1.06, 0.96, 0.84));
   col = mix(col, vHazeCol, vHaze);
   gl_FragColor = vec4(col, density * vFade * 0.82);
 }
