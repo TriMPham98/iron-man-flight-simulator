@@ -170,7 +170,7 @@ interface Batches {
   outFine: Batch;
 }
 
-const WHITE = new THREE.Color(0.74, 0.73, 0.71);
+const WHITE = new THREE.Color(0.84, 0.83, 0.80);
 const WARM_CEIL = new THREE.Color(1.0, 0.82, 0.62);
 const WARM_WALL = new THREE.Color(0.95, 0.8, 0.62);
 const FLOOR = new THREE.Color(0.62, 0.55, 0.46);
@@ -199,8 +199,8 @@ function facade(B: Batches, o: Outline, y0: number, y1: number, glassIf: (p: THR
       // Lit slot windows down the street side, a wall-washer at the foot
       if (y1 - y0 > 3 && i % 3 === 0) {
         const c = a.clone().lerp(b, 0.5).addScaledVector(n, 0.03);
-        B.litFine.add(box(0.02, y1 - y0 - 1.4, 0.32, c.x, (y0 + y1) / 2 + 0.1, c.y, -Math.atan2(n.y, n.x)), LAMP, 2.2);
-        B.litFine.add(box(0.12, 0.08, 0.2, c.x + n.x * 0.3, y0 + 0.04, c.y + n.y * 0.3, -Math.atan2(n.y, n.x)), LAMP, 10);
+        B.litFine.add(box(0.02, y1 - y0 - 1.4, 0.32, c.x, (y0 + y1) / 2 + 0.1, c.y, -Math.atan2(n.y, n.x)), LAMP, 3.0);
+        B.litFine.add(box(0.12, 0.08, 0.2, c.x + n.x * 0.3, y0 + 0.04, c.y + n.y * 0.3, -Math.atan2(n.y, n.x)), LAMP, 12);
       }
     }
   }
@@ -225,7 +225,7 @@ function interior(B: Batches, o: Outline, y0: number, y1: number, depth: number,
   for (let x = -40; x < 140; x += 3.2)
     for (let z = -20; z < 80; z += 3.2) {
       if (!lights.contains(x, z) || core.contains(x, z)) continue;
-      B.litFine.add(new THREE.PlaneGeometry(0.28, 0.28).rotateX(Math.PI / 2).translate(x, y1 - 0.06, z), LAMP, 14);
+      B.litFine.add(new THREE.PlaneGeometry(0.28, 0.28).rotateX(Math.PI / 2).translate(x, y1 - 0.06, z), LAMP, 18);
     }
   return core;
 }
@@ -548,6 +548,11 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
   const g = new THREE.Group();
   g.name = 'house';
   const M = houseMaterials();
+  M.concrete.roughness = 0.56;
+  M.stone.color.setRGB(1.08, 1.06, 1.02);
+  M.water.color.setHex(0x22b8cc);
+  M.water.emissive.setRGB(0.04, 0.38, 0.46);
+  M.water.emissiveIntensity = 1.25;
   const paving: THREE.BufferGeometry[] = [];
   const B: Batches = {
     concrete: new Batch('house-concrete', 0.25),
@@ -596,13 +601,13 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
   // Glass lines with mullions; solid wall to the street
   facade(B, E0, Y0, Y1 - 0.45, seaward, 2.9);
   facade(B, E1, Y1, Y2 - 0.45, seaward);
-  const core0 = interior(B, E0, Y0, Y1 - 0.45, 8, WARM_CEIL, 0.3);
-  const core1 = interior(B, E1, Y1, Y2 - 0.45, 6.5, WARM_WALL, 0.26);
+  const core0 = interior(B, E0, Y0, Y1 - 0.45, 8, WARM_CEIL, 0.52);
+  const core1 = interior(B, E1, Y1, Y2 - 0.45, 6.5, WARM_WALL, 0.46);
   // Bedrooms upstairs: partitions from the glass back to the core
   alongOutline(E1, 9, (p, n) => {
     if (!seaward(p, n)) return;
     const q = p.clone().addScaledVector(n, -6.4);
-    B.lit.add(beam(p.clone().addScaledVector(n, -0.2), q, (Y1 + Y2 - 0.45) / 2, Y2 - 0.45 - Y1, 0.15), WARM_WALL, 0.3);
+    B.lit.add(beam(p.clone().addScaledVector(n, -0.2), q, (Y1 + Y2 - 0.45) / 2, Y2 - 0.45 - Y1, 0.15), WARM_WALL, 0.48);
   }, 4.5);
   // Sheers half drawn across some of the bedroom glass, and at the ends of the main floor
   for (const [o, y0, y1, k] of [
@@ -615,7 +620,7 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
       const b = inner.pts[(i + 1) % inner.pts.length];
       const n = inner.nrm[i];
       if (!seaward(a, n) || Math.sin(i * 0.61) + 0.6 * Math.sin(i * 1.93) < k) continue;
-      B.lit.add(wallQuad(a, b, y0 + 0.05, y1 - 0.05, n), 0xf2e6d2, 0.42);
+      B.lit.add(wallQuad(a, b, y0 + 0.05, y1 - 0.05, n), 0xf2e6d2, 0.62);
     }
   }
   furnish(B.litFine, E0, Y0, 7, 3.4, [sofaSet, dining, sofaSet, pianoSet, loungers], (p, n) => seaward(p, n) && !core0.contains(p.x - n.x * 3.4, p.y - n.y * 3.4));
@@ -642,7 +647,7 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
     B.concrete.add(wallQuad(a, b, LL_FLOOR, -3.3, LL.nrm[i]), WHITE);
     B.concrete.add(wallQuad(a, b, -1.5, Y0 - 0.9, LL.nrm[i]), WHITE);
   }
-  interior(B, LL, LL_FLOOR, Y0 - 1.2, 6, COOL, 0.45);
+  interior(B, LL, LL_FLOOR, Y0 - 1.2, 6, COOL, 0.68);
   // Cars and armour gantries in the workshop
   for (let i = 0; i < 6; i++) {
     const a = Math.PI * 0.2 + (i / 5) * Math.PI * 0.6;
@@ -683,10 +688,10 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
 
   // Soffit downlights under the overhangs
   alongOutline(E0.offset(1.8), 2.6, (p, n) => {
-    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y1 - 0.47, p.y), LAMP, 16);
+    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y1 - 0.47, p.y), LAMP, 20);
   });
   alongOutline(E1.offset(2.0), 2.6, (p, n) => {
-    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y2 - 0.47, p.y), LAMP, 16);
+    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y2 - 0.47, p.y), LAMP, 20);
   });
 
   // Balustrades: the upper terrace's edge, and the deck where it hangs over the drop

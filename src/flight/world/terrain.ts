@@ -18,7 +18,7 @@ const CELLS = 32;
 const LEAF = CELLS * TERRAIN_PITCH;
 const LEVELS = Math.round(Math.log2(WORLD_SIZE / LEAF)) + 1;
 /** LOD 0 reaches this far (m); each coarser level doubles it. */
-const RANGE0 = 320;
+const RANGE0 = 270;
 const MAX_PATCHES = 2048;
 
 interface Node {
@@ -90,9 +90,9 @@ const VERT_BODY = /* glsl */ `
   float dist = distance(vec3(world.x, h0, world.y), uEye);
   float morph = aPatch.w >= ${LEVELS - 1}.0 ? 0.0 : clamp((dist - range * 0.72) / (range * 0.26), 0.0, 1.0);
   // Odd vertices slide onto their even neighbour: the coarser grid.
-  // Ring 2 performs a two-stage 4x morph so its 16 m grid meets ring 3's 64 m grid seamlessly.
+  // Ring 1 performs a two-stage 4x morph so its 8 m grid meets ring 2's 32 m grid seamlessly.
   vec2 odd = fract(grid * 0.5) * 2.0;
-  if (abs(aPatch.w - 2.0) < 0.5) {
+  if (abs(aPatch.w - 1.0) < 0.5) {
     float m1 = clamp(morph * 2.0, 0.0, 1.0);
     float m2 = clamp(morph * 2.0 - 1.0, 0.0, 1.0);
     vec2 g1 = grid - odd * m1;
@@ -177,35 +177,37 @@ const ALBEDO = /* glsl */ `
     grain = mix(grain, mix(0.6, tw.x * gx + tw.z * gz + tw.y * grain, near), steep);
   }
 
-  // Cover: golden grass on the open slopes, olive chaparral in broad
-  // patches, grey-green sage on the dry sun-facing (seaward) slopes, dark
+  // Cover: warm golden grass on the open slopes, deep olive chaparral in broad
+  // patches, silvery sage on the dry sun-facing (seaward) slopes, dark
   // oak woodland down the folds where the hills shelter it
-  float scrubK = smoothstep(0.5, 0.66, m2 * 0.5 + m3 * 0.35 + mid * 0.15 + slope * 0.35);
+  float scrubK = smoothstep(0.49, 0.63, m2 * 0.5 + m3 * 0.35 + mid * 0.15 + slope * 0.35);
   float oakK = smoothstep(0.82, 0.52, bake.g) * smoothstep(0.38, 0.16, slope) * (0.45 + 0.55 * m3);
   float dry = smoothstep(0.05, 0.6, wN.z * 3.0 + (mid - 0.5)) * (1.0 - oakK);
-  vec3 grass = mix(vec3(0.4, 0.29, 0.13), vec3(0.56, 0.43, 0.21), m1 * 0.45 + m3 * 0.55) * (0.92 + 0.16 * fine);
+  vec3 grass = mix(vec3(0.42, 0.30, 0.12), vec3(0.62, 0.47, 0.20), m1 * 0.45 + m3 * 0.55) * (0.92 + 0.16 * fine);
   // Burnt-out patches and paler dry grass break the gold up
-  grass = mix(grass, vec3(0.6, 0.5, 0.33), smoothstep(0.55, 0.75, mid + (fine - 0.5) * 0.4) * 0.5);
-  grass = mix(grass, grass * vec3(0.78, 0.74, 0.66), smoothstep(0.62, 0.8, m2 + (grain - 0.5) * 0.3) * 0.6);
-  vec3 scrub = mix(vec3(0.085, 0.095, 0.05), vec3(0.17, 0.155, 0.085), m1) * (0.82 + 0.36 * fine);
-  vec3 sage = mix(vec3(0.17, 0.18, 0.13), vec3(0.24, 0.24, 0.18), m3) * (0.85 + 0.3 * fine);
-  scrub = mix(scrub, sage, dry * 0.7);
-  vec3 oak = vec3(0.05, 0.07, 0.035) * (0.8 + 0.4 * fine);
+  grass = mix(grass, vec3(0.64, 0.53, 0.33), smoothstep(0.55, 0.75, mid + (fine - 0.5) * 0.4) * 0.5);
+  grass = mix(grass, grass * vec3(0.76, 0.72, 0.64), smoothstep(0.62, 0.8, m2 + (grain - 0.5) * 0.3) * 0.6);
+  vec3 scrub = mix(vec3(0.072, 0.095, 0.044), vec3(0.135, 0.155, 0.072), m1) * (0.82 + 0.36 * fine);
+  vec3 sage = mix(vec3(0.15, 0.185, 0.135), vec3(0.23, 0.25, 0.19), m3) * (0.85 + 0.3 * fine);
+  scrub = mix(scrub, sage, dry * 0.72);
+  vec3 oak = vec3(0.045, 0.068, 0.032) * (0.8 + 0.4 * fine);
   vec3 veg = mix(grass, scrub, scrubK);
   veg = mix(veg, oak, oakK * 0.85);
   // Brush stipple close up: the cover is clumps, not paint
-  veg *= mix(1.0, 0.75 + 0.5 * grain, near * (0.4 + 0.6 * scrubK));
+  veg *= mix(1.0, 0.74 + 0.52 * grain, near * (0.4 + 0.6 * scrubK));
 
-  // Rock: grey-brown with strata in the cliffs, lighter sandstone on the coast
+  // Rock: grey-brown with crisp strata in the cliffs, lighter sandstone on the coast
   float strata = 0.5 + 0.5 * sin(hgt * 0.42 + mid * 9.0 + m1 * 14.0);
-  vec3 rock = mix(vec3(0.17, 0.15, 0.13), vec3(0.34, 0.29, 0.24), strata * 0.65 + grain * 0.35);
-  rock = mix(rock, vec3(0.45, 0.37, 0.28), smoothstep(110.0, 20.0, hgt) * 0.75);
-  // Subtle strata relief and dark seepage streaks down cliff faces (skipped on distant hazy ridges)
+  float strataFine = 0.5 + 0.5 * sin(hgt * 1.15 + mid * 14.0 - m2 * 9.0);
+  float strataBand = smoothstep(0.22, 0.82, strata * 0.68 + strataFine * 0.32);
+  vec3 rock = mix(vec3(0.15, 0.135, 0.12), vec3(0.38, 0.32, 0.26), strataBand * 0.68 + grain * 0.32);
+  rock = mix(rock, vec3(0.47, 0.38, 0.28), smoothstep(110.0, 20.0, hgt) * 0.75);
+  // Crisp strata relief and dark seepage streaks down cliff faces (skipped on distant hazy ridges)
   if (steep > 0.0) {
-    rock *= mix(1.0, 0.86 + 0.24 * strata, steep);
+    rock *= mix(1.0, 0.78 + 0.38 * strataBand, steep);
     float seepReach = 1.0 - smoothstep(1400.0, 2200.0, viewD);
     if (seepReach > 0.0) {
-      rock *= 1.0 - 0.25 * smoothstep(0.55, 0.8, tone(vec2(xz.x * 3.0 + xz.y, hgt * 0.15), 90.0)) * steep * seepReach;
+      rock *= 1.0 - 0.28 * smoothstep(0.55, 0.8, tone(vec2(xz.x * 3.0 + xz.y, hgt * 0.15), 90.0)) * steep * seepReach;
     }
   }
   // Higher up the range the cover thins to rock and dust
@@ -245,7 +247,7 @@ const ALBEDO = /* glsl */ `
   // Per-material roughness: sunlit sandstone/granite glints at grazing angles,
   // dry grass stays matte, wet coastal sand & splash zones turn glossy
   float vegRough = mix(0.95, 0.88, clamp(scrubK + oakK, 0.0, 1.0));
-  float rockRough = mix(0.84, 0.70, strata * 0.6 + grain * 0.4);
+  float rockRough = mix(0.86, 0.62, strataBand * 0.65 + grain * 0.35);
   tRough = mix(vegRough, rockRough, rockK);
   tRough = mix(tRough, 0.78, beach);
   tRough = mix(tRough, 0.28, tWet);
@@ -268,13 +270,13 @@ const ALBEDO = /* glsl */ `
 
   // Mid-to-close normal relief: bridges the 71 m heightfield detail to the 6 m micro crags,
   // fading out smoothly past mid-range so far ridges skip extra gradient reads
-  float midRelief = 1.0 - smoothstep(120.0 * uDetailReach, 520.0 * uDetailReach, viewD);
+  float midRelief = 1.0 - smoothstep(160.0 * uDetailReach, 720.0 * uDetailReach, viewD);
   if (midRelief > 0.0) {
-    float ampMid = mix(mix(0.45, 0.2, beach), 1.0, rockK) * midRelief;
+    float ampMid = mix(mix(0.45, 0.2, beach), 1.25, rockK) * midRelief;
     vec2 gM = texture2D(uDetailGrad, xz / (uDetailSpan * 0.11) + 0.19).rg / 0.11;
-    vec3 p = vec3(gM.x, 0.0, gM.y) * (0.065 * ampMid * tw.y);
+    vec3 p = vec3(gM.x, 0.0, gM.y) * (0.105 * ampMid * tw.y);
     if (micro > 0.0) {
-      float amp = mix(mix(0.5, 0.22, beach), 1.1, rockK) * micro;
+      float amp = mix(mix(0.55, 0.22, beach), 1.35, rockK) * micro;
       vec2 gA = texture2D(uDetailGrad, xz / (uDetailSpan * 0.032)).rg / 0.032;
       vec2 gB = texture2D(uDetailGrad, xz / (uDetailSpan * 0.011) + 0.37).rg / 0.011;
       vec2 gT = (gA * 0.05 + gB * 0.012) * amp;
@@ -452,12 +454,12 @@ export class Terrain {
   }
 
   private add(n: Node, lod: number, child: boolean, ox = n.x, oz = n.z): void {
-    const far = lod >= 3;
+    const far = lod >= 2;
     const geo = far ? (child ? this.quarter : this.halfFar) : child ? this.halfNear : this.full;
     const count = far ? (child ? this.quarterCount : this.halfFarCount) : child ? this.halfNearCount : this.fullCount;
     if (count >= MAX_PATCHES) return;
     const attr = geo.getAttribute('aPatch') as THREE.InstancedBufferAttribute;
-    // Far rings (lod >= 3) step to 2x coarser vertex spacing (halfFar on full nodes, quarter on child quarters)
+    // Far rings (lod >= 2) step to 2x coarser vertex spacing (halfFar on full nodes, quarter on child quarters)
     const spacing = (LEAF * 2 ** lod) / (far ? CELLS / 2 : CELLS);
     attr.setXYZW(count, ox, oz, spacing, lod);
     if (far) {
