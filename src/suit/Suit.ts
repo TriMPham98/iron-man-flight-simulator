@@ -675,7 +675,7 @@ export class Suit {
         eyesTint: 0xfffce0,
         repulsorsTint: 0xdaf9ff,
         rimColor: 0x9ef0ff,
-        rimStrength: 0.72 * throb + pulse * 0.35,
+        rimStrength: 0.38 * throb + pulse * 0.2,
       };
     } else if (mode === 'THRUST') {
       this.systemVisuals = {
@@ -699,12 +699,12 @@ export class Suit {
         eyesTint: 0xffe896,
         repulsorsTint: 0x7ec8ff,
         rimColor: flash > 0.15 ? 0xffcf56 : 0x70c8ff,
-        rimStrength: 0.5 + pulse * 0.7 + flash * 1.35,
+        rimStrength: 0.14 + pulse * 0.24 + flash * 0.5,
       };
     } else {
       this.systemVisuals = {
         rimColor: 0x70d8ff,
-        rimStrength: pulse * 0.45 + flash * 0.8,
+        rimStrength: pulse * 0.25 + flash * 0.4,
       };
     }
 
@@ -715,15 +715,15 @@ export class Suit {
       if (mode === 'SHIELDS') {
         (u.uColor.value as THREE.Color).setHex(0x52c6ff);
         (u.uFlashColor.value as THREE.Color).setHex(0xffc94d);
-        u.uOpacity.value = 0.32 + 0.32 * pulse + 0.55 * flash;
-        u.uRipple.value = Math.min(1.4, pulse * 0.8 + flash * 1.2);
-        u.uExpand.value = 0.015 + 0.007 * flash;
+        u.uOpacity.value = 0.06 + 0.14 * pulse + 0.24 * flash;
+        u.uRipple.value = Math.min(0.95, pulse * 0.55 + flash * 0.85);
+        u.uExpand.value = 0.003 + 0.003 * flash;
       } else {
         (u.uColor.value as THREE.Color).setHex(0x7beaff);
         (u.uFlashColor.value as THREE.Color).setHex(0xffffff);
-        u.uOpacity.value = oc ? 0.28 + 0.22 * pulse : 0.4 * flash;
-        u.uRipple.value = oc ? 0.45 : flash;
-        u.uExpand.value = 0.014;
+        u.uOpacity.value = oc ? 0.1 + 0.08 * pulse : 0.18 * flash;
+        u.uRipple.value = oc ? 0.35 : flash * 0.75;
+        u.uExpand.value = 0.003;
       }
     }
 
@@ -853,6 +853,9 @@ function createShieldAuraMaterial(): THREE.ShaderMaterial {
     name: 'suit-shield-aura',
     transparent: true,
     depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -4,
     blending: THREE.AdditiveBlending,
     side: THREE.FrontSide,
     uniforms: {
@@ -861,7 +864,7 @@ function createShieldAuraMaterial(): THREE.ShaderMaterial {
       uOpacity: { value: 0 },
       uTime: { value: 0 },
       uRipple: { value: 0 },
-      uExpand: { value: 0.015 },
+      uExpand: { value: 0.003 },
     },
     vertexShader: /* glsl */ `
       #include <common>
@@ -902,13 +905,13 @@ function createShieldAuraMaterial(): THREE.ShaderMaterial {
       varying float vBindY;
       void main() {
         float camFade = smoothstep(0.30, 0.68, vViewDist);
-        float facing = abs(dot(vViewNormal, vViewDir));
-        float rim = pow(1.0 - facing, 2.3);
+        float facing = clamp(abs(dot(vViewNormal, vViewDir)), 0.0, 1.0);
+        float rim = pow(1.0 - facing, 3.4);
         float wave = 0.5 + 0.5 * sin(vBindY * 18.0 - uTime * 7.5);
         float rippleWave = exp(-pow(fract(vBindY * 0.65 - uTime * 2.4) - 0.5, 2.0) * 28.0) * uRipple;
-        vec3 col = mix(uColor, uFlashColor, clamp(uRipple * 0.85, 0.0, 1.0));
-        float alpha = (rim * (0.45 + 0.35 * wave) + rippleWave * (0.35 + 0.65 * rim)) * uOpacity * camFade;
-        gl_FragColor = vec4(col * (1.1 + 1.4 * uRipple), alpha);
+        vec3 col = mix(uColor, uFlashColor, clamp(uRipple * 0.75, 0.0, 1.0));
+        float alpha = (rim * (0.35 + 0.25 * wave) + rippleWave * (0.2 + 0.65 * rim)) * uOpacity * camFade;
+        gl_FragColor = vec4(col * (0.75 + 0.7 * uRipple), alpha);
       }
     `,
   });
