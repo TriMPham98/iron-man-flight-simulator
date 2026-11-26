@@ -177,6 +177,9 @@ function glow(color: THREE.Color, additive = false): THREE.MeshBasicMaterial {
 
 export class LandingPad {
   readonly group = new THREE.Group();
+  private readonly lod: THREE.LOD;
+  private camDistSq = 0;
+  private lastFarBeaconBv = -1;
   private readonly rim = glow(BLUE);
   private readonly capture = glow(BLUE);
   private readonly centre = glow(BLUE);
@@ -212,6 +215,10 @@ export class LandingPad {
     g.position.set(PAD.x, PAD_Y, PAD.y);
     g.name = 'landingPad';
 
+    // Full-detail tier (< 250 m)
+    const tier0 = new THREE.Group();
+    tier0.name = 'landingPad-full';
+
     // Plinth: the deck, a sloped lip, and a skirt down into the lawn
     const metal = new THREE.MeshStandardMaterial({ color: 0x2b2e33, roughness: 0.5, metalness: 0.45 });
     const lip = new THREE.LatheGeometry(
@@ -228,13 +235,17 @@ export class LandingPad {
     const plinth = new THREE.Mesh(lip, metal);
     // (a touch of glow from the deck's own panels: its markings read at dusk)
     const paint = deckTexture();
-    const deck = new THREE.Mesh(
-      new THREE.RingGeometry(PAD_IRIS_R, DECK_R, 128, 2).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ map: paint, emissiveMap: paint, emissive: new THREE.Color(0.9, 1.05, 1.2), roughness: 0.62, metalness: 0.15 }),
-    );
+    const deckMat = new THREE.MeshStandardMaterial({
+      map: paint,
+      emissiveMap: paint,
+      emissive: new THREE.Color(0.9, 1.05, 1.2),
+      roughness: 0.62,
+      metalness: 0.15,
+    });
+    const deck = new THREE.Mesh(new THREE.RingGeometry(PAD_IRIS_R, DECK_R, 128, 2).rotateX(-Math.PI / 2), deckMat);
     plinth.receiveShadow = deck.receiveShadow = true;
     plinth.castShadow = true;
-    g.add(plinth, deck);
+    tier0.add(plinth, deck);
 
     // Light strip set into the lip
     const strip = new THREE.Mesh(new THREE.TorusGeometry(PAD_R - 0.02, 0.035, 6, 192).rotateX(Math.PI / 2).translate(0, -0.05, 0), this.rim);
@@ -246,7 +257,7 @@ export class LandingPad {
       mergeGeometries([flatRing(BULLSEYE_R - 0.06, BULLSEYE_R, 64), new THREE.CircleGeometry(0.1, 24).rotateX(-Math.PI / 2).translate(0, 0.006, 0)]),
       this.centre,
     );
-    g.add(strip, capture, centre, this.bull);
+    tier0.add(strip, capture, centre, this.bull);
 
     // The hub iris and the shaft under it
     this.iris = new RingAperture(
@@ -258,7 +269,7 @@ export class LandingPad {
     this.shaft = new THREE.Mesh(new THREE.CircleGeometry(PAD_IRIS_R + 0.01, 64).rotateX(-Math.PI / 2), shaftMaterial(this.group.position));
     this.shaft.position.y = APERTURE_UNDERSIDE - 0.01;
     this.shaft.visible = false;
-    g.add(this.iris.group, this.shaft);
+    tier0.add(this.iris.group, this.shaft);
 
     // Tick ring: one long tick every quarter
     this.ticks = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.12, 1).rotateX(-Math.PI / 2), glow(BLUE), TICKS);
@@ -291,7 +302,7 @@ export class LandingPad {
       this.coil.setMatrixAt(i, this._m.compose(p.set(0, 0, 0), q, s.set(1, 1, 1)));
       this.coil.setColorAt(i, BLUE);
     }
-    g.add(this.ticks, this.lights, this.coil);
+    tier0.add(this.ticks, this.lights, this.coil);
 
     // Touchdown reticle: where the boots will come down
     const ret = mergeGeometries([
@@ -308,7 +319,46 @@ export class LandingPad {
     this.wave = new THREE.Mesh(flatRing(0.9, 1, 128, 0.014), this.waveMat);
     this.wave.renderOrder = RENDER_ORDER.wash;
     this.wave.visible = false;
-    g.add(this.reticle, this.wave);
+    tier0.add(this.reticle, this.wave);
+
+    // Medium tier (250–1200 m): simplified pad disc + static glow rim
+    const tier1 = new THREE.Group();
+    tier1.name = 'landingPad-med';
+    const plinthMed = new THREE.Mesh(
+      new THREE.LatheGeometry(
+        [new THREE.Vector2(PAD_R + 0.75, -1.2), new THREE.Vector2(PAD_R + 0.45, -0.38), new THREE.Vector2(DECK_R, 0)],
+        24,
+      ),
+      metal,
+    );
+    const deckMed = new THREE.Mesh(new THREE.CircleGeometry(DECK_R, 24).rotateX(-Math.PI / 2), deckMat);
+    const rimMed = new THREE.Mesh(flatRing(PAD_R - 0.1, PAD_R + 0.08, 24, 0.008), glow(BLUE.clone().multiplyScalar(0.55)));
+    tier1.add(plinthMed, deckMed, rimMed);
+
+    // Far tier (> 1200 m): minimal disc + center glow dot
+    const tier2 = new THREE.Group();
+    tier2.name = 'landingPad-far';
+    const discFar = new THREE.Mesh(
+      new THREE.CylinderGeometry(PAD_R + 0.5, PAD_R + 0.75, 0.6, 12, 1, false).translate(0, -0.3, 0),
+      metal,
+    );
+    const coreFar = new THREE.Mesh(
+      new THREE.CircleGeometry(1.4, 10).rotateX(-Math.PI / 2).translate(0, 0.02, 0),
+      glow(BLUE.clone().multiplyScalar(0.6)),
+    );
+    tier2.add(discFar, coreFar);
+
+    this.lod = new THREE.LOD();
+    this.lod.name = 'landingPad-lod';
+    this.lod.addLevel(tier0, 0);
+    this.lod.addLevel(tier1, 250);
+    this.lod.addLevel(tier2, 1200);
+    const baseUpdate = this.lod.update.bind(this.lod);
+    this.lod.update = (camera: THREE.Camera) => {
+      baseUpdate(camera);
+      this.camDistSq = camera.position.distanceToSquared(this.group.position);
+    };
+    g.add(this.lod);
 
     // Beacon: a faint column over the centre to find the pad from the air
     const col = new THREE.CylinderGeometry(0.08, 0.3, BEACON_H, 12, 8, true).translate(0, BEACON_H / 2, 0);
@@ -351,6 +401,27 @@ export class LandingPad {
     const d = Math.hypot(dx, dz);
     const h = m.pos.y - m.hipHeight() - PAD_Y;
     const air = !m.grounded;
+
+    const lodLevel = this.lod.getCurrentLevel();
+    const far = lodLevel > 0 || this.camDistSq > 250 * 250;
+    const veryFar = lodLevel >= 2 || this.camDistSq > 1200 * 1200;
+
+    // Beacon: seen from out over the hills, gone once close in or down
+    const bv = smooth(d, 30, 120) * (air ? 1 : 0.4);
+    this.beacon.visible = bv > 0.01;
+    if (this.beacon.visible) {
+      if (!veryFar) {
+        this.beaconMat.color.copy(BLUE).multiplyScalar(0.35 * bv * (0.85 + 0.15 * Math.sin(t * 2.4)));
+        this.lastFarBeaconBv = -1;
+      } else if (Math.abs(bv - this.lastFarBeaconBv) > 0.02) {
+        this.beaconMat.color.copy(BLUE).multiplyScalar(0.35 * bv);
+        this.lastFarBeaconBv = bv;
+      }
+    }
+
+    // Skip per-frame light/ring/reticle/instanced-color GPU uploads when camera is beyond close LOD
+    if (far) return;
+
     const ease = (x: number, goal: number, tau: number) => x + (goal - x) * (1 - Math.exp(-dt / tau));
     this.approach = ease(this.approach, air ? fade(160, 60, d) * fade(120, 60, h) : 0, 0.4);
     this.held = ease(this.held, air ? m.padPull : 0, 0.15);
@@ -430,11 +501,6 @@ export class LandingPad {
       this.wave.scale.set(r, 1, r);
       this.waveMat.color.copy(flashCol).multiplyScalar(strength * 0.9 * (1 - w));
     }
-
-    // Beacon: seen from out over the hills, gone once close in or down
-    const bv = smooth(d, 30, 120) * (air ? 1 : 0.4);
-    this.beaconMat.color.copy(BLUE).multiplyScalar(0.35 * bv * (0.85 + 0.15 * Math.sin(t * 2.4)));
-    this.beacon.visible = bv > 0.01;
   }
 }
 
