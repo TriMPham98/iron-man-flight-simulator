@@ -44,7 +44,7 @@ const LIGHTS = 16;
 const COIL = 10;
 const BEACON_H = 90;
 
-const BLUE = new THREE.Color(0.5, 1.6, 2.2);
+const BLUE = new THREE.Color(0.55, 1.95, 2.7);
 const WHITE = new THREE.Color(2.6, 3.0, 3.2);
 const AMBER = new THREE.Color(2.4, 1.25, 0.3);
 const smooth = THREE.MathUtils.smoothstep;
@@ -126,7 +126,7 @@ function deckTexture(): THREE.CanvasTexture {
   }
   // Paint: the approach circle, chevrons pointing in from the four quarters,
   // amber dashes round the edge band
-  ring(3.2, 0.06, 'rgba(215,225,230,0.45)', [0.35, 0.25]);
+  ring(3.2, 0.075, 'rgba(230,242,248,0.68)', [0.35, 0.25]);
   for (let q = 0; q < 4; q++) {
     const a = (q / 4) * Math.PI * 2 + Math.PI / 4;
     for (let j = 0; j < 3; j++) {
@@ -138,13 +138,13 @@ function deckTexture(): THREE.CanvasTexture {
       g.moveTo(o + (ca * r - sa * 0.42) * k, o + (sa * r + ca * 0.42) * k);
       g.lineTo(tip[0], tip[1]);
       g.lineTo(o + (ca * r + sa * 0.42) * k, o + (sa * r - ca * 0.42) * k);
-      g.lineWidth = 0.09 * k;
+      g.lineWidth = 0.1 * k;
       g.lineJoin = 'miter';
-      g.strokeStyle = `rgba(215,225,230,${0.55 - j * 0.13})`;
+      g.strokeStyle = `rgba(230,245,255,${0.75 - j * 0.14})`;
       g.stroke();
     }
   }
-  ring(6.42, 0.1, 'rgba(235,155,45,0.6)', [0.22, 0.32]);
+  ring(6.42, 0.12, 'rgba(245,170,55,0.82)', [0.22, 0.32]);
   // Soot fanned out from the centre, where the boots fire on every set-down
   const soot = g.createRadialGradient(o, o, 0, o, o, 2.8 * k);
   soot.addColorStop(0, 'rgba(0,0,0,0.55)');
@@ -238,7 +238,7 @@ export class LandingPad {
     const deckMat = new THREE.MeshStandardMaterial({
       map: paint,
       emissiveMap: paint,
-      emissive: new THREE.Color(0.9, 1.05, 1.2),
+      emissive: new THREE.Color(1.05, 1.25, 1.45),
       roughness: 0.62,
       metalness: 0.15,
     });
@@ -332,7 +332,7 @@ export class LandingPad {
       metal,
     );
     const deckMed = new THREE.Mesh(new THREE.CircleGeometry(DECK_R, 24).rotateX(-Math.PI / 2), deckMat);
-    const rimMed = new THREE.Mesh(flatRing(PAD_R - 0.1, PAD_R + 0.08, 24, 0.008), glow(BLUE.clone().multiplyScalar(0.55)));
+    const rimMed = new THREE.Mesh(flatRing(PAD_R - 0.1, PAD_R + 0.08, 24, 0.008), glow(BLUE.clone().multiplyScalar(0.72)));
     tier1.add(plinthMed, deckMed, rimMed);
 
     // Far tier (> 1200 m): minimal disc + center glow dot
@@ -344,7 +344,7 @@ export class LandingPad {
     );
     const coreFar = new THREE.Mesh(
       new THREE.CircleGeometry(1.4, 10).rotateX(-Math.PI / 2).translate(0, 0.02, 0),
-      glow(BLUE.clone().multiplyScalar(0.6)),
+      glow(BLUE.clone().multiplyScalar(0.78)),
     );
     tier2.add(discFar, coreFar);
 
@@ -380,7 +380,7 @@ export class LandingPad {
   setIris(u: number): void {
     this.irisOpen = THREE.MathUtils.clamp(u, 0, 1);
     this.iris.set(this.irisOpen);
-    this.sealMat.color.copy(BLUE).multiplyScalar(0.12 + 1.1 * Math.min(1, this.irisOpen * 6, (1 - this.irisOpen) * 6));
+    this.sealMat.color.copy(BLUE).multiplyScalar(0.22 + 1.1 * Math.min(1, this.irisOpen * 6, (1 - this.irisOpen) * 6));
     this.shaft.visible = this.irisOpen > 0;
     // The coil and the bullseye are set in the blades
     this.bull.visible = this.coil.visible = this.irisOpen === 0;
@@ -434,16 +434,16 @@ export class LandingPad {
     const flashCol = this.grade === 'bullseye' ? WHITE : BLUE;
     const lit = (mat: THREE.MeshBasicMaterial, base: number) => mat.color.copy(BLUE).multiplyScalar(base).lerp(flashCol, Math.min(1, flash));
 
-    lit(this.rim, 0.5 + 0.25 * appr + 0.15 * Math.sin(t * 1.3) * (1 - appr));
-    lit(this.capture, 0.35 + 0.35 * appr + 0.9 * held * (0.85 + 0.15 * Math.sin(t * 6)));
-    lit(this.centre, 0.45 + 0.4 * appr + 0.7 * held);
+    lit(this.rim, 0.68 + 0.3 * appr + 0.15 * Math.sin(t * 1.3) * (1 - appr));
+    lit(this.capture, 0.55 + 0.35 * appr + 0.9 * held * (0.85 + 0.15 * Math.sin(t * 6)));
+    lit(this.centre, 0.72 + 0.45 * appr + 0.7 * held);
 
     // Ticks: a slow chase round the ring on the approach, all lit when held
     const head = (t * 0.7) % 1;
     for (let i = 0; i < TICKS; i++) {
       const u = (head - i / TICKS + 1) % 1;
       const chase = Math.exp(-u * 9) * appr;
-      const v = 0.3 + 0.9 * chase + 0.8 * held;
+      const v = 0.48 + 0.9 * chase + 0.8 * held;
       this.ticks.setColorAt(i, this._c.copy(BLUE).multiplyScalar(v).lerp(flashCol, Math.min(1, flash)));
     }
     this.ticks.instanceColor!.needsUpdate = true;
@@ -467,7 +467,7 @@ export class LandingPad {
       if (spinUp) {
         const on = smooth(this.since, i * 0.045, i * 0.045 + 0.06);
         this._c.copy(WHITE).multiplyScalar(THREE.MathUtils.lerp(0.05, 0.4 + 1.2 * Math.exp(-Math.max(0, this.since - 0.6) * 1.2), on));
-      } else this._c.copy(BLUE).multiplyScalar(0.35 + 0.35 * appr + 0.8 * held);
+      } else this._c.copy(BLUE).multiplyScalar(0.6 + 0.4 * appr + 0.8 * held);
       this.coil.setColorAt(i, this._c);
     }
     this.coil.instanceColor!.needsUpdate = true;
