@@ -51,6 +51,8 @@ export interface FlightInput {
   brake: boolean;
   /** Hold the suit upright and slow (combat stance — unibeam). */
   stance: boolean;
+  /** Optional one-shot directional thruster snap-dash request. */
+  dash?: { dir: -1 | 0 | 1; vertical?: -1 | 0 | 1 };
 }
 
 export const EMPTY_INPUT = (): FlightInput => ({
@@ -223,6 +225,10 @@ const WADE_DEPTH = 0.3;
 /** Above this, the air is too thin and the suit starts icing (m). */
 export const ICING_ALT = 9000;
 export const CEILING = 11500;
+/** Directional thruster snap-dash duration (s), cooldown (s), and impulse acceleration (m/s²). */
+export const SNAP_DASH_DURATION = 0.24;
+export const SNAP_DASH_COOLDOWN = 1.2;
+const SNAP_DASH_ACCEL = 180;
 /**
  * Pad capture: hovering hands-off over a landing pad (no stick, throttle at
  * idle), the hover computer holds the suit over its centre so a plain
@@ -469,6 +475,14 @@ export class FlightModel {
   private boostCarry = 0;
   /** 0–1: the boots spooled up to the boost's authority. */
   private spool = 0;
+  /** Remaining time (s) in an active directional thruster snap-dash (> 0 while dashing). */
+  dashActive = 0;
+  /** Cooldown remaining (s) before another snap-dash may fire (0 = ready). */
+  dashCooldown = 0;
+  /** Active lateral snap-dash direction (−1 left, 0 none, +1 right). */
+  dashDir: -1 | 0 | 1 = 0;
+  /** Active vertical snap-dash direction (−1 down, 0 none, +1 up). */
+  dashVerticalDir: -1 | 0 | 1 = 0;
 
   private readonly _f = new THREE.Vector3();
   private readonly _u = new THREE.Vector3();
@@ -516,6 +530,10 @@ export class FlightModel {
     this.homing = false;
     this.immersion = 0;
     this.wetness = 0;
+    this.dashActive = 0;
+    this.dashCooldown = 0;
+    this.dashDir = 0;
+    this.dashVerticalDir = 0;
     this.gait.attach(this.pos, heading, this.ground);
   }
 
@@ -570,10 +588,36 @@ export class FlightModel {
   get clearance(): number {
     return this.pos.y - this.hipHeight() - this.ground.surface(this.pos.x, this.pos.z);
   }
+  /** True while a directional snap-dash burst is active (breaks/evades seeker locks). */
+  get dashInvuln(): boolean {
+    return this.dashActive > 0;
+  }
+
+  /**
+   * Fire a crisp ~0.24 s directional thruster snap-dash (lateral roll/side-kick
+   * or vertical evade) on a ~1.2 s cooldown. Returns true when triggered.
+   */
+  snapDash(dir: -1 | 0 | 1, verticalDir: -1 | 0 | 1 = 0): boolean {
+    if (this.power <= 0.5 || this.crouch > 0 || this.dashCooldown > 0 || this.dashActive > 0) return false;
+    if (dir === 0 && verticalDir === 0) return false;
+    if (this.grounded) {
+      this.grounded = false;
+      this.airT = 0;
+      this.vel.y = Math.max(this.vel.y, 4.5);
+    }
+    this.dashDir = dir;
+    this.dashVerticalDir = verticalDir;
+    this.dashActive = SNAP_DASH_DURATION;
+    this.dashCooldown = SNAP_DASH_COOLDOWN;
+    this.thrust = Math.max(this.thrust, GRAVITY * 1.1);
+    return true;
+  }
 
   step(dt: number, input: FlightInput): void {
     this.contact = 'none';
     this.crouch = Math.max(0, this.crouch - dt);
+    this.dashCooldown = Math.max(0, this.dashCooldown - dt);
+    if (input.dash) this.snapDash(input.dash.dir, input.dash.vertical ?? 0);
     // On the ground the suit walks; only the climb command takes it up
     if (this.grounded) {
       const takeoff = input.vertical > 0.05 && this.crouch <= 0 && this.power > 0.5;
@@ -800,6 +844,9 @@ export class FlightModel {
         wantRoll = clamp((bankGoal - bank) * 4.5, -3, 3);
       }
     }
+    if (this.dashActive > 0 && this.dashDir !== 0) {
+      wantRoll += this.dashDir * 6.5 * fl;
+    }
     // In a hover the pitch is the attitude computer's (below), not the aim's
     const rates = this._v.set(-wantPitch, this.omega.y, wantRoll);
     this.omega.lerp(rates, approach(dt, THREE.MathUtils.lerp(0.09, 0.14, fl)));
@@ -948,6 +995,22 @@ export class FlightModel {
     this.throttle = clamp(this.thrust / THRUST_BOOST, 0, 1);
     acc.addScaledVector(thrustDir, this.thrust);
 
+    // ── Directional thruster snap-dash ───────────────────────────────
+    const dashing = this.dashActive > 0;
+    if (dashing) {
+      const dashStep = Math.min(dt, this.dashActive);
+      const dashFrac = dashStep / Math.max(dt, 1e-6);
+      const right = this._v.crossVectors(f, u);
+      if (right.lengthSq() > 1e-6) right.normalize();
+      else right.set(-1, 0, 0);
+      const dashVec = this._n.set(0, 0, 0).addScaledVector(right, this.dashDir).addScaledVector(UP, this.dashVerticalDir);
+      if (dashVec.lengthSq() > 1e-6) {
+        dashVec.normalize();
+        const dashShape = 0.75 + 0.5 * (this.dashActive / SNAP_DASH_DURATION);
+        acc.addScaledVector(dashVec, SNAP_DASH_ACCEL * dashShape * dashFrac * this.power * this.reactor.boostThrust);
+      }
+    }
+
     // ── Momentum swing ───────────────────────────────────────────────
     // Out of a flare (or a hover at speed) with the aim swung well round
     // from the travel, pushing off again — or flat out, punching the boost
@@ -1054,7 +1117,7 @@ export class FlightModel {
       // Full down kills the wing so the body falls instead of gliding
       const fall = input.vertical < 0 ? 1 + input.vertical : 1;
       // and the pitch-up of the flare doesn't slam it (the load is capped low)
-      const lift = perp.multiplyScalar(-LIFT * speed * rho * fl * (1 - 0.95 * this.liftSpill) * (1 - this.swing) * fall);
+      const lift = perp.multiplyScalar(-LIFT * speed * rho * fl * (1 - 0.95 * this.liftSpill) * (1 - this.swing) * (dashing ? 0.15 : 1) * fall);
       // Lift works square to the travel: the part of it along the path made
       // a broadside body (swinging back out of a flare) a second airbrake
       lift.addScaledVector(this.vel, -lift.dot(this.vel) / (speed * speed));
@@ -1083,6 +1146,13 @@ export class FlightModel {
     }
 
     this.vel.addScaledVector(acc, dt);
+    if (dashing) {
+      this.dashActive = Math.max(0, this.dashActive - dt);
+      if (this.dashActive <= 0) {
+        this.dashDir = 0;
+        this.dashVerticalDir = 0;
+      }
+    }
     this.surge += ((this.vel.length() - speed) / Math.max(dt, 1e-4) - this.surge) * approach(dt, 0.15);
     this.wade(dt);
     this.pos.addScaledVector(this.vel, dt);
@@ -1584,5 +1654,8 @@ export class FlightModel {
     this.flightness = 0;
     this.speedCmd = 0;
     this.freefall = 0;
+    this.dashActive = 0;
+    this.dashDir = 0;
+    this.dashVerticalDir = 0;
   }
 }

@@ -253,6 +253,29 @@ export class ReactorPower {
   }
 
   /**
+   * Feed style-combo adrenaline or skill-bonus energy into the overcharge
+   * capacitor (proximity skimming, missile near-misses, intercepts, reversals).
+   */
+  feedStyleOvercharge(amount: number, reason: string, at?: THREE.Vector3): number {
+    return this.feedOvercharge(amount, reason, at);
+  }
+
+  /**
+   * Storm lightning strike surge: instantly fills `overcharge = 1` and
+   * activates (or refreshes) 400% OVERCHARGE regardless of `autoOvercharge`.
+   */
+  triggerStormSurge(at?: THREE.Vector3): boolean {
+    this.overcharge = 1;
+    this.lastFeedReason = 'stormSurge';
+    this.overchargeRemaining = this.overchargeDuration;
+    this.overchargePulse = 1;
+    this.syncModifiers();
+    this.events?.emit('reactorOvercharge', { at, value: 1 });
+    this.events?.emit('jarvis', { text: 'Lightning strike absorbed — Arc Reactor at 400% capacity, sir!' });
+    return true;
+  }
+
+  /**
    * Called when enemy fire strikes the suit's armour. In SHIELDS mode, a share
    * of incoming energy is shunted into the overcharge capacitor.
    */

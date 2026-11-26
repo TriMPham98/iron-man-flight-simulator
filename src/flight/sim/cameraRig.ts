@@ -85,6 +85,9 @@ export class CameraRig {
   private initialized = false;
   /** A fixed camera (directed shots): stays put until released. */
   private planted: THREE.Vector3 | null = null;
+  /** Current proximity adrenaline intensity (0–1) for dynamic FOV rush. */
+  proximityIntensity = 0;
+  private wasDashing = false;
 
   /** Hold the camera at a point, watching the suit at `frac` of the frame (null releases it). */
   plant(at: THREE.Vector3 | null, frac = 0.1): void {
@@ -165,8 +168,17 @@ export class CameraRig {
     return this.mode;
   }
 
-  update(dt: number, m: FlightModel, head: THREE.Vector3, ground: CameraGround): void {
+  update(dt: number, m: FlightModel, head: THREE.Vector3, ground: CameraGround, proximityIntensity?: number): void {
     this.time += dt;
+    const prox = THREE.MathUtils.clamp(proximityIntensity ?? this.proximityIntensity, 0, 1);
+    const dashing = m.dashActive > 0;
+    const dashJustStarted = dashing && !this.wasDashing;
+    this.wasDashing = dashing;
+    const dashK = dashing ? THREE.MathUtils.clamp(m.dashActive / 0.24, 0, 1) : 0;
+    if (dashJustStarted) {
+      this.shake += 0.28;
+      this.bankVel += -m.dashDir * 1.8;
+    }
     // Level the aim's roll back to the horizon (not when looking straight up/down)
     const f = this.aim(this._f);
     if (Math.abs(f.y) < 0.92) {
@@ -199,7 +211,7 @@ export class CameraRig {
       // the aim: looking over a shoulder put it inside the shoulder plates)
       ideal.copy(head);
       this.pos.copy(ideal);
-      fovGoal = 74;
+      fovGoal = 74 + prox * 8 + dashK * 4;
     } else if (this.mode === 'flyby') {
       this.flybyFrame(dt, m, fwd, ground);
       lookAt = this.look;
@@ -221,6 +233,9 @@ export class CameraRig {
       // The offset from the suit is smoothed, not the position: the suit
       // holds its place in frame at any speed, swinging a little in turns
       ideal.set(0, 0, 0).addScaledVector(fwd, -dist).addScaledVector(aimUp, height).addScaledVector(right, side);
+      if (dashK > 0) {
+        ideal.addScaledVector(right, -m.dashDir * 1.15 * dashK).addScaledVector(aimUp, -m.dashVerticalDir * 0.65 * dashK);
+      }
       if (!this.initialized) {
         this.offset.copy(ideal);
         this.offsetVel.set(0, 0, 0);
@@ -250,7 +265,7 @@ export class CameraRig {
       }
       this.pos.copy(m.pos).add(this.offset);
       // (and the lens punches wide on the kick, a touch tight on a bleed)
-      fovGoal = 62 + 14 * pull + (m.boosting ? 3 : 0) + surgeG * (surgeG > 0 ? 1.1 : 0.4);
+      fovGoal = 62 + 14 * pull + (m.boosting ? 3 : 0) + surgeG * (surgeG > 0 ? 1.1 : 0.4) + prox * 8 + dashK * 4;
     }
 
     // Never under the ground or the sea (the helmet eye is wherever the
@@ -274,7 +289,8 @@ export class CameraRig {
       // bolted to the horizon. Roll about the view axis only — the aim
       // point at the centre of the screen never moves
       const chase = this.mode === 'chase' || this.mode === 'shoulder';
-      const bankGoal = chase ? THREE.MathUtils.clamp(m.omega.y * 0.022, -0.075, 0.075) : 0;
+      const dashBank = dashing ? -m.dashDir * 0.14 * dashK : 0;
+      const bankGoal = chase ? THREE.MathUtils.clamp(m.omega.y * 0.022 + dashBank, -0.18, 0.18) : 0;
       const bw = 7;
       this.bankVel += (bw * bw * (bankGoal - this.bank) - 2 * 0.85 * bw * this.bankVel) * Math.min(dt, 0.05);
       this.bank += this.bankVel * Math.min(dt, 0.05);
@@ -290,7 +306,7 @@ export class CameraRig {
     }
 
     // Shake: impacts, boost and a hard pull's buffet. Supersonic flight itself does not shake the picture
-    const s = this.shake + (m.boosting ? 0.04 : 0) + 0.05 * pullK(m);
+    const s = this.shake + (m.boosting ? 0.04 : 0) + 0.05 * pullK(m) + 0.03 * prox;
     if (s > 0.0005 && this.mode !== 'flyby') {
       const t = this.time;
       const n = (a: number, b: number) => Math.sin(t * a) * 0.6 + Math.sin(t * b + 1.3) * 0.4;
