@@ -391,7 +391,8 @@ export class Terrain {
     this.quarterMesh = new THREE.Mesh(this.quarter, mat);
     for (const [m, shadow] of [
       [this.mesh, true],
-      [this.halfNearMesh, true],
+      // Child quarters of LOD >= 1 sit past RANGE0 (>= 156 m away), well outside the 12 m suit shadow box
+      [this.halfNearMesh, false],
       [this.halfFarMesh, false],
       [this.quarterMesh, false],
     ] as const) {

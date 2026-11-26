@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { FlightApp } from '../flight/app';
+import { deviceProfile } from '../scene/deviceProfile';
 import { createFrameStats } from './frameStats';
 import { burnAt, checkAt, CLIMB_SEC, climbAt, cycleAt, FOLLOW_FOV, followPose, launchPlan, roofAt, workshopLens, type LaunchPlan } from './launchProfile';
 
@@ -157,13 +158,14 @@ export function createFlightHandoff(opts: { reducedMotion: boolean }) {
       const [{ FlightApp }, { Screens }] = await Promise.all([import('../flight/app'), import('../flight/ui/screens')]);
       buildLog.import = Math.round(performance.now() - t0);
       const screens = new Screens(layer.querySelector<HTMLElement>('#flight-ui')!, { embedded: true });
+      const device = deviceProfile();
       const a = new FlightApp({
         canvas: layer.querySelector<HTMLCanvasElement>('#flight-canvas')!,
         hudCanvas: layer.querySelector<HTMLCanvasElement>('#flight-hud')!,
         screens,
         pace,
         embedded: true,
-        maxPixelRatio: 1.5,
+        maxPixelRatio: Math.min(1.5, device.maxPixelRatio),
       });
       await a.build();
       await a.warm(2);

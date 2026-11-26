@@ -14,6 +14,8 @@ export interface Atmosphere {
   envMap: THREE.Texture;
   /** Uniforms shared by every custom shader that applies the haze. */
   uniforms: Record<string, THREE.IUniform>;
+  /** Resize the directional shadow map cleanly without recompiling materials. */
+  setShadowSize: (size: number) => void;
 }
 
 /** Height fog: sea-level density (1/m) and scale height falloff (1/m). */
@@ -207,6 +209,12 @@ export function createAtmosphere(renderer: THREE.WebGLRenderer, scene: THREE.Sce
       uSunColor: { value: SUN_COLOR.clone().multiplyScalar(SUN_INTENSITY) },
       uFogDensity: { value: FOG_DENSITY },
       uFogFalloff: { value: FOG_FALLOFF },
+    },
+    setShadowSize: (size: number) => {
+      if (size <= 0 || sun.shadow.mapSize.x === size) return;
+      sun.shadow.mapSize.set(size, size);
+      sun.shadow.map?.dispose();
+      sun.shadow.map = null;
     },
   };
 }

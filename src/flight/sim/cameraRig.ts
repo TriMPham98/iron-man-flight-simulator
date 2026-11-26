@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { G_LIMIT, type FlightModel } from './flightModel';
+import type { ReactorMode } from './reactorPower';
 import { GRAVITY } from '../world/config';
 
 /**
@@ -42,6 +43,10 @@ export class CameraRig {
   /** Screen shake energy (decays). */
   shake = 0;
   zoom = 1;
+  /** Active Arc Reactor power routing mode & pulse (updated each frame from Game). */
+  reactorMode: ReactorMode = 'BALANCED';
+  reactorModePulse = 0;
+  reactorOvercharge = false;
   private readonly pos = new THREE.Vector3();
   private readonly offset = new THREE.Vector3();
   /** Velocity of the chase offset (it swings on a spring, not a lerp). */
@@ -105,6 +110,13 @@ export class CameraRig {
   readonly shotInfo = { shot: 'side' as Shot, age: 0, passed: -1, frac: 0, dist: 0, fov: 50, cuts: 0 };
 
   constructor(readonly camera: THREE.PerspectiveCamera) {}
+
+  /** Update active reactor mode state without altering the main update signature. */
+  setReactorState(mode: ReactorMode, modePulse: number, overcharge: boolean): void {
+    this.reactorMode = mode;
+    this.reactorModePulse = modePulse;
+    this.reactorOvercharge = overcharge;
+  }
 
   /** Direction the pilot is aiming (world, unit). */
   aim(out = new THREE.Vector3()): THREE.Vector3 {
@@ -199,7 +211,7 @@ export class CameraRig {
       // the aim: looking over a shoulder put it inside the shoulder plates)
       ideal.copy(head);
       this.pos.copy(ideal);
-      fovGoal = 74;
+      fovGoal = 74 + (this.reactorOvercharge ? 3.5 : this.reactorMode === 'THRUST' ? 2.5 : 0);
     } else if (this.mode === 'flyby') {
       this.flybyFrame(dt, m, fwd, ground);
       lookAt = this.look;
@@ -207,12 +219,17 @@ export class CameraRig {
     } else {
       const close = this.mode === 'shoulder';
       const pull = Math.min(1, speed / 300);
+      const thrustOn = this.reactorMode === 'THRUST' || this.reactorOvercharge;
+      const shieldsOn = !this.reactorOvercharge && this.reactorMode === 'SHIELDS';
       // The operator rides the surge a beat behind: a boost's kick pulls
       // the suit away down the lens, a hard bleed closes on it, and it
       // drifts back to station with a hair of overshoot
+      // In THRUST mode, surge lag loosens slightly so acceleration visibly stretches the frame;
+      // in SHIELDS mode, the camera feels firmer and more planted.
       const surgeG = THREE.MathUtils.clamp(m.surge / GRAVITY, -6, 7);
-      const sw = 3.2;
-      this.surgeLagVel += (sw * sw * (surgeG * 0.28 - this.surgeLag) - 2 * 0.7 * sw * this.surgeLagVel) * Math.min(dt, 0.05);
+      const sw = thrustOn ? 2.55 : shieldsOn ? 3.8 : 3.2;
+      const surgeGain = thrustOn ? 0.36 : shieldsOn ? 0.21 : 0.28;
+      this.surgeLagVel += (sw * sw * (surgeG * surgeGain - this.surgeLag) - 2 * 0.7 * sw * this.surgeLagVel) * Math.min(dt, 0.05);
       this.surgeLag += this.surgeLagVel * Math.min(dt, 0.05);
       const dist = (close ? 3.2 : 7 + 4 * pull) * this.zoom + this.surgeLag * (close ? 0.35 : 1);
       const height = close ? 0.75 : 2.1 + 1.2 * pull;
@@ -231,7 +248,7 @@ export class CameraRig {
       // under a quarter second to settle
       // (under a hard pull the operator can't keep up: the swing loosens
       // and the suit carves away across the frame before it's caught)
-      const w = this.swing * (1 - 0.35 * pullK(m));
+      const w = this.swing * (1 - 0.35 * pullK(m)) * (thrustOn ? 0.92 : shieldsOn ? 1.12 : 1);
       const n = Math.min(32, Math.max(1, Math.ceil(dt * w * 4)));
       const h = dt / n;
       for (let i = 0; i < n; i++) {
@@ -249,8 +266,11 @@ export class CameraRig {
         this.offset.applyQuaternion(this._q.slerp(IDENTITY, MAX_SWING / lag));
       }
       this.pos.copy(m.pos).add(this.offset);
-      // (and the lens punches wide on the kick, a touch tight on a bleed)
-      fovGoal = 62 + 14 * pull + (m.boosting ? 3 : 0) + surgeG * (surgeG > 0 ? 1.1 : 0.4);
+      // (and the lens punches wide on the kick, a touch tight on a bleed;
+      // THRUST adds +4.5 deg FOV punch, SHIELDS tightens slightly)
+      const modeFov = this.reactorOvercharge ? 5.5 : this.reactorMode === 'THRUST' ? 4.5 : this.reactorMode === 'SHIELDS' ? -1.5 : 0;
+      const pulseFov = this.reactorModePulse * (this.reactorMode === 'THRUST' ? 2.2 : this.reactorMode === 'WEAPONS' ? 1.0 : -0.8);
+      fovGoal = 62 + 14 * pull + (m.boosting ? 3 : 0) + surgeG * (surgeG > 0 ? 1.1 : 0.4) + modeFov + pulseFov;
     }
 
     // Never under the ground or the sea (the helmet eye is wherever the

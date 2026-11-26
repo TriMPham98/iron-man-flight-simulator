@@ -565,8 +565,32 @@ export class Soundscape {
         }
         break;
       case 'reactorMode':
-        A.play(SFX.lockTick, { ui: true, gain: 0.28, rate: e.text === 'BALANCED' ? 0.9 : 1.25 });
-        A.play(SFX.servoWhir, { at: m.pos, gain: 0.22, rate: 1.3, duration: 0.25, ref: 6 });
+        switch (e.text) {
+          case 'THRUST':
+            // Turbine spool-up: high-rev electric whine + thruster ignition surge + crisp chime
+            A.play(SFX.electricMotor, { at: m.pos, propagate: false, gain: 0.42, rate: 1.5, duration: 0.35, ref: 6 });
+            A.play(SFX.thrusterIgnite, { at: m.pos, propagate: false, gain: 0.45, rate: 1.25, offset: 0.35, fadeIn: 0.02, duration: 0.38, ref: 8 });
+            A.play(SFX.lockTick, { ui: true, gain: 0.28, rate: 1.45 });
+            break;
+          case 'WEAPONS':
+            // Weapon arming + capacitor whine + repulsor snap
+            A.play(SFX.weaponDeploy, { at: m.pos, propagate: false, gain: 0.48, rate: 1.15, duration: 0.35, ref: 6 });
+            A.play(SFX.charge, { ui: true, gain: 0.42, rate: 1.35, duration: 0.38 });
+            A.play(SFX.repulsorZap, { at: m.pos, propagate: false, gain: 0.24, rate: 1.4, delay: 0.05, ref: 6 });
+            break;
+          case 'SHIELDS':
+            // Deep magnetic clamp + heavy armour brace thud
+            A.play(SFX.weaponLock, { at: m.pos, propagate: false, gain: 0.52, rate: 0.78, ref: 6 });
+            A.play(SFX.heroThud, { at: m.pos, propagate: false, gain: 0.46, rate: 0.72, lowpass: 550, duration: 0.28, ref: 6 });
+            A.play(SFX.metalTighten, { at: m.pos, propagate: false, gain: 0.34, rate: 0.85, delay: 0.04, ref: 6 });
+            break;
+          default:
+            // BALANCED: clean neutral double-chirp + light servo settle
+            A.play(SFX.lockTick, { ui: true, gain: 0.26, rate: 1.0 });
+            A.play(SFX.lockTick, { ui: true, gain: 0.22, rate: 1.18, delay: 0.09 });
+            A.play(SFX.servoWhir, { at: m.pos, propagate: false, gain: 0.2, rate: 1.15, duration: 0.2, ref: 6 });
+            break;
+        }
         break;
       case 'reactorOvercharge':
         if (e.value) {
@@ -908,10 +932,14 @@ export class Soundscape {
     // Boots: louder and higher with throttle; War Machine's heavier chassis sits a touch deeper
     const thr = m.throttle;
     const wmPitch = this.variant === 'warmachine' ? 0.88 : 1;
+    const rMode = combat.reactor?.mode;
+    const rOver = combat.reactor?.overchargeActive;
+    const modePitch = rOver ? 1.09 : rMode === 'THRUST' ? 1.06 : rMode === 'SHIELDS' ? 0.95 : 1;
+    const modeGain = rOver ? 1.12 : rMode === 'THRUST' ? 1.08 : 1;
     const supIn = sup * (1 - this.observer);
     const lp = THREE.MathUtils.lerp(16000, 2200, supIn);
-    this.thrust?.set((m.grounded ? 0 : 0.15 + 0.9 * thr) * (1 - 0.4 * supIn), (0.82 + 0.42 * thr) * wmPitch, lp);
-    this.boost?.set(m.boosting ? 0.55 * (1 - 0.5 * supIn) : 0, (1.35 + 0.2 * thr) * wmPitch, lp * 0.7);
+    this.thrust?.set((m.grounded ? 0 : (0.15 + 0.9 * thr) * modeGain) * (1 - 0.4 * supIn), (0.82 + 0.42 * thr) * wmPitch * modePitch, lp);
+    this.boost?.set(m.boosting ? 0.55 * modeGain * (1 - 0.5 * supIn) : 0, (1.35 + 0.2 * thr) * wmPitch * modePitch, lp * 0.7);
     // The air torn open behind a fast suit: only from outside it
     const tear = THREE.MathUtils.smoothstep(m.speed, 40, 320);
     this.roar?.set(tear * (0.9 + 0.5 * (m.boosting ? 1 : 0)), 0.85 + 0.3 * tear);

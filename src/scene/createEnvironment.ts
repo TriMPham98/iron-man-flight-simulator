@@ -6,9 +6,15 @@ export interface EnvironmentHandles {
   ground: THREE.Mesh;
 }
 
+export interface EnvironmentOptions {
+  /** Procedural pad texture size in px (default 1024; 512 on phone, 768 on tablet). */
+  padDetail?: number;
+  /** Max anisotropic filtering on pad maps (default 4). */
+  anisotropy?: number;
+}
+
 /**
  * Workshop floor: detailed metal disc + rings in a cool void.
- * Full-fidelity textures and geometry (no quality tiers).
  *
  * @param holes world (x, z, radius) cut out of the floor — the boot hatches
  *   drop through the platform into pits below.
@@ -18,6 +24,7 @@ export function createEnvironment(
   holes: Array<[number, number, number]> = [],
   /** Concentric annuli (r0, r1) cut out of the floor — the robot ring. */
   rings: Array<[number, number]> = [],
+  opts: EnvironmentOptions = {},
 ): EnvironmentHandles {
   const voidColor = COLORS.bg;
   scene.background = new THREE.Color(voidColor);
@@ -26,10 +33,11 @@ export function createEnvironment(
   const group = new THREE.Group();
   group.name = 'environment';
 
-  const padDetail = 1024;
+  const padDetail = opts.padDetail ?? 1024;
+  const anisotropy = opts.anisotropy ?? 4;
   const GROUND_R = 5.6;
   const { colorMap, roughnessMap, alphaMap, emissiveMap } =
-    buildPadTextures(padDetail, holes, GROUND_R, rings);
+    buildPadTextures(padDetail, holes, GROUND_R, rings, anisotropy);
 
   const groundGeo = new THREE.CircleGeometry(GROUND_R, 96);
   const groundMat = new THREE.MeshStandardMaterial({
@@ -110,6 +118,7 @@ function buildPadTextures(
   holes: Array<[number, number, number]>,
   groundR: number,
   rings: Array<[number, number]> = [],
+  anisotropy = 4,
 ): {
   colorMap: THREE.CanvasTexture;
   roughnessMap: THREE.CanvasTexture;
@@ -295,17 +304,17 @@ function buildPadTextures(
   ectx.fill();
 
   return {
-    colorMap: canvasTex(color, true),
-    roughnessMap: canvasTex(rough, false),
-    alphaMap: canvasTex(alpha, false),
-    emissiveMap: canvasTex(emis, true),
+    colorMap: canvasTex(color, true, anisotropy),
+    roughnessMap: canvasTex(rough, false, anisotropy),
+    alphaMap: canvasTex(alpha, false, anisotropy),
+    emissiveMap: canvasTex(emis, true, anisotropy),
   };
 }
 
-function canvasTex(canvas: HTMLCanvasElement, srgb: boolean): THREE.CanvasTexture {
+function canvasTex(canvas: HTMLCanvasElement, srgb: boolean, anisotropy = 4): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(canvas);
   if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
+  tex.anisotropy = anisotropy;
   tex.needsUpdate = true;
   return tex;
 }

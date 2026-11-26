@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { EventBus, type SimEvent } from './events';
-import { BOOST_SPEED, FlightModel, G_LIMIT, type GroundProbe } from './flightModel';
+import { BOOST_SPEED, CRUISE_MAX, EMPTY_INPUT, FlightModel, G_LIMIT, type GroundProbe } from './flightModel';
+import { SFX, Soundscape } from '../audio/soundscape';
+import type { GameAudio } from '../audio/gameAudio';
 import {
   LASER_CUTTER_COOLDOWN,
   LASER_CUTTER_MAX_HEAT,
@@ -329,5 +331,79 @@ describe('FlightModel + ReactorPower integration', () => {
     reactor.feedOvercharge(1, 'test');
     expect(model.speedTarget).toBeCloseTo(BOOST_SPEED * OVERCHARGE_MODIFIERS.boostSpeed);
     expect(model.gLimit).toBeCloseTo(G_LIMIT + OVERCHARGE_MODIFIERS.gLimitBonus);
+  });
+
+  it('scales cruise speed cap and strafe-dash impulse across THRUST, BALANCED, and SHIELDS', () => {
+    const stepCruise = (mode: 'BALANCED' | 'THRUST' | 'SHIELDS') => {
+      const m = new FlightModel(makeFlatGround());
+      const r = new ReactorPower();
+      r.setMode(mode);
+      m.reactor = r.modifiers;
+      m.grounded = false;
+      m.airT = 5;
+      m.flightness = 1;
+      m.posture = 1.42;
+      m.pos.set(0, 1000, 0);
+      m.vel.set(0, 0, 200);
+      m.speedCmd = 200;
+      const input = EMPTY_INPUT();
+      input.aim.set(0, 0, 1);
+      input.throttle = 1;
+      for (let i = 0; i < 960; i++) m.step(1 / 120, input);
+      return { speedCmd: m.speedCmd, speed: m.speed };
+    };
+
+    const thrust = stepCruise('THRUST');
+    const balanced = stepCruise('BALANCED');
+    const shields = stepCruise('SHIELDS');
+
+    expect(balanced.speedCmd).toBeCloseTo(CRUISE_MAX);
+    expect(thrust.speedCmd).toBeCloseTo(CRUISE_MAX * MODE_MODIFIERS.THRUST.cruiseSpeed);
+    expect(shields.speedCmd).toBeCloseTo(CRUISE_MAX * MODE_MODIFIERS.SHIELDS.cruiseSpeed);
+    expect(thrust.speed).toBeGreaterThan(balanced.speed + 20);
+    expect(shields.speed).toBeLessThan(balanced.speed - 20);
+
+    // Strafe dash lateral impulse is noticeably snappier in THRUST than SHIELDS
+    const dashSpeed = (mode: 'BALANCED' | 'THRUST' | 'SHIELDS') => {
+      const m = new FlightModel(makeFlatGround());
+      const r = new ReactorPower();
+      r.setMode(mode);
+      m.reactor = r.modifiers;
+      m.grounded = false;
+      m.airT = 5;
+      m.pos.set(0, 500, 0);
+      const input = EMPTY_INPUT();
+      input.aim.set(0, 0, 1);
+      m.strafeDash(1);
+      for (let i = 0; i < 30; i++) m.step(1 / 120, input);
+      return Math.abs(m.vel.x);
+    };
+
+    expect(dashSpeed('THRUST')).toBeGreaterThan(dashSpeed('BALANCED') * 1.15);
+    expect(dashSpeed('SHIELDS')).toBeLessThan(dashSpeed('BALANCED'));
+  });
+
+  it('plays distinct mode-specific audio stingers on reactorMode events', () => {
+    const play = vi.fn();
+    const audio = { ready: true, play } as unknown as GameAudio;
+    const soundscape = new Soundscape(audio);
+    const model = new FlightModel(makeFlatGround());
+    const at = new THREE.Vector3(0, 200, 0);
+
+    const callsFor = (mode: 'THRUST' | 'WEAPONS' | 'SHIELDS' | 'BALANCED') => {
+      play.mockClear();
+      soundscape.on({ kind: 'reactorMode', text: mode, at, t: 1 }, model);
+      return play.mock.calls.map(([url]) => url);
+    };
+
+    const thrustUrls = callsFor('THRUST');
+    const weaponsUrls = callsFor('WEAPONS');
+    const shieldsUrls = callsFor('SHIELDS');
+    const balancedUrls = callsFor('BALANCED');
+
+    expect(thrustUrls).toEqual([SFX.electricMotor, SFX.thrusterIgnite, SFX.lockTick]);
+    expect(weaponsUrls).toEqual([SFX.weaponDeploy, SFX.charge, SFX.repulsorZap]);
+    expect(shieldsUrls).toEqual([SFX.weaponLock, SFX.heroThud, SFX.metalTighten]);
+    expect(balancedUrls).toEqual([SFX.lockTick, SFX.lockTick, SFX.servoWhir]);
   });
 });

@@ -58,16 +58,25 @@ export function bindFlightSettings(app: FlightApp): void {
     if (q === quality) return;
     const first = quality === null;
     quality = q;
+    const touch = screens.touch;
     cap = QUALITY_DPR[q];
     const ground = QUALITY_GROUND[q];
-    app.world.terrain.setDetail(ground.reach, ground.anisotropy, renderer);
+    app.world.terrain.setDetail(
+      touch ? ground.reach * 0.85 : ground.reach,
+      touch ? Math.min(ground.anisotropy, 2) : ground.anisotropy,
+      renderer,
+    );
     app.post?.setSamples(QUALITY_SAMPLES[q]);
     app.post?.setLowCost(q === 'low');
+    app.post?.setHalfBloom(q === 'low' || (touch && q === 'medium'));
+    app.post?.setBilinearUpscale(q === 'low' || touch);
     const lod = QUALITY_LOD[q];
     applyWorldLod(lod);
     app.setPresetLodScale(lod, applyWorldLod);
     app.setMaxAdaptiveDpr(Math.min(app.maxDpr, cap));
     const shadows = q !== 'low';
+    const shadowSize = !shadows ? 0 : q === 'medium' || (touch && q === 'high') ? 1024 : 2048;
+    app.world.atmosphere.setShadowSize(shadowSize);
     if (renderer.shadowMap.enabled !== shadows) {
       renderer.shadowMap.enabled = shadows;
       // Programs are keyed on shadows: rebuild them
@@ -76,9 +85,9 @@ export function bindFlightSettings(app: FlightApp): void {
         for (const mat of Array.isArray(m) ? m : m ? [m] : []) mat.needsUpdate = true;
       });
     }
-    // LOW gives up the full-resolution final pass too: the canvas itself
-    // drops to the scene's ratio and the browser stretches it
-    app.setOutputDpr(q === 'low' ? Math.min(app.maxDpr, cap) : app.sharpDpr);
+    // LOW (and touch devices, where fill rate matters most) drop the canvas itself
+    // to the active DPR cap so the final pass never runs at a higher ratio than the scene
+    app.setOutputDpr(q === 'low' || touch ? Math.min(app.maxDpr, cap) : app.sharpDpr);
     // Down at once (through the cap); back up as the adaptive guard allows
     const want = q === 'ultra' ? app.maxDpr : Math.min(app.maxDpr, cap);
     if (!first || q !== 'ultra') {
@@ -113,6 +122,7 @@ export function bindFlightSettings(app: FlightApp): void {
     app.paused = true;
     audio.setPaused(true);
     app.input?.releaseLock();
+    window.dispatchEvent(new Event('flight:paused'));
     // Touch: nothing to re-lock, so Resume resumes at once
     screens.setPaused(true, () => (app.touch ? screens.actions.forceResume?.() : app.input?.requestLock()));
   };

@@ -15,6 +15,8 @@ export interface ContactShadowOptions {
   resolution?: number;
   /** Blur step in texels of a 256 map (two passes). */
   blur?: number;
+  /** Number of H+V blur iterations (default 2; 1 on phones). */
+  blurPasses?: number;
   darkness?: number;
   opacity?: number;
 }
@@ -39,6 +41,7 @@ export function createContactShadow(
 ): ContactShadow {
   const res = opts.resolution ?? 512;
   const blur = opts.blur ?? 1.2;
+  const blurPasses = opts.blurPasses ?? 2;
   const rt = new THREE.WebGLRenderTarget(res, res);
   rt.texture.generateMipmaps = false;
   const rtBlur = new THREE.WebGLRenderTarget(res, res);
@@ -123,7 +126,7 @@ export function createContactShadow(
       scene.background = prevBg;
       scene.fog = prevFog;
       blurPass(blur);
-      blurPass(blur * 0.4);
+      if (blurPasses > 1) blurPass(blur * 0.4);
       renderer.setRenderTarget(prevTarget);
       renderer.setClearColor(clear, prevAlpha);
     },

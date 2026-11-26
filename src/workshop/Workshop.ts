@@ -159,13 +159,16 @@ export class Workshop {
   private readonly _n = new THREE.Vector3();
   private readonly _n2 = new THREE.Vector3();
   private readonly _j: ArmJoints = { yaw: 0, shoulder: 0, elbow: 0, wristRoll: 0, wristPitch: 0, flangeRoll: 0, error: 0 };
+  private readonly scanHz: number;
   /** Worst IK miss on the last applied frame (m) — diagnostics/tests. */
   maxReachError = 0;
 
   constructor(
     private readonly suit: Suit,
     private readonly plan: SuitUpPlan,
+    opts: { scanWidth?: number; scanHeight?: number; scanHz?: number } = {},
   ) {
+    this.scanHz = opts.scanHz ?? 12;
     this.group.name = 'workshop';
     this.liftTasks = FIT_TASKS.filter((t) => t.kind === 'lift');
     const liftIds = new Set(this.liftTasks.map((t) => t.id));
@@ -173,7 +176,7 @@ export class Workshop {
       plan.preRoll + HATCH_DOOR_SEC + 0.02,
       Math.min(...plan.fits.filter((f) => liftIds.has(f.task)).map((f) => f.depart)) - HATCH_DOOR_LEAD,
     );
-    this.scanView = new SuitScanView(suit.finalGeometry);
+    this.scanView = new SuitScanView(suit.finalGeometry, opts.scanWidth, opts.scanHeight);
     this.env = createWorkshopEnvironment(
       this.liftTasks.map((t) => {
         const w = this.toWorld(t.origin[0], 0, t.origin[2]);
@@ -822,7 +825,7 @@ export class Workshop {
   update(dt: number, renderer?: THREE.WebGLRenderer): void {
     this.env.update(dt);
     this.detail.update(dt);
-    if (renderer) this.scanView.update(dt, renderer, this.env.takeFeedSeen());
+    if (renderer) this.scanView.update(dt, renderer, this.env.takeFeedSeen(), this.scanHz);
   }
 
   /** Every arm deployed at home. */

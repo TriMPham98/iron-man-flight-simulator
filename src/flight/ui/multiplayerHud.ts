@@ -159,6 +159,15 @@ const STYLES = /* css */ `
   opacity: 1;
   transition: opacity 0.2s ease;
 }
+html.tc-touch .mp-pill,
+html.tc-touch .mp-chip-sub,
+html.tc-touch .mp-drawer {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.tc-touch .mp-pill { background: rgba(4, 14, 24, 0.84); }
+html.tc-touch .mp-chip-sub { background: rgba(4, 14, 24, 0.86); }
+html.tc-touch .mp-drawer { background: rgba(2, 8, 16, 0.86); }
 .mp-drawer.hidden {
   opacity: 0;
   pointer-events: none;

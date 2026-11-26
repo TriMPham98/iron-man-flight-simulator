@@ -165,6 +165,8 @@ const REPULSOR_KNOCK = 9;
 /** Repulsor blue-white (HDR), the light a shot throws on the armour and round its impact. */
 const REPULSOR_HOT = new THREE.Color(7, 10, 15);
 const REPULSOR_COOL = new THREE.Color(0.6, 1.4, 3);
+const REPULSOR_WPN_HOT = new THREE.Color(11, 13, 17);
+const REPULSOR_WPN_COOL = new THREE.Color(1.0, 2.2, 4.4);
 const MUZZLE_LIGHT = 40;
 const IMPACT_LIGHT = 900;
 const MISSILE_CONE = Math.cos(THREE.MathUtils.degToRad(19));
@@ -304,6 +306,7 @@ export class PlayerWeapons {
   private readonly impactLight = new THREE.PointLight(0xa8d8ff, 0, 60, 2);
   private muzzleT = 1;
   private impactT = 1;
+  private shieldFlash = 0;
   private repulsorT = 0;
   private repulsorHitCount = 0;
   private minigunT = 0;
@@ -387,6 +390,12 @@ export class PlayerWeapons {
   ) {
     this.group.name = 'player-weapons';
     this.group.add(this.beam.group, this.laserCutter.group, this.muzzleLight, this.impactLight, this.flareLight);
+    this.events.on((e) => {
+      if (e.kind === 'hitArmor' && this.reactor?.mode === 'SHIELDS') {
+        this.shieldFlash = Math.min(1.5, this.shieldFlash + 0.85);
+        this.suit.triggerShieldFlash?.(1);
+      }
+    });
   }
 
   /** How hard a jammer has the seekers (0–1, set by the fight): painting a target takes up to four times as long. */
@@ -577,8 +586,9 @@ export class PlayerWeapons {
     this.impactT += dt;
     const mk = Math.max(0, 1 - this.muzzleT / 0.08);
     const ik = Math.max(0, 1 - this.impactT / 0.18);
-    this.muzzleLight.intensity = MUZZLE_LIGHT * mk * mk;
-    this.impactLight.intensity = IMPACT_LIGHT * ik * ik;
+    const wpnLightBoost = this.reactor?.overchargeActive ? 1.55 : this.reactor?.mode === 'WEAPONS' ? 1.3 : 1;
+    this.muzzleLight.intensity = MUZZLE_LIGHT * mk * mk * wpnLightBoost;
+    this.impactLight.intensity = IMPACT_LIGHT * ik * ik * wpnLightBoost;
     A.flashL = Math.max(0, A.flashL - dt * 6);
     A.flashR = Math.max(0, A.flashR - dt * 6);
     A.chargeL = this.chargeSide === 'L' ? Math.min(1, this.chargeT * 10) : Math.max(0, A.chargeL - dt * 8);
@@ -763,7 +773,49 @@ export class PlayerWeapons {
       this.events.emit('laserCutterFire', { at: this.model.pos });
     }
     A.unibeam += ((this.unibeamHold > 0 ? 1 : 0) - A.unibeam) * (1 - Math.exp(-dt / 0.2));
-    this.suit.setSystemsPower({ reactor: 1, eyes: 1, repulsors: 1 });
+    this.shieldFlash = Math.max(0, this.shieldFlash - dt * 3.5);
+    const mode = this.reactor?.mode ?? 'BALANCED';
+    const modePulse = this.reactor?.modePulse ?? 0;
+    const ocPulse = this.reactor?.overchargePulse ?? 0;
+    const palmBurst = Math.max(A.flashL, A.flashR, A.chargeL, A.chargeR);
+    let sysPowers: { reactor: number; eyes: number; repulsors: number };
+    if (overcharged) {
+      sysPowers = {
+        reactor: 2.2 + 0.55 * ocPulse,
+        eyes: 1.85 + 0.3 * ocPulse,
+        repulsors: 2.1 + 0.45 * ocPulse,
+      };
+    } else if (mode === 'THRUST') {
+      sysPowers = {
+        reactor: 1.75 + 0.75 * modePulse,
+        eyes: 1.05,
+        repulsors: Math.max(0.42, palmBurst),
+      };
+    } else if (mode === 'WEAPONS') {
+      sysPowers = {
+        reactor: 1.25 + 0.35 * modePulse,
+        eyes: 1.55 + 0.45 * modePulse,
+        repulsors: 1.85 + 0.65 * modePulse,
+      };
+    } else if (mode === 'SHIELDS') {
+      sysPowers = {
+        reactor: 1.3 + 0.5 * modePulse + 0.5 * this.shieldFlash,
+        eyes: 1.15 + 0.25 * modePulse,
+        repulsors: Math.max(0.78, palmBurst),
+      };
+    } else {
+      sysPowers = {
+        reactor: 1 + 0.35 * modePulse,
+        eyes: 1 + 0.2 * modePulse,
+        repulsors: Math.max(1 + 0.25 * modePulse, palmBurst),
+      };
+    }
+    this.suit.setSystemsPower(sysPowers);
+    this.suit.setReactorState?.(mode, {
+      modePulse,
+      overcharge: overcharged,
+      shieldFlash: this.shieldFlash,
+    });
 
     // ── Flares ─────────────────────────────────────────────────────
     // A tap is one salvo. Holding F keeps the drums going, and the pause
@@ -1154,8 +1206,11 @@ export class PlayerWeapons {
     if (dir.dot(aim) < 0.5) dir.copy(aim);
     const P = this.particles;
     const vel = this.model.vel;
-    P.emit('flash', from, vel, { scale: 0.045, color: REPULSOR_HOT, end: REPULSOR_COOL });
-    P.emit('plasma', from, vel, { scale: 0.7, life: 0.5 });
+    const wpnBoost = this.reactor?.overchargeActive ? 1.42 : this.reactor?.mode === 'WEAPONS' ? 1.28 : 1;
+    const hot = wpnBoost > 1 ? REPULSOR_WPN_HOT : REPULSOR_HOT;
+    const cool = wpnBoost > 1 ? REPULSOR_WPN_COOL : REPULSOR_COOL;
+    P.emit('flash', from, vel, { scale: 0.045 * wpnBoost, color: hot, end: cool });
+    P.emit('plasma', from, vel, { scale: 0.7 * wpnBoost, life: 0.5 });
     const u = this._n.set(0, 1, 0).cross(dir);
     if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
     u.normalize();
@@ -1163,11 +1218,11 @@ export class PlayerWeapons {
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2 + Math.random() * 0.4;
       const v = this._w.copy(u).multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)).multiplyScalar(9 + Math.random() * 3).addScaledVector(dir, 3).add(vel);
-      P.emit('plasma', from, v, { scale: 0.3, life: 0.3 });
+      P.emit('plasma', from, v, { scale: 0.3 * wpnBoost, life: 0.3 });
     }
     for (let i = 0; i < 4; i++) {
       const v = this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(2).addScaledVector(dir, 14 + Math.random() * 24).add(vel);
-      P.emit('plasma', from, v, { scale: 0.35 + Math.random() * 0.2, life: 0.35 });
+      P.emit('plasma', from, v, { scale: (0.35 + Math.random() * 0.2) * wpnBoost, life: 0.35 });
     }
     this.muzzleLight.position.copy(from).addScaledVector(dir, 0.7);
     this.muzzleT = 0;
@@ -1390,7 +1445,10 @@ export class PlayerWeapons {
             P.burst('spark', hit, 14, 24, this._w.copy(d).multiplyScalar(-0.7), 1.1, { color: TRACER_HOT, end: TRACER_COOL });
             if (struck) P.emit('smoke', hit, carry, { scale: 0.65, life: 0.55 });
           } else {
-            P.emit('flash', hit, carry, { scale: 0.4, color: REPULSOR_HOT, end: REPULSOR_COOL });
+            const wpnBoost = this.reactor?.overchargeActive ? 1.38 : this.reactor?.mode === 'WEAPONS' ? 1.22 : 1;
+            const hot = wpnBoost > 1 ? REPULSOR_WPN_HOT : REPULSOR_HOT;
+            const cool = wpnBoost > 1 ? REPULSOR_WPN_COOL : REPULSOR_COOL;
+            P.emit('flash', hit, carry, { scale: 0.4 * wpnBoost, color: hot, end: cool });
             const u = this._l.set(0, 1, 0).cross(d);
             if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
             u.normalize();
@@ -1398,13 +1456,13 @@ export class PlayerWeapons {
             for (let k = 0; k < 28; k++) {
               const a = (k / 28) * Math.PI * 2;
               const v = this._w.copy(u).multiplyScalar(Math.cos(a)).addScaledVector(w, Math.sin(a)).multiplyScalar(34).add(carry);
-              P.emit('plasma', hit, v, { scale: 0.75, life: 0.45 });
+              P.emit('plasma', hit, v, { scale: 0.75 * wpnBoost, life: 0.45 });
             }
             for (let k = 0; k < 14; k++) {
               const v = this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(22).add(carry);
-              P.emit('plasma', hit, v, { scale: 1.5, life: 0.7 });
+              P.emit('plasma', hit, v, { scale: 1.5 * wpnBoost, life: 0.7 });
             }
-            P.emit('plasma', hit, carry, { scale: 5, life: 0.5 });
+            P.emit('plasma', hit, carry, { scale: 5 * wpnBoost, life: 0.5 });
             P.burst('spark', hit, 26, 20, this._w.copy(d).multiplyScalar(-0.6), 1);
           }
           this.impactLight.position.copy(hit);
@@ -1830,15 +1888,16 @@ export class PlayerWeapons {
         S.add(tail, b.p, 12, 4.6, 0.8, 0.75, 0.02, (heavy ? 0.5 : 0.28) * fl);
         S.add(head, b.p, 20, 15, 8, 1, 0.05, (heavy ? 0.34 : 0.18) * fl);
       } else {
-        const len = Math.min(0.022, out / sp);
+        const wpnGlow = this.reactor?.overchargeActive ? 1.38 : this.reactor?.mode === 'WEAPONS' ? 1.24 : 1;
+        const len = Math.min(0.022 * (wpnGlow > 1 ? 1.15 : 1), out / sp);
         const fl = (0.85 + 0.3 * Math.sin(b.age * 90 + (b.side === 'L' ? 0 : 2))) * THREE.MathUtils.lerp(0.3, 1, Math.min(1, out / 4));
         const tail = this._a.copy(b.p).addScaledVector(b.v, -len);
         // Iron Man Mk III white-hot slug in a cyan-blue plasma sheath
-        S.add(tail, b.p, 1.6, 3.6, 10, 0.6, 0.04, 0.6 * fl);
+        S.add(tail, b.p, 1.6 * wpnGlow, 3.6 * wpnGlow, 10 * wpnGlow, 0.6, 0.04 * wpnGlow, 0.6 * fl);
         const mid = this._b.copy(b.p).addScaledVector(b.v, -len * 0.4);
-        S.add(mid, b.p, 9, 11, 14, 1, 0.03, 0.17);
+        S.add(mid, b.p, 9 * wpnGlow, 11 * wpnGlow, 14 * wpnGlow, 1, 0.03 * wpnGlow, 0.17);
         const head = this._b.copy(b.p).addScaledVector(b.v, -Math.min(0.35, out) / sp);
-        S.add(head, b.p, 10, 13, 18, 1, 0.24 * fl, 0.3 * fl);
+        S.add(head, b.p, 10 * wpnGlow, 13 * wpnGlow, 18 * wpnGlow, 1, 0.24 * fl * wpnGlow, 0.3 * fl);
       }
     }
     // Each flare's white-hot core, smeared a touch along its flight; a

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { deviceProfile } from '../scene/deviceProfile';
 import { FlightApp } from './app';
 import { Screens } from './ui/screens';
 
@@ -19,6 +20,7 @@ async function boot(): Promise<void> {
     };
   }
   const q = new URLSearchParams(location.search);
+  const device = deviceProfile();
   const screens = new Screens();
   screens.progress(0.02, 'J.A.R.V.I.S. // FLIGHT SYSTEMS');
   const app = new FlightApp({
@@ -26,6 +28,7 @@ async function boot(): Promise<void> {
     hudCanvas: document.getElementById('flight-hud') as HTMLCanvasElement,
     screens,
     progress: (p, line) => screens.progress(p, line),
+    maxPixelRatio: device.maxPixelRatio,
     pixelRatio: q.has('dpr') ? Number(q.get('dpr')) : undefined,
   });
   // A capture's sound is the sim's own mix, rendered offline in step with

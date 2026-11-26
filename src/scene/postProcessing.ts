@@ -18,6 +18,8 @@ export interface CreatePostProcessingOptions {
   preferBloom?: boolean;
   /** Run UnrealBloom at half resolution (cheaper mips). Default false (full-res). */
   halfResBloom?: boolean;
+  /** Explicit bloom resolution scale (0–1); overrides halfResBloom when set. */
+  bloomScale?: number;
 }
 
 export function createPostProcessing(
@@ -33,7 +35,7 @@ export function createPostProcessing(
 
   let useBloom = options.preferBloom !== false;
   const halfResBloom = options.halfResBloom === true;
-  const bloomScale = halfResBloom ? 0.5 : 1;
+  const bloomScale = options.bloomScale ?? (halfResBloom ? 0.5 : 1);
 
   try {
     const gl = renderer.getContext();

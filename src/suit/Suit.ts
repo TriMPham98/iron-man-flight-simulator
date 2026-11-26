@@ -19,7 +19,9 @@ import {
   setFitFx,
   type SuitSystem,
   type SystemPowers,
+  type SystemVisuals,
 } from './systemsGlow';
+import type { ReactorMode } from '../flight/sim/reactorPower';
 import {
   createDiagnosticScan,
   type DiagnosticScan,
@@ -61,6 +63,13 @@ export class Suit {
   private particles!: SuitParticles;
   private glowMaterials: GlowMaterial[] = [];
   private powers: SystemPowers = { reactor: 0, eyes: 0, repulsors: 0 };
+  private systemVisuals: SystemVisuals = {};
+  private reactorMode: ReactorMode = 'BALANCED';
+  private modePulse = 0;
+  private overchargeActive = false;
+  private shieldFlash = 0;
+  private shieldAura!: THREE.SkinnedMesh;
+  private shieldAuraMat!: THREE.ShaderMaterial;
   private assemblyMode = true;
   private diagnostic: DiagnosticScan | null = null;
   /** Frame with every part waiting on its cradle (reset target). */
@@ -171,12 +180,22 @@ export class Suit {
       back.matrixAutoUpdate = false;
       suit.flapBacks.set(f, back);
     }
+    suit.shieldAuraMat = createShieldAuraMaterial();
+    suit.shieldAura = new THREE.SkinnedMesh(loaded.finalMesh.geometry, suit.shieldAuraMat);
+    suit.shieldAura.name = 'suit-shield-aura';
+    suit.shieldAura.bindMode = THREE.DetachedBindMode;
+    suit.shieldAura.frustumCulled = false;
+    suit.shieldAura.renderOrder = 2;
+    suit.shieldAura.visible = false;
+    suit.model.add(suit.shieldAura);
+
     const meshes: THREE.SkinnedMesh[] = [
       ...flapMeshes,
       suit.cavity,
       ...suit.flapBacks.values(),
       loaded.finalMesh,
       loaded.hologram,
+      suit.shieldAura,
       ...suit.pieces.map((p) => p.mesh as THREE.SkinnedMesh),
     ];
     for (const m of meshes) m.bind(skeleton, bindMatrix);
@@ -215,6 +234,7 @@ export class Suit {
       this.showFinal();
     } else {
       this.assemblyMode = true;
+      this.shieldAura.visible = false;
       if (this.finalModel) this.finalModel.visible = false;
       this.placePieces(frame.pieces);
     }
@@ -381,6 +401,11 @@ export class Suit {
     if (projectionScale) this.particles.setProjectionScale(projectionScale);
     this.particles.update(dt);
     this.hologramMat.uniforms.uTime.value += dt;
+    this.shieldAuraMat.uniforms.uTime.value += dt;
+    if (this.shieldFlash > 0) {
+      this.shieldFlash = Math.max(0, this.shieldFlash - dt * 3.2);
+      this.syncReactorVisuals();
+    }
   }
 
   // ── Flight-control check (showcase turn) ──────────────────────────
@@ -492,6 +517,7 @@ export class Suit {
   showAssembly(): void {
     this.endFlightCheck();
     this.assemblyMode = true;
+    this.shieldAura.visible = false;
     this.stopDiagnosticScan();
     if (this.finalModel) this.finalModel.visible = false;
     for (const p of this.pieces) p.mesh.visible = false;
@@ -501,6 +527,7 @@ export class Suit {
   resumeAssemblyVisuals(): void {
     this.endFlightCheck();
     this.assemblyMode = true;
+    this.shieldAura.visible = false;
     this.stopDiagnosticScan();
     if (this.finalModel) this.finalModel.visible = false;
   }
@@ -571,6 +598,12 @@ export class Suit {
   resetToStart(): void {
     this.endFlightCheck();
     this.powers = { reactor: 0, eyes: 0, repulsors: 0 };
+    this.reactorMode = 'BALANCED';
+    this.modePulse = 0;
+    this.overchargeActive = false;
+    this.shieldFlash = 0;
+    this.systemVisuals = {};
+    this.shieldAura.visible = false;
     this.applySystems();
     this.showAssembly();
     this.clearFx();
@@ -585,23 +618,115 @@ export class Suit {
 
   // ── Systems glow ──────────────────────────────────────────────────
 
-  /** Set one system 0–1 (reactor / eyes / repulsors). */
+  /** Set one system 0–3 (reactor / eyes / repulsors; 0–1 nominal, >1 overdrive). */
   setSystemPower(system: SuitSystem, amount: number): void {
-    this.powers[system] = THREE.MathUtils.clamp(amount, 0, 1);
+    this.powers[system] = THREE.MathUtils.clamp(amount, 0, 3);
     this.applySystems();
   }
 
   /** Set all systems at once (suit emissive only — scene lights unchanged). */
   setSystemsPower(powers: Partial<SystemPowers>): void {
     if (powers.reactor !== undefined) {
-      this.powers.reactor = THREE.MathUtils.clamp(powers.reactor, 0, 1);
+      this.powers.reactor = THREE.MathUtils.clamp(powers.reactor, 0, 3);
     }
     if (powers.eyes !== undefined) {
-      this.powers.eyes = THREE.MathUtils.clamp(powers.eyes, 0, 1);
+      this.powers.eyes = THREE.MathUtils.clamp(powers.eyes, 0, 3);
     }
     if (powers.repulsors !== undefined) {
-      this.powers.repulsors = THREE.MathUtils.clamp(powers.repulsors, 0, 1);
+      this.powers.repulsors = THREE.MathUtils.clamp(powers.repulsors, 0, 3);
     }
+    this.applySystems();
+  }
+
+  /**
+   * Drive per-mode emissive tinting, armor rim pulse, and the 3D shield aura
+   * without touching assembly / doff behavior.
+   */
+  setReactorState(
+    mode: ReactorMode,
+    opts?: { modePulse?: number; overcharge?: boolean; shieldFlash?: number },
+  ): void {
+    this.reactorMode = mode;
+    this.modePulse = THREE.MathUtils.clamp(opts?.modePulse ?? 0, 0, 1);
+    this.overchargeActive = !!opts?.overcharge;
+    if (opts?.shieldFlash !== undefined) {
+      this.shieldFlash = Math.max(this.shieldFlash, THREE.MathUtils.clamp(opts.shieldFlash, 0, 1.5));
+    }
+    this.syncReactorVisuals();
+  }
+
+  /** Trigger a brief shield impact ripple / armor rim flash (SHIELDS mode). */
+  triggerShieldFlash(strength = 1): void {
+    this.shieldFlash = Math.min(1.5, Math.max(this.shieldFlash, strength));
+    this.syncReactorVisuals();
+  }
+
+  private syncReactorVisuals(): void {
+    const mode = this.reactorMode;
+    const pulse = this.modePulse;
+    const oc = this.overchargeActive;
+    const flash = this.shieldFlash;
+
+    if (oc) {
+      const t = this.shieldAuraMat.uniforms.uTime.value as number;
+      const throb = 0.8 + 0.2 * Math.sin(t * 20);
+      this.systemVisuals = {
+        reactorTint: 0xdaf9ff,
+        eyesTint: 0xfffce0,
+        repulsorsTint: 0xdaf9ff,
+        rimColor: 0x9ef0ff,
+        rimStrength: 0.72 * throb + pulse * 0.35,
+      };
+    } else if (mode === 'THRUST') {
+      this.systemVisuals = {
+        reactorTint: pulse > 0.2 ? 0xd2fbff : 0xaef4ff,
+        eyesTint: 0xfff2c2,
+        repulsorsTint: 0x58b8ff,
+        rimColor: 0x58e2ff,
+        rimStrength: 0.22 + pulse * 0.65,
+      };
+    } else if (mode === 'WEAPONS') {
+      this.systemVisuals = {
+        reactorTint: 0x9ce8ff,
+        eyesTint: 0xffc85a,
+        repulsorsTint: 0xffe4a8,
+        rimColor: 0xff8a2b,
+        rimStrength: 0.24 + pulse * 0.65,
+      };
+    } else if (mode === 'SHIELDS') {
+      this.systemVisuals = {
+        reactorTint: flash > 0.1 ? 0xffdf78 : 0xffca54,
+        eyesTint: 0xffe896,
+        repulsorsTint: 0x7ec8ff,
+        rimColor: flash > 0.15 ? 0xffcf56 : 0x70c8ff,
+        rimStrength: 0.5 + pulse * 0.7 + flash * 1.35,
+      };
+    } else {
+      this.systemVisuals = {
+        rimColor: 0x70d8ff,
+        rimStrength: pulse * 0.45 + flash * 0.8,
+      };
+    }
+
+    const showAura = !this.assemblyMode && (mode === 'SHIELDS' || oc || flash > 0.01);
+    this.shieldAura.visible = showAura;
+    if (showAura) {
+      const u = this.shieldAuraMat.uniforms;
+      if (mode === 'SHIELDS') {
+        (u.uColor.value as THREE.Color).setHex(0x52c6ff);
+        (u.uFlashColor.value as THREE.Color).setHex(0xffc94d);
+        u.uOpacity.value = 0.32 + 0.32 * pulse + 0.55 * flash;
+        u.uRipple.value = Math.min(1.4, pulse * 0.8 + flash * 1.2);
+        u.uExpand.value = 0.015 + 0.007 * flash;
+      } else {
+        (u.uColor.value as THREE.Color).setHex(0x7beaff);
+        (u.uFlashColor.value as THREE.Color).setHex(0xffffff);
+        u.uOpacity.value = oc ? 0.28 + 0.22 * pulse : 0.4 * flash;
+        u.uRipple.value = oc ? 0.45 : flash;
+        u.uExpand.value = 0.014;
+      }
+    }
+
     this.applySystems();
   }
 
@@ -614,7 +739,7 @@ export class Suit {
   }
 
   private applySystems(): void {
-    applySystemUniforms(this.glowMaterials, this.powers, 1);
+    applySystemUniforms(this.glowMaterials, this.powers, 1, this.systemVisuals);
   }
 
   isAssemblyMode(): boolean {
@@ -720,5 +845,71 @@ function measurePalms(pieces: readonly ArmorPiece[]): PalmEmitter[] {
     const r = accumulate(true) ?? accumulate(false);
     if (!r) return fallback;
     return { bone: `hand.${side}`, at: [r.p.x, r.p.y, r.p.z], normal: [r.n.x, r.n.y, r.n.z] };
+  });
+}
+
+function createShieldAuraMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    name: 'suit-shield-aura',
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.FrontSide,
+    uniforms: {
+      uColor: { value: new THREE.Color(0x52c6ff) },
+      uFlashColor: { value: new THREE.Color(0xffc94d) },
+      uOpacity: { value: 0 },
+      uTime: { value: 0 },
+      uRipple: { value: 0 },
+      uExpand: { value: 0.015 },
+    },
+    vertexShader: /* glsl */ `
+      #include <common>
+      #include <skinning_pars_vertex>
+      uniform float uExpand;
+      varying vec3 vViewNormal;
+      varying vec3 vViewDir;
+      varying float vViewDist;
+      varying float vBindY;
+      void main() {
+        #include <beginnormal_vertex>
+        #include <skinbase_vertex>
+        #include <skinnormal_vertex>
+        #include <defaultnormal_vertex>
+        #include <begin_vertex>
+        #include <skinning_vertex>
+        float expLen = length(objectNormal);
+        if (expLen > 1e-5) transformed += objectNormal * (uExpand / expLen);
+        vBindY = position.y;
+        #include <project_vertex>
+        vViewNormal = vec3(0.0, 0.0, 1.0);
+        float nLen = length(transformedNormal);
+        if (nLen > 1e-5) vViewNormal = transformedNormal / nLen;
+        vViewDist = length(mvPosition.xyz);
+        vViewDir = vec3(0.0, 0.0, 1.0);
+        if (vViewDist > 1e-5) vViewDir = -mvPosition.xyz / vViewDist;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor;
+      uniform vec3 uFlashColor;
+      uniform float uOpacity;
+      uniform float uTime;
+      uniform float uRipple;
+      varying vec3 vViewNormal;
+      varying vec3 vViewDir;
+      varying float vViewDist;
+      varying float vBindY;
+      void main() {
+        float camFade = smoothstep(0.30, 0.68, vViewDist);
+        float facing = abs(dot(vViewNormal, vViewDir));
+        float rim = pow(1.0 - facing, 2.3);
+        float wave = 0.5 + 0.5 * sin(vBindY * 18.0 - uTime * 7.5);
+        float rippleWave = exp(-pow(fract(vBindY * 0.65 - uTime * 2.4) - 0.5, 2.0) * 28.0) * uRipple;
+        vec3 col = mix(uColor, uFlashColor, clamp(uRipple * 0.85, 0.0, 1.0));
+        float alpha = (rim * (0.45 + 0.35 * wave) + rippleWave * (0.35 + 0.65 * rim)) * uOpacity * camFade;
+        gl_FragColor = vec4(col * (1.1 + 1.4 * uRipple), alpha);
+      }
+    `,
   });
 }

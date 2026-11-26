@@ -1018,7 +1018,7 @@ ${ATMOSPHERE_GLSL}
  * leaf's midrib, so filtering keeps the edges crisp close up and raising
  * the cut-off shrinks every leaf evenly (how the cards fade out).
  */
-function leafAtlas(): THREE.DataTexture {
+export function leafAtlas(anisotropy = 4): THREE.DataTexture {
   const N = LEAF_ATLAS;
   const Q = N / 2;
   /** Texels per texel of the 512 the sprays were laid out at. */
@@ -1148,7 +1148,7 @@ function leafAtlas(): THREE.DataTexture {
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = true;
-  tex.anisotropy = 4;
+  tex.anisotropy = anisotropy;
   tex.needsUpdate = true;
   return tex;
 }
@@ -1440,6 +1440,10 @@ export class Vegetation {
   private readonly shadeScene = new THREE.Scene();
   private readonly shadeCam = new THREE.Camera();
   private readonly shadeMarks: [THREE.InstancedMesh, THREE.InstancedMesh][] = [];
+  private readonly shadeRes: number;
+  private readonly maxCache: number;
+  private readonly plantBudgetMs: number;
+  private readonly touch: boolean;
   /** Cells and instances put in the lists at the last rebuild (stats). */
   stats = { cells: 0, near: 0, imp: 0, tuft: 0, rebuilds: 0, buildMs: 0 };
 
@@ -1447,8 +1451,19 @@ export class Vegetation {
     private readonly field: Heightfield,
     atmosphere: Record<string, THREE.IUniform>,
     private readonly renderer?: THREE.WebGLRenderer,
-    garden?: { species: Record<string, Species>; plants: GardenPlant[] },
+    garden?: {
+      species: Record<string, Species>;
+      plants: GardenPlant[];
+      shadeRes?: number;
+      maxCache?: number;
+      plantBudgetMs?: number;
+      touch?: boolean;
+    },
   ) {
+    this.touch = garden?.touch ?? false;
+    this.shadeRes = garden?.shadeRes ?? SHADE_RES;
+    this.maxCache = garden?.maxCache ?? 3000;
+    this.plantBudgetMs = garden?.plantBudgetMs ?? PLANT_BUDGET_MS;
     this.uniforms = {
       ...atmosphere,
       uBake: field.uniforms.uBake,
@@ -1515,7 +1530,8 @@ export class Vegetation {
     // so the discard costs little. They've shrunk away before the hand-over
     // even when the eye has come a rebuild's travel nearer since the lists
     // were drawn up, so a crown never gains its leaves with a pop.
-    const leafTex = leafAtlas();
+    const leafAniso = Math.min(this.touch ? 2 : 4, renderer?.capabilities.getMaxAnisotropy() ?? 4);
+    const leafTex = leafAtlas(leafAniso);
     const cardMats = new Map<number, THREE.Material>();
     const cardMat = (fadeEnd: number) => {
       let mat = cardMats.get(fadeEnd);
@@ -1550,7 +1566,7 @@ export class Vegetation {
       m.count = 0;
       m.frustumCulled = false;
       m.castShadow = false;
-      m.receiveShadow = true;
+      m.receiveShadow = !this.touch;
       m.matrixAutoUpdate = false;
       // After the shells, so depth rejects the halves of the cards inside them
       m.renderOrder = 1;
@@ -1559,13 +1575,13 @@ export class Vegetation {
     };
     for (const k of this.kinds) this.cardMesh(this.close[k], hiBuild[k].cards, this.species[k].hiRange);
     this.tuft = make(lo.bush, CAP.tuft, tuftMat, false);
-    this.tuftHi = make(hiBuild.bush.model, CAP.tuftHi, tuftMat, true);
+    this.tuftHi = make(hiBuild.bush.model, CAP.tuftHi, tuftMat, !this.touch);
     this.cardMesh(this.tuftHi, hiBuild.bush.cards, TUFT_HI);
-    this.grass = make(grassGeometry(), CAP.grass, tuftMat, true);
+    this.grass = make(grassGeometry(), CAP.grass, tuftMat, false);
 
     // Plant shade: every modelled plant marks the map from its own instances
     if (renderer) {
-      this.shadeRt = new THREE.WebGLRenderTarget(SHADE_RES, SHADE_RES, {
+      this.shadeRt = new THREE.WebGLRenderTarget(this.shadeRes, this.shadeRes, {
         type: THREE.UnsignedByteType,
         minFilter: THREE.LinearMipmapLinearFilter,
         magFilter: THREE.LinearFilter,
@@ -1838,7 +1854,7 @@ export class Vegetation {
     const gone = this.cuts.get(key);
     if (gone) strip(data, gone);
     this.cache.set(key, data);
-    if (this.cache.size > 3000) {
+    if (this.cache.size > this.maxCache) {
       // Forget the oldest cells
       const first = this.cache.keys().next().value;
       if (first !== undefined) this.cache.delete(first);
@@ -1973,7 +1989,7 @@ export class Vegetation {
         this.lastEye.copy(eye);
         this.lastCamera.getWorldDirection(this.lastDir);
         this.lastFov = (this.lastCamera as THREE.PerspectiveCamera).fov ?? 0;
-        this.rebuild(this.lastCamera, PLANT_BUDGET_MS, alt);
+        this.rebuild(this.lastCamera, this.plantBudgetMs, alt);
       } else {
         this.clearShade();
       }
@@ -2022,7 +2038,7 @@ export class Vegetation {
     this.lastEye.copy(eye);
     this.lastDir.copy(this._dir);
     this.lastFov = fov;
-    this.rebuild(camera, jumped ? Infinity : PLANT_BUDGET_MS, alt);
+    this.rebuild(camera, jumped ? Infinity : this.plantBudgetMs, alt);
   }
 
   /** Visible cells into the instance lists. */
@@ -2298,7 +2314,7 @@ export class Vegetation {
     if (!r || !this.shadeRt) return;
     const span = Math.max(SHADE_SPAN, 2 * (this.lodFar + 28));
     // Centred on a whole texel: the map doesn't swim as the eye moves
-    const texel = span / SHADE_RES;
+    const texel = span / this.shadeRes;
     this.shade.box.set(Math.round(eye.x / texel) * texel, Math.round(eye.z / texel) * texel, 1 / span, 0);
     this.shadeActive = true;
     for (const [owner, m] of this.shadeMarks) m.count = owner.count;

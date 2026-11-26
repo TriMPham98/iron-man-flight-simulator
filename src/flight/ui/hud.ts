@@ -7,6 +7,7 @@ import type { SimEvent } from '../sim/events';
 import type { FlightModel } from '../sim/flightModel';
 import { AUTOLAND_LOCK_R, CRUISE_MAX } from '../sim/flightModel';
 import type { GroundProbe } from '../sim/flightModel';
+import type { ReactorMode } from '../sim/reactorPower';
 import type { SuitWireframe } from './suitWireframe';
 import { BULLSEYE_R, CENTRED_R } from '../world/landingPad';
 
@@ -148,6 +149,14 @@ const FROST_ANCHORS: ReadonlyArray<{ cx: number; cy: number; angle: number; len:
 const STREAK_GAP = 3.5;
 const STREAK_NAME = ['SPLASH', 'SPLASH TWO', 'SPLASH THREE', 'SPLASH FOUR', 'SPLASH FIVE'];
 
+/** Per-mode minor banner copy shown on reactor power routing switches. */
+const REACTOR_BANNER: Record<ReactorMode, { title: string; sub: string; color: string }> = {
+  THRUST: { title: 'THRUST OVERDRIVE', sub: '+18% SPEED & THRUST · +1.5G', color: CYAN },
+  WEAPONS: { title: 'WEAPONS HOT', sub: '+30% FIRE RATE & DMG · FAST UNIBEAM', color: RED },
+  SHIELDS: { title: 'ARMOUR REINFORCED', sub: '−30% DAMAGE TAKEN · +60% REGEN', color: AMBER },
+  BALANCED: { title: 'POWER BALANCED', sub: 'ALL SYSTEMS NOMINAL', color: CYAN },
+};
+
 /** A banner across the upper third (waves, Mach 1). */
 interface Banner {
   title: string;
@@ -264,8 +273,15 @@ export class Hud {
   /** Diegetic helmet visor surface states (0–1): sea-spray droplets and high-altitude frost creep. */
   private visorWet = 0;
   private visorFrost = 0;
+  /** Brief HUD accent pulse when switching reactor power mode or firing 400% overcharge (0–1). */
+  private modePulse = 0;
+  private modePulseColor = CYAN;
+  private readonly maxDpr: number;
+  /** 2D canvas shadowBlur halo (disabled on low quality & touch devices for frame rate). */
+  shadow = true;
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
+  constructor(private readonly canvas: HTMLCanvasElement, opts: { maxDpr?: number } = {}) {
+    this.maxDpr = opts.maxDpr ?? 2;
     this.ctx = canvas.getContext('2d')!;
     Object.assign(canvas.style, { position: 'fixed', left: '0', top: '0', pointerEvents: 'none', zIndex: '2' });
     this.glow = true;
@@ -363,8 +379,21 @@ export class Hud {
         this.tally = null;
         this.summary = null;
         break;
+      case 'reactorMode': {
+        const mode: ReactorMode =
+          e.text === 'THRUST' || e.text === 'WEAPONS' || e.text === 'SHIELDS' ? e.text : 'BALANCED';
+        const b = REACTOR_BANNER[mode];
+        this.showBanner(b.title, b.sub, b.color, true);
+        this.modePulse = 1;
+        this.modePulseColor = b.color;
+        break;
+      }
       case 'reactorOvercharge':
-        if (e.value) this.showBanner('400% OVERCHARGE', 'ARC REACTOR CAPACITY SURGE', WHITE, true);
+        if (e.value) {
+          this.showBanner('400% OVERCHARGE', 'ARC REACTOR CAPACITY SURGE', WHITE, true);
+          this.modePulse = 1;
+          this.modePulseColor = WHITE;
+        }
         break;
       case 'payloadDetonation':
         this.showBanner('PAYLOAD DETONATED', e.value ? `CHAIN AIRBURST · +${e.value} ESCORT${e.value === 1 ? '' : 'S'}` : 'BOMB BAY CRITICAL', AMBER, true);
@@ -393,6 +422,20 @@ export class Hud {
     }
   }
 
+  private modeColor(mode: ReactorMode, overcharge: boolean): string {
+    if (overcharge) return WHITE;
+    switch (mode) {
+      case 'WEAPONS':
+        return RED;
+      case 'SHIELDS':
+        return AMBER;
+      case 'THRUST':
+      case 'BALANCED':
+      default:
+        return CYAN;
+    }
+  }
+
   private showBanner(title: string, sub: string, color: string, minor = false): void {
     // (a minor one doesn't cut a wave's short)
     if (minor && this.banner && !this.banner.minor && this.time - this.banner.t < 2.2) return;
@@ -401,7 +444,7 @@ export class Hud {
 
   /** The view's size (CSS px), from the app (FlightApp.syncViewport); the canvas box is sized with it. */
   resize(w: number, h: number): void {
-    this.dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.dpr = Math.min(this.maxDpr, window.devicePixelRatio || 1);
     this.w = w;
     this.h = h;
     this.canvas.width = Math.round(this.w * this.dpr);
@@ -443,6 +486,7 @@ export class Hud {
     this.shake = Math.max(0, this.shake - dt * 2.5);
     this.glitch = Math.max(0, this.glitch - dt * 3);
     this.armorFlash = Math.max(0, this.armorFlash - dt * 3);
+    this.modePulse = Math.max(0, this.modePulse - dt * 2.5);
     this.killPop = Math.max(0, this.killPop - dt * 3);
     this.killConfirm = Math.max(0, this.killConfirm - dt * 2.2);
     this.decoyFlash = Math.max(0, this.decoyFlash - dt * 2);
@@ -474,7 +518,7 @@ export class Hud {
     g.lineCap = 'round';
     // A dark halo keeps the linework legible against a bright sky
     g.shadowColor = 'rgba(0, 10, 20, 0.85)';
-    g.shadowBlur = 5;
+    g.shadowBlur = this.shadow ? 5 : 0;
 
     const cx = this.w / 2;
     const cy = this.h / 2;
@@ -489,7 +533,7 @@ export class Hud {
       this.drawVisorTint(g);
       this.drawDiegeticVisorFx(g, dt, m, combat, ground, s);
     }
-    this.drawStreaks(g, cam, m, helmet, s);
+    this.drawStreaks(g, cam, m, helmet, s, combat.reactor.mode, combat.reactor.overchargeActive);
     this.panel('ladder', 0, 0, () => this.drawLadder(g, cam, cx, cy, s));
     this.panel('reticle', 0, 0, () => this.drawReticle(g, cx, cy, s, combat));
     this.drawMarkers(g, cam, m, s);
@@ -504,7 +548,10 @@ export class Hud {
     g.save();
     if (helmet) {
       g.translate(this.sway.x, this.sway.y);
-      this.panel('visor', 0, 0, () => this.drawVisor(g, s, combat.weapons.variant === 'warmachine', combat.armor));
+      const visorPulse = Math.max(this.modePulse, combat.reactor.modePulse, combat.reactor.overchargePulse);
+      this.panel('visor', 0, 0, () =>
+        this.drawVisor(g, s, combat.weapons.variant === 'warmachine', combat.armor, combat.reactor.mode, combat.reactor.overchargeActive, visorPulse),
+      );
       this.panel('suit', -30 * s, 0, () => this.drawSuitDiagram(g, m, combat, s));
     }
     this.panel('tapes', 0, 14 * s, () => this.drawTapes(g, m, ground, s));
@@ -923,7 +970,7 @@ export class Hud {
     g.textAlign = align;
     g.textBaseline = 'middle';
     // Into the sun's glare: a heavier halo, doubled up when it's strong
-    const gl = this.glareAt(x, y);
+    const gl = this.shadow ? this.glareAt(x, y) : 0;
     if (gl < 0.05) {
       g.fillText(str, x, y);
       return;
@@ -968,11 +1015,21 @@ export class Hud {
 
   /**
    * Speed: faint streaks running out from where the suit is headed, coming
-   * in past Mach 0.75 and full by Mach 1.2.
+   * in past Mach 0.75 and full by Mach 1.2 (boosted in THRUST / 400% OVERCHARGE).
    */
-  private drawStreaks(g: CanvasRenderingContext2D, cam: THREE.PerspectiveCamera, m: FlightModel, helmet: boolean, s: number): void {
+  private drawStreaks(
+    g: CanvasRenderingContext2D,
+    cam: THREE.PerspectiveCamera,
+    m: FlightModel,
+    helmet: boolean,
+    s: number,
+    mode: ReactorMode = 'BALANCED',
+    overcharge = false,
+  ): void {
     if (m.grounded || m.speed < 4) return;
-    const k = THREE.MathUtils.smoothstep(m.mach, 0.75, 1.2) * (helmet ? 1 : 0.75);
+    const thrustMode = mode === 'THRUST' || overcharge;
+    const modeScale = overcharge ? 1.55 : mode === 'THRUST' ? 1.45 : mode === 'SHIELDS' ? 0.72 : 1;
+    const k = Math.min(1.45, THREE.MathUtils.smoothstep(m.mach, thrustMode ? 0.52 : 0.75, 1.2) * (helmet ? 1 : 0.75) * modeScale);
     if (k < 0.01) return;
     const fp = this.project(this._v.copy(m.pos).addScaledVector(m.vel, 200 / m.speed), cam);
     const ox = fp ? THREE.MathUtils.clamp(fp.x, this.w * 0.2, this.w * 0.8) : this.w / 2;
@@ -981,15 +1038,19 @@ export class Hud {
     const pace = 0.5 + 1.2 * k;
     g.save();
     g.shadowBlur = 0;
-    g.lineWidth = 1;
+    g.lineWidth = thrustMode ? 1.35 : 1;
     for (const st of STREAKS) {
       const u = (st.p + this.time * pace * st.v) % 1;
       const r = diag * (0.3 + 0.38 * u);
       const len = (24 + 110 * u) * s * k;
-      const a = 0.3 * k * Math.sin(Math.PI * u);
+      const a = Math.min(0.48, 0.3 * k * Math.sin(Math.PI * u));
       const c = Math.cos(st.a);
       const sn = Math.sin(st.a);
-      g.strokeStyle = `rgba(225, 248, 255, ${a})`;
+      g.strokeStyle = overcharge
+        ? `rgba(235, 252, 255, ${a})`
+        : mode === 'THRUST'
+          ? `rgba(175, 245, 255, ${a})`
+          : `rgba(225, 248, 255, ${a})`;
       g.beginPath();
       g.moveTo(ox + c * r, oy + sn * r);
       g.lineTo(ox + c * (r + len), oy + sn * (r + len));
@@ -1174,10 +1235,23 @@ export class Hud {
     g.restore();
   }
 
-  private drawVisor(g: CanvasRenderingContext2D, s: number, warmachine = false, armor = 1): void {
+  private drawVisor(
+    g: CanvasRenderingContext2D,
+    s: number,
+    warmachine = false,
+    armor = 1,
+    mode: ReactorMode = 'BALANCED',
+    overcharge = false,
+    modePulse = 0,
+  ): void {
     // Helmet frame: the curved edges of the visor and a scan line
-    g.strokeStyle = CYAN_FAINT;
-    g.lineWidth = 1;
+    const modeCol = this.modeColor(mode, overcharge);
+    g.save();
+    g.strokeStyle = modePulse > 0.05 || overcharge ? modeCol : CYAN_FAINT;
+    if (modePulse > 0.05 || overcharge) {
+      g.globalAlpha *= Math.min(0.65, 0.18 + modePulse * 0.45 + (overcharge ? 0.18 : 0));
+    }
+    g.lineWidth = modePulse > 0.1 ? 1.6 : 1;
     const r = Math.max(this.w, this.h) * 0.62;
     g.beginPath();
     g.arc(this.w / 2, this.h / 2, r, Math.PI * 0.82, Math.PI * 1.18);
@@ -1185,11 +1259,14 @@ export class Hud {
     g.beginPath();
     g.arc(this.w / 2, this.h / 2, r, -Math.PI * 0.18, Math.PI * 0.18);
     g.stroke();
+    g.restore();
     // Brackets at the projection's corners, the edge of what JARVIS can draw on
     const mx = this.w * 0.06;
     const my = this.h * 0.08;
     const k = 18 * s;
-    g.strokeStyle = CYAN_DIM;
+    g.save();
+    g.strokeStyle = mode !== 'BALANCED' || overcharge || modePulse > 0.05 ? modeCol : CYAN_DIM;
+    if (mode !== 'BALANCED' && !overcharge && modePulse <= 0.05) g.globalAlpha *= 0.65;
     for (const [x, y, dx, dy] of [
       [mx, my, 1, 1],
       [this.w - mx, my, -1, 1],
@@ -1202,6 +1279,7 @@ export class Hud {
       g.lineTo(x + dx * k, y);
       g.stroke();
     }
+    g.restore();
     const damaged = armor < 0.35;
     const statusLabel = damaged
       ? 'VISOR INTEGRITY COMPROMISED'
@@ -1245,11 +1323,93 @@ export class Hud {
     }
     // Thrusters: palms and boots, brightening with their output
     const j = this.jets;
+    const R = c.reactor;
+    const mode = R.mode;
+    const oc = R.overchargeActive;
+    const pulse = Math.max(this.modePulse, R.modePulse, R.overchargePulse);
+    const modeCol = this.modeColor(mode, oc);
+    const pt = (p: { x: number; y: number }) => ({ x: left + p.x * k, y: top + p.y * k });
+    const palmL = pt(wf.pips.palmL);
+    const palmR = pt(wf.pips.palmR);
+    const bootL = pt(wf.pips.bootL);
+    const bootR = pt(wf.pips.bootR);
+    const midX = left + W / 2;
+    const chestY = top + H * 0.28;
+    const torsoY = top + H * 0.34;
+
+    // Active subsystem highlights driven by reactor power mode / 400% overcharge
+    const ringPulse = 0.65 + 0.35 * Math.sin(this.time * 9);
+    if (mode === 'THRUST' || oc) {
+      g.strokeStyle = oc ? WHITE : CYAN;
+      g.lineWidth = (1.3 + pulse * 0.8) * s;
+      for (const p of [palmL, palmR, bootL, bootR]) {
+        g.beginPath();
+        g.arc(p.x, p.y, (5.5 + pulse * 3.5) * s, 0, Math.PI * 2);
+        g.stroke();
+        // Downward thrust vector flare
+        g.beginPath();
+        g.moveTo(p.x, p.y + 4.5 * s);
+        g.lineTo(p.x, p.y + (9 + 3 * ringPulse) * s);
+        g.stroke();
+      }
+    }
+    if (mode === 'WEAPONS' || oc) {
+      const wCol = oc ? WHITE : RED;
+      const wAccent = oc ? WHITE : AMBER;
+      g.strokeStyle = wCol;
+      g.lineWidth = (1.5 + pulse * 0.8) * s;
+      // Chest Arc Reactor & Unibeam aperture
+      g.beginPath();
+      g.arc(midX, chestY, (5.2 + pulse * 2.5) * s, 0, Math.PI * 2);
+      g.stroke();
+      g.fillStyle = oc ? 'rgba(235, 250, 255, 0.35)' : 'rgba(255, 70, 60, 0.25)';
+      g.fill();
+      // Gauntlet weapon rails (forearms to repulsor palms)
+      g.strokeStyle = wAccent;
+      for (const [palm, sx] of [
+        [palmL, -1],
+        [palmR, 1],
+      ] as const) {
+        g.beginPath();
+        g.arc(palm.x, palm.y, (4.8 + pulse * 2.5) * s, 0, Math.PI * 2);
+        g.stroke();
+        g.beginPath();
+        g.moveTo(palm.x, palm.y);
+        g.lineTo(midX + sx * W * 0.25, top + H * 0.31);
+        g.stroke();
+      }
+    }
+    if (mode === 'SHIELDS' || oc) {
+      const sCol = oc ? WHITE : AMBER;
+      const rx = W * 0.22;
+      const ry = H * 0.145;
+      g.save();
+      g.globalAlpha *= 0.7 + 0.3 * ringPulse;
+      g.strokeStyle = sCol;
+      g.lineWidth = (1.5 + pulse * 0.8) * s;
+      // Octagonal reinforced torso armour shell
+      g.beginPath();
+      g.moveTo(midX - rx * 0.65, torsoY - ry);
+      g.lineTo(midX + rx * 0.65, torsoY - ry);
+      g.lineTo(midX + rx, torsoY - ry * 0.35);
+      g.lineTo(midX + rx * 0.85, torsoY + ry * 0.65);
+      g.lineTo(midX + rx * 0.45, torsoY + ry);
+      g.lineTo(midX - rx * 0.45, torsoY + ry);
+      g.lineTo(midX - rx * 0.85, torsoY + ry * 0.65);
+      g.lineTo(midX - rx, torsoY - ry * 0.35);
+      g.closePath();
+      g.fillStyle = oc ? 'rgba(235, 250, 255, 0.12)' : 'rgba(255, 184, 77, 0.14)';
+      g.fill();
+      g.stroke();
+      g.restore();
+    }
+
     const pip = (p: { x: number; y: number }, out: number) => {
       const t = THREE.MathUtils.clamp(out, 0, 1);
-      g.fillStyle = t > 0.75 ? WHITE : t > 0.05 ? CYAN : CYAN_FAINT;
+      const hot = mode === 'THRUST' || oc;
+      g.fillStyle = t > 0.75 || (hot && t > 0.2) ? WHITE : t > 0.05 ? CYAN : hot ? CYAN_DIM : CYAN_FAINT;
       g.beginPath();
-      g.arc(left + p.x * k, top + p.y * k, (1.6 + 2.6 * t) * s, 0, Math.PI * 2);
+      g.arc(left + p.x * k, top + p.y * k, (1.6 + 2.6 * t + (hot ? 0.6 : 0)) * s, 0, Math.PI * 2);
       g.fill();
     };
     pip(wf.pips.palmL, j?.palmL ?? 0);
@@ -1257,38 +1417,120 @@ export class Hud {
     pip(wf.pips.bootL, j?.bootL ?? 0);
     pip(wf.pips.bootR, j?.bootR ?? 0);
     g.restore();
-    this.text(g, m.grounded ? 'SUIT · STANDING' : 'SUIT · THRUSTERS', cx, top + H + 12 * s, 7 * s, CYAN_DIM, 'center', JARVIS);
+    this.text(g, m.grounded ? 'SUIT · STANDING' : 'SUIT · THRUSTERS', cx, top + H + 11 * s, 7 * s, CYAN_DIM, 'center', JARVIS);
+    this.text(g, oc ? '400% OVERCHARGE' : `MODE · ${mode}`, cx, top + H + 22 * s, 7.5 * s, modeCol, 'center', JARVIS);
   }
 
   private drawReticle(g: CanvasRenderingContext2D, cx: number, cy: number, s: number, c: Combat): void {
     this.crisp(g, () => {
-      g.strokeStyle = CYAN;
-      g.lineWidth = 1.2;
+      const R = c.reactor;
+      const mode = R.mode;
+      const oc = R.overchargeActive;
+      const pulse = Math.max(this.modePulse, R.modePulse, R.overchargePulse);
+      const modeCol = this.modeColor(mode, oc);
       const r = 15 * s;
       // A shot kicks the ticks out
       const kick = this.recoil * this.recoil * 6 * s;
+
+      // Mode switch expanding wave ring
+      if (pulse > 0.01) {
+        g.save();
+        g.globalAlpha *= pulse * 0.85;
+        g.strokeStyle = oc ? WHITE : this.modePulseColor;
+        g.lineWidth = (1.4 + pulse) * s;
+        g.beginPath();
+        g.arc(cx, cy, r + (1 - pulse) * 26 * s, 0, Math.PI * 2);
+        g.stroke();
+        g.restore();
+      }
+
+      // Inner crosshair circle & cardinal ticks
+      g.strokeStyle = oc ? WHITE : mode === 'WEAPONS' ? AMBER : CYAN;
+      g.lineWidth = oc ? 1.5 : 1.2;
       g.beginPath();
       g.arc(cx, cy, r, 0, Math.PI * 2);
       g.stroke();
+      g.strokeStyle = oc ? WHITE : mode === 'WEAPONS' ? RED : mode === 'SHIELDS' ? AMBER : CYAN;
       for (let i = 0; i < 4; i++) {
         const a = (i * Math.PI) / 2;
+        const inner = (mode === 'WEAPONS' ? 2 : 3) * s;
+        const outer = (mode === 'THRUST' ? 12 : 10) * s;
         g.beginPath();
-        g.moveTo(cx + Math.cos(a) * (r + 3 * s + kick), cy + Math.sin(a) * (r + 3 * s + kick));
-        g.lineTo(cx + Math.cos(a) * (r + 10 * s + kick), cy + Math.sin(a) * (r + 10 * s + kick));
+        g.moveTo(cx + Math.cos(a) * (r + inner + kick), cy + Math.sin(a) * (r + inner + kick));
+        g.lineTo(cx + Math.cos(a) * (r + outer + kick), cy + Math.sin(a) * (r + outer + kick));
         g.stroke();
       }
-      // An outer ring of arcs turning slowly, faster while the repulsors cycle
-      const turn = this.time * (c.weapons.repulsorBusy ? 2.4 : 0.35);
-      const ro = r + 17 * s + kick * 0.6;
-      g.strokeStyle = CYAN_DIM;
+
+      // Per-mode reticle signature
+      if (mode === 'THRUST' || oc) {
+        // Swept speed chevrons flanking left & right
+        g.strokeStyle = oc ? WHITE : CYAN;
+        g.lineWidth = 1.4;
+        for (const sx of [-1, 1]) {
+          for (const layer of [0, 1]) {
+            const ox = cx + sx * (r + (13 + layer * 6) * s + kick * 0.5);
+            const h = (8 - layer * 2) * s;
+            const back = sx * 5 * s;
+            g.beginPath();
+            g.moveTo(ox + back, cy - h);
+            g.lineTo(ox, cy);
+            g.lineTo(ox + back, cy + h);
+            g.stroke();
+          }
+        }
+      }
+      if (mode === 'WEAPONS' || oc) {
+        // Amber/red diagonal charging ticks + tighter precision pip
+        const chargePull = (1 - Math.min(1, R.modePulse)) * 2 * s;
+        g.strokeStyle = oc ? WHITE : RED;
+        g.lineWidth = 1.4;
+        for (let i = 0; i < 4; i++) {
+          const a = Math.PI / 4 + (i * Math.PI) / 2;
+          g.beginPath();
+          g.moveTo(cx + Math.cos(a) * (r - 2 * s + chargePull), cy + Math.sin(a) * (r - 2 * s + chargePull));
+          g.lineTo(cx + Math.cos(a) * (r + 9 * s + kick * 0.5), cy + Math.sin(a) * (r + 9 * s + kick * 0.5));
+          g.stroke();
+        }
+        g.strokeStyle = oc ? WHITE : AMBER;
+        g.lineWidth = 1.1;
+        g.beginPath();
+        g.arc(cx, cy, 4.2 * s, 0, Math.PI * 2);
+        g.stroke();
+      }
+      if (mode === 'SHIELDS' || oc) {
+        // Segmented protective barrier ring around the crosshair
+        const br = r + 11.5 * s + kick * 0.3;
+        g.strokeStyle = oc ? WHITE : AMBER;
+        g.lineWidth = (oc ? 1.8 : 2.1) * s;
+        const segs = 6;
+        const gap = 0.22;
+        for (let i = 0; i < segs; i++) {
+          const a0 = (i * Math.PI * 2) / segs + gap * 0.5;
+          const a1 = ((i + 1) * Math.PI * 2) / segs - gap * 0.5;
+          g.beginPath();
+          g.arc(cx, cy, br, a0, a1);
+          g.stroke();
+        }
+      }
+
+      // Outer rotating ring of arcs (faster in THRUST / WEAPONS / OVERCHARGE / repulsor fire)
+      const rate = c.weapons.repulsorBusy ? 2.4 : oc ? 1.6 : mode === 'THRUST' ? 0.95 : mode === 'WEAPONS' ? 0.75 : 0.35;
+      const turn = this.time * rate;
+      const ro = r + (mode === 'SHIELDS' ? 19 : 17) * s + kick * 0.6;
+      g.strokeStyle = oc ? WHITE : mode === 'WEAPONS' ? AMBER : mode === 'SHIELDS' ? CYAN_DIM : modeCol;
+      g.lineWidth = oc ? 1.5 : 1.2;
+      if (mode === 'BALANCED' && !oc) g.strokeStyle = CYAN_DIM;
       for (let i = 0; i < 3; i++) {
         const a = turn + (i * Math.PI * 2) / 3;
         g.beginPath();
         g.arc(cx, cy, ro, a, a + 0.55);
         g.stroke();
       }
-      g.fillStyle = WHITE;
-      g.fillRect(cx - 1, cy - 1, 2, 2);
+
+      // Center pip (tighter single pixel in WEAPONS mode)
+      g.fillStyle = mode === 'WEAPONS' && !oc ? AMBER : WHITE;
+      if (mode === 'WEAPONS') g.fillRect(cx - 0.75, cy - 0.75, 1.5, 1.5);
+      else g.fillRect(cx - 1, cy - 1, 2, 2);
       // A kill: a bold X slams onto the sight and lingers
       if (this.killConfirm > 0) {
         const t = 1 - this.killConfirm;
@@ -2417,9 +2659,14 @@ export class Hud {
     const ay = y + r;
     const A0 = Math.PI * 0.75;
     const SPAN = Math.PI * 1.5;
+    const R = c.reactor;
+    const oc = R.overchargeActive;
+    const shieldMode = R.mode === 'SHIELDS';
+    const thrustMode = R.mode === 'THRUST';
+    const pulse = Math.max(this.modePulse, R.modePulse, R.overchargePulse);
     this.crisp(g, () => {
       g.lineWidth = 1;
-      g.strokeStyle = CYAN_DIM;
+      g.strokeStyle = shieldMode ? AMBER : oc ? WHITE : CYAN_DIM;
       for (let i = 0; i <= 10; i++) {
         const a = A0 + (SPAN * i) / 10;
         const r0 = r + 5 * s;
@@ -2428,6 +2675,17 @@ export class Hud {
         g.moveTo(ax + Math.cos(a) * r0, ay + Math.sin(a) * r0);
         g.lineTo(ax + Math.cos(a) * r1, ay + Math.sin(a) * r1);
         g.stroke();
+      }
+      if (shieldMode || oc) {
+        const shieldAlpha = 0.62 + 0.38 * Math.sin(this.time * 6) + pulse * 0.25;
+        g.save();
+        g.globalAlpha *= Math.min(1, shieldAlpha);
+        g.strokeStyle = oc ? WHITE : AMBER;
+        g.lineWidth = (2.2 + pulse * 0.8) * s;
+        g.beginPath();
+        g.arc(ax, ay, r + 12 * s, A0, A0 + SPAN);
+        g.stroke();
+        g.restore();
       }
       g.lineWidth = 4 * s;
       g.strokeStyle = CYAN_FAINT;
@@ -2458,7 +2716,7 @@ export class Hud {
     const low = armor < 0.3;
     const numColor = this.armorFlash > 0 ? RED : low && Math.sin(this.time * 8) > 0 ? RED : WHITE;
     this.text(g, `${Math.round(armor * 100)}`, ax, ay - 2 * s, 20 * s, numColor, 'center');
-    this.text(g, 'ARMOR', ax, ay + 16 * s, 7.5 * s, CYAN_LABEL, 'center', JARVIS);
+    this.text(g, shieldMode ? 'SHIELD +' : 'ARMOR', ax, ay + 16 * s, 7.5 * s, shieldMode ? AMBER : oc ? WHITE : CYAN_LABEL, 'center', JARVIS);
     // Reserves: a diamond per reboot left, in the arc's open foot
     this.crisp(g, () => {
       for (let i = 0; i < RESERVES; i++) {
@@ -2482,10 +2740,10 @@ export class Hud {
       }
     });
     // Thrust: segments filling (eased) to the throttle, the leading one lit;
-    // on boost they shimmer amber
+    // on boost they shimmer amber; in THRUST mode they glow electric cyan/white
     const bx = x + r * 2 + 24 * s;
-    this.text(g, 'THRUST', bx, y - 6 * s, 8 * s, CYAN_LABEL, 'left', JARVIS);
-    this.text(g, `${Math.round(this.thrustShown * 100)}%`, bx + 118 * s, y - 6 * s, 9 * s, CYAN, 'right');
+    this.text(g, thrustMode ? 'THRUST +' : 'THRUST', bx, y - 6 * s, 8 * s, oc || thrustMode ? WHITE : CYAN_LABEL, 'left', JARVIS);
+    this.text(g, `${Math.round(this.thrustShown * 100)}%`, bx + 118 * s, y - 6 * s, 9 * s, oc || thrustMode ? WHITE : CYAN, 'right');
     const N = 20;
     const lit = this.thrustShown * N;
     this.crisp(g, () => {
@@ -2493,12 +2751,30 @@ export class Hud {
         const on = i < lit;
         const lead = on && i + 1 >= lit;
         const hi = i > 13;
-        let col = on ? (hi ? AMBER : CYAN) : CYAN_FAINT;
-        if (on && m.boosting && Math.sin(this.time * 18 - i * 0.7) > 0.3) col = WHITE;
+        let col = on
+          ? hi
+            ? oc
+              ? WHITE
+              : thrustMode
+                ? WHITE
+                : AMBER
+            : oc
+              ? WHITE
+              : thrustMode
+                ? 'rgba(170, 248, 255, 0.98)'
+                : CYAN
+          : thrustMode || oc
+            ? 'rgba(126, 232, 255, 0.28)'
+            : CYAN_FAINT;
+        if (on && (m.boosting || thrustMode || oc) && Math.sin(this.time * 18 - i * 0.7) > 0.3) col = WHITE;
         if (lead) col = WHITE;
         g.fillStyle = col;
         const sh = (8 + (i / N) * 6) * s;
         g.fillRect(bx + i * 6 * s, y + 20 * s - sh, 4 * s, sh);
+      }
+      if (thrustMode || oc) {
+        g.fillStyle = oc ? WHITE : CYAN;
+        g.fillRect(bx, y + 22 * s, 118 * s, 1.5 * s);
       }
     });
     const cmd = m.boosting ? 'BOOST' : m.grounded ? 'GROUND' : m.flightness < 0.5 ? 'HOVER' : `CRUISE ${Math.round((m.speedCmd / CRUISE_MAX) * 100)}%`;

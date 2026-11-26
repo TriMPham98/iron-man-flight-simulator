@@ -426,3 +426,9 @@ html.tc-touch body {
   #flight-ui.touch .fp-panes { padding: 10px 16px; overflow-y: auto; }
 }
 #flight-ui.touch .fp-btn kbd { display: none; }
+/* No live blur over the canvas on mobile GPUs: re-blurs the WebGL frame every frame. */
+html.tc-touch #flight-ui .fp-scrim {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: radial-gradient(ellipse at 50% 45%, rgba(4,12,22,0.72) 0%, rgba(2,6,12,0.92) 75%);
+}

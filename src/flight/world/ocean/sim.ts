@@ -29,7 +29,7 @@ const raw = (frag: string, uniforms: Record<string, THREE.IUniform>): THREE.RawS
     depthWrite: false,
   });
 
-function arrayTarget(): THREE.WebGLArrayRenderTarget {
+function arrayTarget(anisotropy: number): THREE.WebGLArrayRenderTarget {
   const rt = new THREE.WebGLArrayRenderTarget(N, N, CASCADES, {
     type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
@@ -40,8 +40,15 @@ function arrayTarget(): THREE.WebGLArrayRenderTarget {
   t.minFilter = THREE.LinearMipmapLinearFilter;
   t.magFilter = THREE.LinearFilter;
   t.generateMipmaps = true;
-  t.anisotropy = 8;
+  t.anisotropy = anisotropy;
   return rt;
+}
+
+export interface OceanSimOptions {
+  /** Foam clipmap texels per side (default 512; 256 on mobile/tablet). */
+  foamRes?: number;
+  /** Max anisotropic filtering taps (clamped to GPU max; default 8). */
+  anisotropy?: number;
 }
 
 export class OceanSim {
@@ -73,8 +80,11 @@ export class OceanSim {
   private readonly stampA = Array.from({ length: FOAM_STAMPS }, () => new THREE.Vector4());
   private readonly stampB = Array.from({ length: FOAM_STAMPS }, () => new THREE.Vector4());
   private stamps = 0;
+  private readonly foamRes: number;
 
-  constructor(private readonly renderer: THREE.WebGLRenderer) {
+  constructor(private readonly renderer: THREE.WebGLRenderer, opts: OceanSimOptions = {}) {
+    this.foamRes = opts.foamRes ?? FOAM_RES;
+    const aniso = Math.max(1, Math.min(opts.anisotropy ?? 8, renderer.capabilities.getMaxAnisotropy()));
     const h0 = buildH0();
     setModes(dominantModes(h0));
     this.h0 = new THREE.DataTexture(h0, N, N * CASCADES, THREE.RGBAFormat, THREE.FloatType);
@@ -93,9 +103,9 @@ export class OceanSim {
       });
     this.ping = atlas();
     this.pong = atlas();
-    this.disp = arrayTarget();
-    this.deriv = arrayTarget();
-    this.mom = arrayTarget();
+    this.disp = arrayTarget(aniso);
+    this.deriv = arrayTarget(aniso);
+    this.mom = arrayTarget(aniso);
 
     this.evolve = raw(EVOLVE_FRAG, {
       uH0: { value: this.h0 },
@@ -111,7 +121,7 @@ export class OceanSim {
       uDisp: { value: this.disp.texture },
       uDeriv: { value: this.deriv.texture },
       uSnap: { value: [0, 0, 0, 0] },
-      uRes: { value: FOAM_RES },
+      uRes: { value: this.foamRes },
       uTexel: { value: 1 },
       uDt: { value: 0 },
       uDecay: { value: 0.22 },
@@ -127,7 +137,7 @@ export class OceanSim {
 
     this.foamRt = FOAM_LEVELS.map(() =>
       [0, 1].map(() => {
-        const rt = new THREE.WebGLRenderTarget(FOAM_RES, FOAM_RES, {
+        const rt = new THREE.WebGLRenderTarget(this.foamRes, this.foamRes, {
           type: THREE.HalfFloatType,
           format: THREE.RGBAFormat,
           depthBuffer: false,
@@ -152,7 +162,7 @@ export class OceanSim {
       generateMipmaps: true,
       wrapS: THREE.RepeatWrapping,
       wrapT: THREE.RepeatWrapping,
-      anisotropy: 8,
+      anisotropy: aniso,
     });
     this.foamTex = this.foamTexRt.texture;
     const foamGen = raw(FOAM_TEX_FRAG, {});
@@ -229,11 +239,11 @@ export class OceanSim {
     f.uFirst.value = this.foamFirst ? 1 : 0;
     f.uStamps.value = this.stamps;
     for (let l = 0; l < FOAM_LEVELS.length; l++) {
-      const ts = FOAM_LEVELS[l] / FOAM_RES;
+      const ts = FOAM_LEVELS[l] / this.foamRes;
       const cx = Math.floor(eye.x / ts);
       const cz = Math.floor(eye.z / ts);
       // Teleports (more than half a window): start fresh
-      const jump = Math.abs(cx - this.foamSnap[l * 2]) > FOAM_RES / 2 || Math.abs(cz - this.foamSnap[l * 2 + 1]) > FOAM_RES / 2;
+      const jump = Math.abs(cx - this.foamSnap[l * 2]) > this.foamRes / 2 || Math.abs(cz - this.foamSnap[l * 2 + 1]) > this.foamRes / 2;
       f.uSnap.value = [cx, cz, this.foamSnap[l * 2], this.foamSnap[l * 2 + 1]];
       f.uFirst.value = this.foamFirst || jump ? 1 : 0;
       this.foamSnap[l * 2] = cx;

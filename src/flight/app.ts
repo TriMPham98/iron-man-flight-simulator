@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Suit } from '../suit/Suit';
 import { createAdaptiveResolution, type ResolutionRenderer } from '../scene/adaptiveResolution';
+import { deviceProfile } from '../scene/deviceProfile';
 import { GameAudio } from './audio/gameAudio';
 import { SFX, Soundscape } from './audio/soundscape';
 import { CONTEXT_ATTRIBUTES, canReverseDepth, useReversedDepth } from './render/depth';
@@ -47,6 +48,8 @@ export interface FlightAppOptions {
   embedded?: boolean;
   /** Cap on the drawing-buffer pixel ratio. */
   maxPixelRatio?: number;
+  /** Floor on the adaptive drawing-buffer pixel ratio. */
+  minPixelRatio?: number;
   /** A fixed drawing-buffer pixel ratio (captures: supersampled, never gauged down). */
   pixelRatio?: number;
 }
@@ -64,6 +67,7 @@ export class FlightApp {
   readonly sounds = new Soundscape(this.audio);
   readonly timings: BuildTimings = {};
   readonly query = new URLSearchParams(location.search);
+  readonly device = deviceProfile();
   readonly maxDpr: number;
   /** Pixel ratio of the canvas's drawing buffer: {@link sharpDpr} unless a preset holds it down. */
   outputDpr: number;
@@ -167,7 +171,7 @@ export class FlightApp {
         return d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : '';
       })(),
     );
-    this.maxDpr = opts.pixelRatio ?? Math.min(window.devicePixelRatio, opts.maxPixelRatio ?? 1.5);
+    this.maxDpr = opts.pixelRatio ?? Math.min(window.devicePixelRatio || 1, opts.maxPixelRatio ?? this.device.maxPixelRatio);
     // The canvas itself is as sharp as the screen (to 2×) and stays that
     // size; only the scene target follows the adaptive ratio, and the final
     // pass upscales it (render/post.ts). A touch GPU keeps the canvas at the
@@ -177,7 +181,7 @@ export class FlightApp {
     this.sceneDpr = this.maxDpr;
     r.setPixelRatio(this.outputDpr);
     r.shadowMap.enabled = true;
-    r.shadowMap.type = THREE.PCFSoftShadowMap;
+    r.shadowMap.type = opts.screens.touch ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
     Object.assign(canvas.style, { position: 'fixed', left: '0', top: '0', display: 'block' });
     this.camera = new THREE.PerspectiveCamera(62, 1, 0.1, 150000);
     this.syncViewport(true);
@@ -241,18 +245,21 @@ export class FlightApp {
     const suitLoad = Suit.create((r) => progress(0.1 + 0.5 * r));
     progress(0.08, 'MK III ARMOUR · LOADING');
     progress(0.12, 'TERRAIN · 32 KM · GROWING RELIEF');
-    this.world = await this.step('world', () => new World(this.renderer, this.scene));
+    this.world = await this.step('world', () => new World(this.renderer, this.scene, { touch: screens.touch, tier: this.device.tier }));
     console.info(`[flight] world built in ${this.timings.world} ms`);
     progress(0.3, 'LOW SUN · BAKING SHADOWS + SKY');
     this.suit = await suitLoad;
     progress(0.7, 'FLIGHT CONTROL · STABILIZERS · ARSENAL');
-    this.game = await this.step('game', () => new Game(this.world, this.suit, this.scene, this.camera));
+    this.game = await this.step('game', () =>
+      new Game(this.world, this.suit, this.scene, this.camera, { maxParticles: screens.touch ? 2000 : 5000 }),
+    );
     console.info(`[flight] game built in ${this.timings.game} ms`);
     await this.step('post', () => {
       this.post = new FlightPost(this.renderer, this.scene, this.camera);
       this.post.setScale(this.sceneDpr / this.outputDpr);
+      this.post.setBilinearUpscale(screens.touch);
       this.post.resize();
-      this.hud = new Hud(this.opts.hudCanvas);
+      this.hud = new Hud(this.opts.hudCanvas, { maxDpr: this.opts.pixelRatio ?? this.device.maxPixelRatio });
       // The helmet's suit diagram: the suit's own panel lines, flattened once
       const palm = (i: number) => this.suit.palms[i].at;
       this.hud.wireframe = new SuitWireframe(this.suit.finalGeometry, {
@@ -288,10 +295,13 @@ export class FlightApp {
       cloud: 0,
       exposure: Number(q.get('exp') ?? 0.58),
       helmet: 0,
+      reactorMode: 'BALANCED',
+      modePulse: 0,
+      overchargeActive: false,
     };
     this.baseExposure = this.lens.exposure;
     this.adaptive = createAdaptiveResolution(this.resolution, () => this.post.resize(), {
-      min: 0.7,
+      min: this.opts.minPixelRatio ?? this.device.minPixelRatio,
       max: Math.min(this.maxDpr, this.maxAdaptiveDpr),
       lodMin: Math.min(0.5, this.baseLodScale),
       lodMax: this.baseLodScale,
@@ -501,6 +511,10 @@ export class FlightApp {
     lens.helmet = game.rig.mode === 'helmet' ? 1 : 0;
     lens.speed = Math.min(1, Math.max(0, (game.model.speed - 120) / 300));
     lens.damage = game.combat.damageFlash;
+    const reactor = game.combat.reactor;
+    lens.reactorMode = reactor.mode;
+    lens.modePulse = Math.max(reactor.modePulse, reactor.overchargePulse);
+    lens.overchargeActive = reactor.overchargeActive;
     lens.cloud += (world.inCloud - lens.cloud) * (1 - Math.exp(-dt / 0.15));
     // Eye adaptation: stop down into the sun, open up away from it
     const sunward = Math.max(0, this.camDir.dot(SUN_DIR));
@@ -539,7 +553,10 @@ export class FlightApp {
     this.touch?.setOpacity(s.touchOpacity);
     this.touch?.setLeftHanded(s.leftHanded);
     this.audio.setVolume(s.volume * this.volumeScale);
-    if (this.hud) this.hud.glow = s.quality !== 'low';
+    if (this.hud) {
+      this.hud.glow = s.quality !== 'low' && (!this.screens.touch || s.quality === 'ultra');
+      this.hud.shadow = s.quality !== 'low' && !this.screens.touch;
+    }
   }
 
   /** Hands off: what the sim reads while there are no controls yet. */

@@ -652,8 +652,13 @@ export class FlightModel {
     } else if (this.airT > HOP_THROTTLE) {
       // (a W held through the hop waits for it to clear the deck; pushed up
       // from under the airspeed, it picks up from there, not from the idle)
-      if (input.throttle > 0) this.speedCmd = Math.max(this.speedCmd, Math.min(speed, CRUISE_MAX));
-      this.speedCmd = clamp(this.speedCmd + input.throttle * 85 * dt, 0, CRUISE_MAX);
+      const cruiseMax = CRUISE_MAX * this.reactor.cruiseSpeed;
+      if (input.throttle > 0) this.speedCmd = Math.max(this.speedCmd, Math.min(speed, cruiseMax));
+      if (this.speedCmd > cruiseMax && input.throttle >= 0) {
+        this.speedCmd = Math.max(cruiseMax, this.speedCmd - 120 * dt);
+      } else {
+        this.speedCmd = clamp(this.speedCmd + input.throttle * 85 * this.reactor.cruiseSpeed * dt, 0, cruiseMax);
+      }
     }
     // Off the boost, the target rides the airspeed down to the throttle; the
     // brakes, the stance, a fall or S drop it (they set their own pace)
@@ -840,7 +845,7 @@ export class FlightModel {
     }
     // In a hover the pitch is the attitude computer's (below), not the aim's
     const rates = this._v.set(-wantPitch, this.omega.y, wantRoll);
-    this.omega.lerp(rates, approach(dt, THREE.MathUtils.lerp(0.09, 0.14, fl)));
+    this.omega.lerp(rates, approach(dt, THREE.MathUtils.lerp(0.09, 0.14, fl) / this.reactor.hoverDamping));
     this.omega.y += this.yawAcc * dt;
     // Integrate the rates in the body frame. In flight the roll goes round
     // the suit's long axis (where the velocity sits), not the frame's nose:
@@ -906,7 +911,7 @@ export class FlightModel {
     // VTOL computer never trades altitude for a stop)
     // (auto-land runs the boots hotter, as the boost does: it's in a hurry)
     const hoverMax = THRUST_MAX * (landing ? AUTOLAND_THRUST : 1.1) * ceilingK;
-    const hoverAcc = vWant.sub(this.vel).multiplyScalar(1.6);
+    const hoverAcc = vWant.sub(this.vel).multiplyScalar(1.6 * this.reactor.hoverDamping);
     // Braking, a firmer hold on the horizontal: the stop settles, not drifts
     if (input.brake) {
       hoverAcc.x *= BRAKE_SETTLE / 1.6;
@@ -966,8 +971,9 @@ export class FlightModel {
     // (lit, they spool up to it from what they were giving rather than
     // stepping onto it: the kick builds from nothing, peaks, and holds)
     const boostOn = this.boosting || carrying;
-    this.spool += ((boostOn ? 1 : 0) - this.spool) * approach(dt, BOOST_SPOOL);
-    const tFrom = boostOn ? Math.min(this.thrust, THRUST_MAX) : THRUST_MAX;
+    this.spool += ((boostOn ? 1 : 0) - this.spool) * approach(dt, BOOST_SPOOL / this.reactor.spoolRate);
+    const cruiseThrust = THRUST_MAX * (this.reactor.cruiseSpeed > 1 ? this.reactor.cruiseSpeed * this.reactor.boostThrust * 1.15 : 1);
+    const tFrom = boostOn ? Math.min(this.thrust, cruiseThrust) : cruiseThrust;
     const tMax = THREE.MathUtils.lerp(tFrom, THRUST_BOOST * this.spec.boostThrust * this.reactor.boostThrust, this.spool) * ceilingK;
     const flightThrust = clamp(need, 0, tMax);
 
@@ -981,7 +987,7 @@ export class FlightModel {
     // hot they answer at once
     const thrustGoal = grounded ? 0 : thrust * this.power;
     const spooled = smooth(0.1, 0.45, this.thrust / THRUST_MAX);
-    const spoolTau = thrustGoal > this.thrust ? THREE.MathUtils.lerp(SPOOL_IDLE, 0.12, spooled) : 0.16;
+    const spoolTau = (thrustGoal > this.thrust ? THREE.MathUtils.lerp(SPOOL_IDLE, 0.12, spooled) : 0.16) / this.reactor.spoolRate;
     this.thrust += (thrustGoal - this.thrust) * approach(dt, spoolTau);
     this.throttle = clamp(this.thrust / THRUST_BOOST, 0, 1);
     acc.addScaledVector(thrustDir, this.thrust);
@@ -995,7 +1001,7 @@ export class FlightModel {
       if (right.lengthSq() > 1e-6) right.normalize();
       else right.set(-1, 0, 0);
       const dashShape = 0.75 + 0.5 * (this.strafeDashActive / STRAFE_DASH_DURATION);
-      acc.addScaledVector(right, this.strafeDashDir * STRAFE_DASH_ACCEL * dashShape * dashFrac * this.power * this.reactor.boostThrust);
+      acc.addScaledVector(right, this.strafeDashDir * STRAFE_DASH_ACCEL * dashShape * dashFrac * this.power * this.reactor.strafeDashScale);
     }
 
     // ── Momentum swing ───────────────────────────────────────────────

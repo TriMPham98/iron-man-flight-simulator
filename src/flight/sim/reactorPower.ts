@@ -22,8 +22,16 @@ export type ReactorModeCode = 'BAL' | 'THR' | 'WPN' | 'SHD' | '400%';
 export interface ReactorModifiers {
   /** Multiplier on boost top speed (1 = stock). */
   boostSpeed: number;
+  /** Multiplier on cruise top speed (1 = stock). */
+  cruiseSpeed: number;
   /** Multiplier on boost thrust authority (1 = stock). */
   boostThrust: number;
+  /** Multiplier on lateral strafe-dash burst acceleration (1 = stock). */
+  strafeDashScale: number;
+  /** Multiplier on thruster/boost spool-up responsiveness (>1 = snappier, <1 = heavier; 1 = stock). */
+  spoolRate: number;
+  /** Multiplier on hover & attitude damping (>1 = firmer/planted; 1 = stock). */
+  hoverDamping: number;
   /** Additive turn G-limit headroom (g). */
   gLimitBonus: number;
   /** Multiplier on repulsor fire interval (<1 = faster fire rate). */
@@ -50,7 +58,11 @@ export interface ReactorModifiers {
 
 export const STOCK_REACTOR_MODIFIERS = (): ReactorModifiers => ({
   boostSpeed: 1,
+  cruiseSpeed: 1,
   boostThrust: 1,
+  strafeDashScale: 1,
+  spoolRate: 1,
+  hoverDamping: 1,
   gLimitBonus: 0,
   repulsorInterval: 1,
   repulsorDamage: 1,
@@ -70,7 +82,11 @@ export const MODE_MODIFIERS: Record<ReactorMode, Readonly<ReactorModifiers>> = {
   THRUST: {
     ...STOCK_REACTOR_MODIFIERS(),
     boostSpeed: 1.18,
+    cruiseSpeed: 1.16,
     boostThrust: 1.18,
+    strafeDashScale: 1.32,
+    spoolRate: 1.45,
+    hoverDamping: 0.95,
     gLimitBonus: 1.5,
     // −30% reload / cool speed => 1 / 0.70 time multiplier
     unibeamCool: 1 / 0.7,
@@ -94,15 +110,23 @@ export const MODE_MODIFIERS: Record<ReactorMode, Readonly<ReactorModifiers>> = {
     damageTaken: 0.7,
     regenRate: 1.6,
     regenDelay: 0.65,
-    // −15% boost top speed
+    // −15% boost top speed & noticeably heavier/planted cruise/spool
     boostSpeed: 0.85,
+    cruiseSpeed: 0.86,
+    strafeDashScale: 0.88,
+    spoolRate: 0.85,
+    hoverDamping: 1.35,
   },
 };
 
 /** 400% OVERCHARGE: all three axes boosted simultaneously with no penalties. */
 export const OVERCHARGE_MODIFIERS: Readonly<ReactorModifiers> = {
   boostSpeed: 1.25,
+  cruiseSpeed: 1.22,
   boostThrust: 1.3,
+  strafeDashScale: 1.45,
+  spoolRate: 1.6,
+  hoverDamping: 1.15,
   gLimitBonus: 2.0,
   repulsorInterval: 1 / 1.45,
   repulsorDamage: 1.45,

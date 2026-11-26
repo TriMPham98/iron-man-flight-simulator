@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import type { ReactorMode } from '../sim/reactorPower';
 
 /**
  * The flight sim's frame: the scene into a 4× multisampled HDR target with a
@@ -30,6 +31,12 @@ export interface LensState {
   exposure: number;
   /** Helmet view: stronger vignette, visor tint. */
   helmet: number;
+  /** Active reactor power mode (defaults to 'BALANCED'). */
+  reactorMode?: ReactorMode;
+  /** Decaying 0–1 pulse on reactor mode switch or overcharge trigger (defaults to 0). */
+  modePulse?: number;
+  /** Whether 400% overcharge is active (defaults to false). */
+  overchargeActive?: boolean;
 }
 
 const FINAL_FRAG = /* glsl */ `
@@ -49,6 +56,10 @@ uniform float uCloud;
 uniform float uExposure;
 uniform float uHelmet;
 uniform float uAspect;
+uniform vec3 uModeColor;
+uniform float uModePulse;
+uniform float uOvercharge;
+uniform float uThrustBoost;
 varying vec2 vUv;
 
 vec3 RRTAndODTFit(vec3 v) {
@@ -158,7 +169,7 @@ void main() {
   vec2 c = uv - 0.5;
   float c2 = dot(c, c);
   // Chromatic fringe toward the edges at speed (and in the visor)
-  float fr = (uSpeed * 0.0035 + uHelmet * 0.0012) * c2 * 4.0;
+  float fr = (uSpeed * 0.0035 * uThrustBoost + uHelmet * 0.0012) * c2 * 4.0;
   vec3 hdr;
   if (uLowCost > 0.5) {
     hdr = safeHdr(texture2D(tScene, uv).rgb);
@@ -177,13 +188,13 @@ void main() {
       hdr = safeScene(uv);
     }
     // Supersonic peripheral speed-smear: keeps the centre razor-sharp while the
-    // screen edges streak back past Mach 0.85
+    // screen edges streak back past Mach 0.85 (amplified in THRUST / 400% OVERCHARGE)
     if (uSpeed > 0.04 && c2 > 0.06) {
-      float smearK = uSpeed * smoothstep(0.06, 0.32, c2);
+      float smearK = min(1.5, uSpeed * uThrustBoost) * smoothstep(0.06, 0.32, c2);
       vec2 stepUv = c * (0.012 * smearK);
       vec3 s1 = safeScene(clamp(uv - stepUv, 0.001, 0.999));
       vec3 s2 = safeScene(clamp(uv - stepUv * 2.0, 0.001, 0.999));
-      hdr = mix(hdr, (hdr + s1 + s2) * (1.0 / 3.0), smearK * 0.42);
+      hdr = mix(hdr, (hdr + s1 + s2) * (1.0 / 3.0), min(0.68, smearK * 0.42));
     }
   }
   hdr += safeHdr(texture2D(tBloom, uv).rgb);
@@ -214,8 +225,11 @@ void main() {
   float r2 = dot(c * vec2(uAspect * 0.8, 1.0), c * vec2(uAspect * 0.8, 1.0));
   col *= mix(1.0, smoothstep(1.2, 0.15, r2), 0.45 + 0.35 * uHelmet);
   col = mix(col, vec3(0.75, 0.05, 0.03), uDamage * smoothstep(0.08, 0.6, r2) * 0.7);
-  // Visor: a faint cool tint
-  col = mix(col, col * vec3(0.92, 1.0, 1.06), uHelmet * 0.6);
+  // Reactor mode switch edge wash & 400% overcharge perimeter shimmer
+  col += uModeColor * (uModePulse * 0.14 + uOvercharge * 0.035) * smoothstep(0.14, 0.72, r2) * (0.6 + 0.4 * uHelmet);
+  // Visor: a faint cool tint, subtly shifted on mode switch / overcharge
+  vec3 visorTint = mix(vec3(0.92, 1.0, 1.06), uModeColor * 0.6 + 0.55, clamp(uModePulse * 0.65 + uOvercharge * 0.35, 0.0, 1.0));
+  col = mix(col, col * visorTint, uHelmet * 0.6);
   // Inside the helmet: the faceplate's rim, far too close to focus, closes
   // in on the corners of the view (the brow sags a touch at the middle);
   // the HUD projector lights its inner lip
@@ -226,7 +240,8 @@ void main() {
     float rim = smoothstep(1.0, 1.3, d);
     vec3 shell = vec3(0.045, 0.028, 0.024) * (0.6 + 0.4 * smoothstep(1.5, 1.05, d));
     col = mix(col, shell, rim * uHelmet);
-    col += vec3(0.25, 0.75, 0.9) * 0.018 * exp(-pow((d - 1.08) / 0.05, 2.0)) * uHelmet;
+    float lip = exp(-pow((d - 1.08) / 0.05, 2.0));
+    col += uModeColor * (0.018 + 0.042 * uModePulse + 0.024 * uOvercharge) * lip * uHelmet;
   }
 
   col = toSrgb(col);
@@ -276,6 +291,8 @@ export class FlightPost {
   /** Scene target size as a fraction of the canvas's drawing buffer (≤ 1). */
   private scale = 1;
   private lowCost = false;
+  private halfBloom = false;
+  private bilinearUpscale = false;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -317,6 +334,10 @@ export class FlightPost {
       uExposure: { value: 1 },
       uHelmet: { value: 0 },
       uAspect: { value: 1 },
+      uModeColor: { value: new THREE.Vector3(0.25, 0.75, 0.9) },
+      uModePulse: { value: 0 },
+      uOvercharge: { value: 0 },
+      uThrustBoost: { value: 1 },
     };
     this.final = new FullScreenQuad(
       new THREE.ShaderMaterial({
@@ -364,6 +385,20 @@ export class FlightPost {
     this.resize();
   }
 
+  /** Run bloom at eighth-res instead of quarter-res (cheaper fill rate on mobile GPUs). */
+  setHalfBloom(half: boolean): void {
+    if (this.halfBloom === half) return;
+    this.halfBloom = half;
+    this.resize();
+  }
+
+  /** Skip the 5-tap Catmull-Rom upscale when adaptive resolution downscales (cheaper on mobile). */
+  setBilinearUpscale(bilinear: boolean): void {
+    if (this.bilinearUpscale === bilinear) return;
+    this.bilinearUpscale = bilinear;
+    this.resize();
+  }
+
   /** The scene's share of the canvas resolution; takes hold at the next {@link resize}. */
   setScale(scale: number): void {
     this.scale = THREE.MathUtils.clamp(scale, 0.1, 1);
@@ -373,12 +408,12 @@ export class FlightPost {
     const out = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     const size = new THREE.Vector2(Math.max(1, Math.round(out.x * this.scale)), Math.max(1, Math.round(out.y * this.scale)));
     this.rt.setSize(size.x, size.y);
-    // UnrealBloomPass halves again internally: quarter-res normally, eighth-res on low quality
-    const bloomDiv = this.lowCost ? 4 : 2;
+    // UnrealBloomPass halves again internally: quarter-res normally, eighth-res on low/mobile
+    const bloomDiv = this.lowCost || this.halfBloom ? 4 : 2;
     this.bloom.setSize(Math.max(8, Math.round(size.x / bloomDiv)), Math.max(8, Math.round(size.y / bloomDiv)));
     (this.uniforms.uRes.value as THREE.Vector2).copy(out);
     (this.uniforms.uSrcRes.value as THREE.Vector2).copy(size);
-    this.uniforms.uUpscale.value = size.x < out.x || size.y < out.y ? 1 : 0;
+    this.uniforms.uUpscale.value = !this.bilinearUpscale && (size.x < out.x || size.y < out.y) ? 1 : 0;
     this.uniforms.uAspect.value = out.x / Math.max(1, out.y);
   }
 
@@ -398,6 +433,17 @@ export class FlightPost {
     u.uCloud.value = lens.cloud;
     u.uExposure.value = lens.exposure;
     u.uHelmet.value = lens.helmet;
+    const mode = lens.reactorMode ?? 'BALANCED';
+    const oc = lens.overchargeActive ? 1 : 0;
+    u.uModePulse.value = THREE.MathUtils.clamp(lens.modePulse ?? 0, 0, 1);
+    u.uOvercharge.value = oc;
+    u.uThrustBoost.value = oc ? 1.45 : mode === 'THRUST' ? 1.38 : mode === 'SHIELDS' ? 0.8 : 1;
+    const mc = u.uModeColor.value as THREE.Vector3;
+    if (oc) mc.set(0.82, 0.96, 1.0);
+    else if (mode === 'THRUST') mc.set(0.32, 0.92, 1.0);
+    else if (mode === 'WEAPONS') mc.set(1.0, 0.34, 0.18);
+    else if (mode === 'SHIELDS') mc.set(1.0, 0.74, 0.24);
+    else mc.set(0.25, 0.75, 0.9);
     r.setRenderTarget(null);
     this.final.render(r);
   }

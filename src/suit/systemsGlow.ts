@@ -324,6 +324,38 @@ export interface FitFx {
   cutY: number;
 }
 
+/** Optional per-mode emissive tint & armor rim highlight overrides. */
+export interface SystemVisuals {
+  reactorTint?: THREE.ColorRepresentation;
+  eyesTint?: THREE.ColorRepresentation;
+  repulsorsTint?: THREE.ColorRepresentation;
+  rimColor?: THREE.ColorRepresentation;
+  rimStrength?: number;
+}
+
+interface ResolvedSystemVisuals {
+  reactorTint: THREE.Color;
+  eyesTint: THREE.Color;
+  repulsorsTint: THREE.Color;
+  rimColor: THREE.Color;
+  rimStrength: number;
+}
+
+const DEFAULT_REACTOR_TINT = new THREE.Color(0.45, 0.9, 1.0);
+const DEFAULT_EYES_TINT = new THREE.Color(1.0, 0.94, 0.72);
+const DEFAULT_REPULSORS_TINT = new THREE.Color(0.45, 0.9, 1.0);
+const DEFAULT_RIM_COLOR = new THREE.Color(0.35, 0.85, 1.0);
+
+function defaultSystemVisuals(): ResolvedSystemVisuals {
+  return {
+    reactorTint: DEFAULT_REACTOR_TINT.clone(),
+    eyesTint: DEFAULT_EYES_TINT.clone(),
+    repulsorsTint: DEFAULT_REPULSORS_TINT.clone(),
+    rimColor: DEFAULT_RIM_COLOR.clone(),
+    rimStrength: 0,
+  };
+}
+
 /**
  * Inject per-system uniforms so reactor / eyes / repulsors can ramp independently.
  * Powers live on material.userData so values set before first compile still apply.
@@ -341,14 +373,21 @@ export function attachSystemsShader(
     repulsors: 0,
   } satisfies SystemPowers;
   material.userData.fitFx = { cutY: 99 } satisfies FitFx;
+  material.userData.systemVisuals = defaultSystemVisuals();
 
   material.onBeforeCompile = (shader) => {
     const p = material.userData.systemPowers as SystemPowers;
     const fx = material.userData.fitFx as FitFx;
+    const vis = (material.userData.systemVisuals as ResolvedSystemVisuals | undefined) ?? defaultSystemVisuals();
     shader.uniforms.uReactor = { value: p.reactor };
     shader.uniforms.uEyes = { value: p.eyes };
     shader.uniforms.uRepulsors = { value: p.repulsors };
     shader.uniforms.uCutY = { value: fx.cutY };
+    shader.uniforms.uReactorTint = { value: vis.reactorTint.clone() };
+    shader.uniforms.uEyesTint = { value: vis.eyesTint.clone() };
+    shader.uniforms.uRepulsorsTint = { value: vis.repulsorsTint.clone() };
+    shader.uniforms.uRimColor = { value: vis.rimColor.clone() };
+    shader.uniforms.uRimStrength = { value: vis.rimStrength };
     material.userData.shader = shader;
 
     shader.vertexShader = shader.vertexShader
@@ -376,6 +415,11 @@ export function attachSystemsShader(
         uniform float uEyes;
         uniform float uRepulsors;
         uniform float uCutY;
+        uniform vec3 uReactorTint;
+        uniform vec3 uEyesTint;
+        uniform vec3 uRepulsorsTint;
+        uniform vec3 uRimColor;
+        uniform float uRimStrength;
         varying float vBindY;
         `,
       )
@@ -394,12 +438,17 @@ export function attachSystemsShader(
           float reactorM = emPacked.r * uReactor;
           float eyesM = emPacked.g * uEyes;
           float repulsorsM = emPacked.b * uRepulsors;
-          // Cyan systems + warm eye slits (Mark III HUD)
+          // Per-system tints (defaults: cyan reactor/repulsors + warm eye slits)
           vec3 sysTint =
-            vec3(0.45, 0.90, 1.0) * (reactorM + repulsorsM) +
-            vec3(1.0, 0.94, 0.72) * eyesM;
+            uReactorTint * reactorM +
+            uEyesTint * eyesM +
+            uRepulsorsTint * repulsorsM;
           totalEmissiveRadiance = sysTint * emissive;
         #endif
+        if (uRimStrength > 0.001) {
+          float rim = pow(1.0 - clamp(abs(dot(normalize(normal), normalize(vViewPosition))), 0.0, 1.0), 2.5);
+          totalEmissiveRadiance += uRimColor * rim * uRimStrength;
+        }
         // Dissolve front
         float front = 1.0 - smoothstep(0.0, 0.03, uCutY - vBindY);
         totalEmissiveRadiance += vec3(0.35, 0.85, 1.0) * front * step(uCutY, 50.0) * 2.5;
@@ -407,7 +456,7 @@ export function attachSystemsShader(
       );
   };
 
-  material.customProgramCacheKey = () => 'ironman-systems-glow-v3';
+  material.customProgramCacheKey = () => 'ironman-systems-glow-v4';
 }
 
 /** Set a material's dissolve height (before or after first compile). */
@@ -436,6 +485,7 @@ export function applySystemUniforms(
   glowMaterials: GlowMaterial[],
   powers: SystemPowers,
   pulse = 1,
+  visuals?: SystemVisuals,
 ): void {
   for (const { material, baseIntensity } of glowMaterials) {
     const scale = baseIntensity * POWER_EMISSIVE_BOOST * pulse;
@@ -446,12 +496,47 @@ export function applySystemUniforms(
     };
     material.userData.systemPowers = scaled;
 
+    let vis = material.userData.systemVisuals as ResolvedSystemVisuals | undefined;
+    if (!vis) {
+      vis = defaultSystemVisuals();
+      material.userData.systemVisuals = vis;
+    }
+    if (visuals) {
+      if (visuals.reactorTint !== undefined) vis.reactorTint.set(visuals.reactorTint);
+      else vis.reactorTint.copy(DEFAULT_REACTOR_TINT);
+      if (visuals.eyesTint !== undefined) vis.eyesTint.set(visuals.eyesTint);
+      else vis.eyesTint.copy(DEFAULT_EYES_TINT);
+      if (visuals.repulsorsTint !== undefined) vis.repulsorsTint.set(visuals.repulsorsTint);
+      else vis.repulsorsTint.copy(DEFAULT_REPULSORS_TINT);
+      if (visuals.rimColor !== undefined) vis.rimColor.set(visuals.rimColor);
+      else vis.rimColor.copy(DEFAULT_RIM_COLOR);
+      vis.rimStrength = visuals.rimStrength ?? 0;
+    }
+
     const shader = material.userData.shader as
-      | { uniforms: Record<string, { value: number }> }
+      | {
+          uniforms: {
+            uReactor: { value: number };
+            uEyes: { value: number };
+            uRepulsors: { value: number };
+            uReactorTint?: { value: THREE.Color };
+            uEyesTint?: { value: THREE.Color };
+            uRepulsorsTint?: { value: THREE.Color };
+            uRimColor?: { value: THREE.Color };
+            uRimStrength?: { value: number };
+          };
+        }
       | undefined;
     if (!shader?.uniforms) continue;
     shader.uniforms.uReactor.value = scaled.reactor;
     shader.uniforms.uEyes.value = scaled.eyes;
     shader.uniforms.uRepulsors.value = scaled.repulsors;
+    if (visuals) {
+      shader.uniforms.uReactorTint?.value.copy(vis.reactorTint);
+      shader.uniforms.uEyesTint?.value.copy(vis.eyesTint);
+      shader.uniforms.uRepulsorsTint?.value.copy(vis.repulsorsTint);
+      shader.uniforms.uRimColor?.value.copy(vis.rimColor);
+      if (shader.uniforms.uRimStrength) shader.uniforms.uRimStrength.value = vis.rimStrength;
+    }
   }
 }

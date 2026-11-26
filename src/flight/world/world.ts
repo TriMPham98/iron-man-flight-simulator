@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { DeviceTier } from '../../scene/deviceProfile';
 import { createAtmosphere, type Atmosphere } from './atmosphere';
 import { Heightfield } from './heightfield';
 import { Ocean } from './ocean';
@@ -10,6 +11,11 @@ import { LandingPad } from './landingPad';
 import { GARDEN } from './housePlants';
 import { Clouds } from './clouds';
 import { hazeAll } from '../render/haze';
+
+export interface WorldOptions {
+  touch?: boolean;
+  tier?: DeviceTier;
+}
 
 /** Land, sea and sky, built once at boot. */
 export class World {
@@ -25,7 +31,9 @@ export class World {
   readonly group = new THREE.Group();
   time = 0;
 
-  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
+  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, opts: WorldOptions = {}) {
+    const touch = opts.touch ?? false;
+    const tier = opts.tier ?? (touch ? 'phone' : 'desktop');
     const t0 = performance.now();
     this.atmosphere = createAtmosphere(renderer, scene);
     const t1 = performance.now();
@@ -35,9 +43,20 @@ export class World {
     const t2 = performance.now();
     console.info(`[flight] sky ${Math.round(t1 - t0)} ms, heightfield ${Math.round(t2 - t1)} ms`);
     this.terrain = new Terrain(this.field, this.atmosphere.uniforms, this.field.texels);
-    this.ocean = new Ocean(this.field, this.atmosphere.uniforms, renderer);
+    this.ocean = new Ocean(this.field, this.atmosphere.uniforms, renderer, {
+      foamRes: touch ? 256 : 512,
+      anisotropy: touch ? 2 : 8,
+      touch,
+    });
     const { group: house, garden } = buildHouse(this.field, drive);
-    this.vegetation = new Vegetation(this.field, this.atmosphere.uniforms, renderer, { species: GARDEN, plants: garden });
+    this.vegetation = new Vegetation(this.field, this.atmosphere.uniforms, renderer, {
+      species: GARDEN,
+      plants: garden,
+      shadeRes: tier === 'phone' ? 512 : tier === 'tablet' ? 1024 : 2048,
+      maxCache: touch ? 1200 : 3000,
+      plantBudgetMs: touch ? 1.5 : 2.5,
+      touch,
+    });
     this.terrain.setPlantShade(this.vegetation.shade);
     hazeAll(house, this.atmosphere.uniforms);
     this.pad = new LandingPad();

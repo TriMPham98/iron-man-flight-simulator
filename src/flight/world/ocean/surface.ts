@@ -115,6 +115,7 @@ uniform vec4 uFoamP;      // J threshold, J gain, intensity, -
 uniform vec4 uTune;       // sky radiance clamp, glitter clamp, body gain, -
 uniform vec3 uSkyUp;      // the sky overhead, and averaged round the hemisphere
 uniform vec3 uSkyHemi;    // (baked off the sky cube: SKY_AMBIENT_FRAG)
+uniform float uCascadeReach; // scales fine-cascade distance cutoffs (0.55–1.0)
 varying vec3 vWorld;
 varying vec2 vXZ;
 varying float vHeight;
@@ -167,15 +168,16 @@ void main() {
   // Fine cascades become sub-pixel in the far distance and are already covered
   // by Cox-Munk unresolved variance, so fade and skip their array fetches out far
   // (skip past the fade-out end so derivatives across the boundary stay zero-weighted)
-  float c3fade = 1.0 - smoothstep(450.0, 850.0, dist);
-  float c2fade = 1.0 - smoothstep(2400.0, 4200.0, dist);
+  float cr = max(uCascadeReach, 0.5);
+  float c3fade = 1.0 - smoothstep(450.0 * cr, 850.0 * cr, dist);
+  float c2fade = 1.0 - smoothstep(2400.0 * cr, 4200.0 * cr, dist);
 
   vec2 s = vec2(0.0);
   float jxx = 0.0, jzz = 0.0, jxz = 0.0;
   vec3 cov = vec3(0.0);
   for (int c = 0; c < ${CASCADES}; c++) {
-    if (c == 3 && dist > 900.0) continue;
-    if (c == 2 && dist > 4300.0) continue;
+    if (c == 3 && dist > 900.0 * cr) continue;
+    if (c == 2 && dist > 4300.0 * cr) continue;
     float gk = c == 3 ? mix(1.0, gust, 0.5) * c3fade : c == 2 ? mix(1.0, gust, 0.2) * macro * c2fade : c == 1 ? mix(1.0, macro, 0.5) : 1.0;
     gk *= amp;
     vec3 uv = vec3(xz / uCascL[c], float(c));

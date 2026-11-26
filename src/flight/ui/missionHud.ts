@@ -289,6 +289,15 @@ const STYLES = /* css */ `
   -webkit-backdrop-filter: blur(7px);
   cursor: pointer;
 }
+html.tc-touch .mh-pill,
+html.tc-touch .mh-card,
+html.tc-touch .mh-scrim {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.tc-touch .mh-pill { background: rgba(4, 14, 24, 0.84); }
+html.tc-touch .mh-card { background: linear-gradient(135deg, rgba(4, 16, 28, 0.88), rgba(4, 12, 22, 0.82)); }
+html.tc-touch .mh-scrim { background: radial-gradient(ellipse at 50% 45%, rgba(4, 14, 24, 0.72), rgba(2, 6, 12, 0.92)); }
 .mh-drawer {
   position: relative;
   width: min(820px, 100%);

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Suit } from '../../suit/Suit';
-import { Jets } from '../fx/jets';
+import { Jets, type JetState } from '../fx/jets';
 import { Particles } from '../fx/particles';
 import { SonicBoomFx } from '../fx/sonicBoom';
 import { GVaporFx } from '../fx/gVapor';
@@ -21,6 +21,7 @@ import type { SuitVariant } from '../net/protocol';
 import type { WarMachinePack } from '../net/suitVisuals';
 import { EventBus } from './events';
 import { HitStop } from './hitStop';
+import type { ReactorMode } from './reactorPower';
 import { SPEED_OF_SOUND } from '../world/config';
 
 /** Physics runs at a fixed rate whatever the display does. */
@@ -105,13 +106,14 @@ export class Game {
     readonly suit: Suit,
     readonly scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
+    opts: { maxParticles?: number } = {},
   ) {
     // (the sea's swell at the clock the ocean is drawn at, and its foam map)
     this.ground = groundProbe(world.field, () => world.time, (ax, az, bx, bz, r, amount, inner) => world.ocean.foam(ax, az, bx, bz, r, amount, inner));
     this.model = new FlightModel(this.ground);
     this.model.landingAid = { x: PAD.x, z: PAD.y, y: PAD_Y };
     this.rig = new CameraRig(camera);
-    this.particles = new Particles(world.atmosphere.uniforms);
+    this.particles = new Particles(world.atmosphere.uniforms, opts.maxParticles);
     this.sonic = new SonicBoomFx(world.atmosphere.uniforms);
     scene.add(this.sonic.group);
     this.gVapor = new GVaporFx(suit, world.atmosphere.uniforms);
@@ -124,7 +126,10 @@ export class Game {
     this.combat.hitStop = this.hitStop;
     this.events.on((e) => {
       if (e.kind === 'reactorOvercharge' && e.value) this.rig.shake += 1.25;
-      else if (e.kind === 'laserCutterFire') this.rig.shake += 0.35;
+      else if (e.kind === 'reactorMode') {
+        this.rig.shake += 0.14;
+        this.emitReactorModeFx(e.text as ReactorMode | undefined);
+      } else if (e.kind === 'laserCutterFire') this.rig.shake += 0.35;
       else if (e.kind === 'minigunStart') this.rig.shake += 0.1;
       else if (e.kind === 'minigunFire') this.rig.shake = Math.min(0.45, this.rig.shake + 0.045);
       else if (e.kind === 'cannonFire') this.rig.shake = Math.min(0.35, this.rig.shake + 0.04);
@@ -346,6 +351,7 @@ export class Game {
     // Shots leave the suit's hardware where it is drawn this frame
     if (this.controls) this.combat.afterPose();
     this.suit.boneWorldPoint('head', EYE_AT, this.head);
+    this.rig.setReactorState(this.combat.reactor.mode, this.combat.reactor.modePulse, this.combat.reactor.overchargeActive);
     this.rig.update(dt, this.model, this.head, this.ground);
     // The suit's own shadow box rides with it
     const sun = this.world.atmosphere.sun;
@@ -366,7 +372,16 @@ export class Game {
     }
     const o = this.driver.outputs;
     this.jets.eye = helmet ? this.rig.camera.position : null;
-    this.jets.update(dt, this.suit, { bootL: o.bootL, bootR: o.bootR, palmL: o.palmL, palmR: o.palmR, palmBoost: o.palmBoost }, this.ground, this.particles, this.model.vel);
+    const jetState: JetState & { mode?: ReactorMode; overcharge?: boolean } = {
+      bootL: o.bootL,
+      bootR: o.bootR,
+      palmL: o.palmL,
+      palmR: o.palmR,
+      palmBoost: o.palmBoost,
+      mode: this.combat.reactor.mode,
+      overcharge: this.combat.reactor.overchargeActive,
+    };
+    this.jets.update(dt, this.suit, jetState, this.ground, this.particles, this.model.vel);
     // Strafe dash: the pushing palm's exhaust blows out of that palm, along
     // its jet (right dash → the left hand firing off to the left)
     if (this.model.strafeDashActive > 0 && this.model.strafeDashDir !== 0) {
@@ -472,6 +487,33 @@ export class Game {
     if (grade === 'bullseye') {
       this.rig.shake += 0.35;
       this.particles.burst('spark', below, 10, 4, new THREE.Vector3(0, 1, 0), 1);
+    }
+  }
+
+  /** Emit a crisp reactor-routing plasma & spark puff around the suit when switching modes. */
+  private emitReactorModeFx(mode: ReactorMode = this.combat.reactor.mode): void {
+    const at = this.model.pos;
+    const baseVel = this.model.vel;
+    let c0: THREE.Color;
+    let c1: THREE.Color;
+    if (mode === 'THRUST') {
+      c0 = new THREE.Color(2.6, 8.8, 14);
+      c1 = new THREE.Color(0.4, 2.2, 6);
+    } else if (mode === 'WEAPONS') {
+      c0 = new THREE.Color(14, 5.5, 1.5);
+      c1 = new THREE.Color(6, 1.2, 0.2);
+    } else if (mode === 'SHIELDS') {
+      c0 = new THREE.Color(2.8, 6.5, 14);
+      c1 = new THREE.Color(12, 9.5, 3);
+    } else {
+      c0 = new THREE.Color(5, 9, 12);
+      c1 = new THREE.Color(1, 3, 5);
+    }
+    this.particles.emit('plasma', at, baseVel, { scale: 1.3, life: 0.9, color: c0, end: c1 });
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.random() * 0.4;
+      const v = this._dashV.set(Math.cos(a) * 6, (Math.random() - 0.5) * 4, Math.sin(a) * 6).add(baseVel);
+      this.particles.emit('spark', at, v, { scale: 1.1, life: 0.65, color: c0, end: c1 });
     }
   }
 }

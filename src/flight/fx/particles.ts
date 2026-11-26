@@ -426,15 +426,15 @@ export class Particles {
   private readonly uniforms: Record<string, THREE.IUniform>;
   private readonly _v = new THREE.Vector3();
 
-  constructor(atmosphere: Record<string, THREE.IUniform>) {
+  constructor(atmosphere: Record<string, THREE.IUniform>, maxPerPool = 5000) {
     this.uniforms = {
       ...atmosphere,
       uSunView: { value: new THREE.Vector3(0, 1, 0) },
       uSunCol: { value: new THREE.Color(1.6, 1.25, 0.9) },
       uAmb: { value: new THREE.Color(0.32, 0.36, 0.44) },
     };
-    this.glow = new Pool(5000, true, this.uniforms);
-    this.smoke = new Pool(5000, false, this.uniforms);
+    this.glow = new Pool(maxPerPool, true, this.uniforms);
+    this.smoke = new Pool(maxPerPool, false, this.uniforms);
     this.group.add(this.smoke.mesh, this.glow.mesh);
     this.group.name = 'particles';
   }

@@ -95,6 +95,15 @@ function bakeSkyAmbient(renderer: THREE.WebGLRenderer, sky: THREE.CubeTexture, u
   rt.dispose();
 }
 
+export interface OceanOptions {
+  /** Foam clipmap resolution (default 512; 256 on mobile/tablet). */
+  foamRes?: number;
+  /** Anisotropy cap on ocean FFT & foam textures (default 8; 2 on mobile/tablet). */
+  anisotropy?: number;
+  /** Touch-first GPU: step ocean FFT sim at half rate up through high preset. */
+  touch?: boolean;
+}
+
 export class Ocean {
   readonly mesh: THREE.Mesh;
   readonly farMesh: THREE.Mesh;
@@ -105,6 +114,7 @@ export class Ocean {
   private readonly farNodes: THREE.InstancedBufferAttribute;
   private readonly geo: THREE.InstancedBufferGeometry;
   private readonly farGeo: THREE.InstancedBufferGeometry;
+  private readonly touch: boolean;
   private lastTime = -1;
   private readonly eye = new THREE.Vector3();
   private lodScale = 1;
@@ -113,8 +123,14 @@ export class Ocean {
   private lastSimTime = -1;
   private lastSimPasses = 0;
 
-  constructor(field: Heightfield, atmosphere: Record<string, THREE.IUniform>, renderer?: THREE.WebGLRenderer) {
-    this.sim = renderer ? new OceanSim(renderer) : null;
+  constructor(
+    field: Heightfield,
+    atmosphere: Record<string, THREE.IUniform>,
+    renderer?: THREE.WebGLRenderer,
+    opts: OceanOptions = {},
+  ) {
+    this.touch = opts.touch ?? false;
+    this.sim = renderer ? new OceanSim(renderer, { foamRes: opts.foamRes, anisotropy: opts.anisotropy }) : null;
     const sim = this.sim;
     this.cdlod = new Cdlod(CDLOD, landTest(field.texels, HEIGHT_RES, WORLD_SIZE, 7));
     this.uniforms = {
@@ -141,6 +157,7 @@ export class Ocean {
       uTune: { value: new THREE.Vector4(8, 400, 1.6, 0) },
       uSkyUp: { value: new THREE.Vector3() },
       uSkyHemi: { value: new THREE.Vector3() },
+      uCascadeReach: { value: 1 },
     };
     if (renderer) bakeSkyAmbient(renderer, atmosphere.uSkyCube.value, this.uniforms);
     const mat = withLogDepth(
@@ -182,13 +199,14 @@ export class Ocean {
     this.mesh.add(this.farMesh);
   }
 
-  /** Scale CDLOD range thresholds and step simulation at half-rate when low. */
+  /** Scale CDLOD range thresholds, fine-cascade distance, and simulation cadence. */
   setLodScale(scale: number): void {
     const next = THREE.MathUtils.clamp(scale, 0.35, 2);
     if (Math.abs(next - this.lodScale) <= 1e-3) return;
     this.lodScale = next;
     this.cdlod.setLodScale(next);
     this.uniforms.uR0.value = this.cdlod.r0;
+    this.uniforms.uCascadeReach.value = THREE.MathUtils.clamp(next * (this.touch ? 0.9 : 1), 0.55, 1);
   }
 
   /**
@@ -204,9 +222,9 @@ export class Ocean {
     const dt = this.lastTime < 0 ? 1 / 60 : Math.max(0, time - this.lastTime);
     this.lastTime = time;
     if (this.sim) {
-      const halfRate = this.lodScale < 0.8 || this.eye.y > 600;
+      const simDiv = this.lodScale < 0.65 ? 3 : this.lodScale < 0.8 || (this.touch && this.lodScale <= 0.85) || this.eye.y > 600 ? 2 : 1;
       this.simDt += dt;
-      if (this.lastSimTime < 0 || !halfRate || (this.simFrame++ & 1) === 0) {
+      if (this.lastSimTime < 0 || simDiv === 1 || this.simFrame++ % simDiv === 0) {
         this.sim.step(time, this.simDt, this.eye);
         this.uniforms.uFoamW0.value = this.sim.foamWorld[0];
         this.uniforms.uFoamW1.value = this.sim.foamWorld[1];

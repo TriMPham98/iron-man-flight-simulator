@@ -169,6 +169,10 @@ async function boot(): Promise<void> {
     ],
     // The ring aperture the floor arms and parts stands rise through
     [[APERTURE_INNER, APERTURE_OUTER]],
+    {
+      padDetail: device.tier === 'phone' ? 512 : device.tier === 'tablet' ? 768 : 1024,
+      anisotropy: device.touch ? 2 : 4,
+    },
   );
   const lights = createLights();
   scene.add(lights.group);
@@ -177,7 +181,11 @@ async function boot(): Promise<void> {
 
   // Robot cell (arms, gantry, cradles, platform) shares the suit-up plan
   const plan = buildSuitUpPlan();
-  const workshop = new Workshop(suit, plan);
+  const workshop = new Workshop(suit, plan, {
+    scanWidth: device.touch ? 256 : 512,
+    scanHeight: device.touch ? 144 : 288,
+    scanHz: device.touch ? 8 : 12,
+  });
   scene.add(workshop.group);
 
   // Contact shadow on the deck under the suit, the arms and the stands
@@ -185,6 +193,8 @@ async function boot(): Promise<void> {
     y: SUIT_GROUND_CLEARANCE + 0.002,
     size: 5.6,
     height: 1.1,
+    resolution: device.tier === 'phone' ? 256 : device.tier === 'tablet' ? 384 : 512,
+    blurPasses: device.tier === 'phone' ? 1 : 2,
     opacity: 0.95,
   });
   scene.add(contact.mesh);
@@ -197,8 +207,11 @@ async function boot(): Promise<void> {
 
   const pick = createPickHighlight(scene);
 
-  // Half-res bloom mips: same soft glint, a fraction of the fill cost
-  const post = createPostProcessing(renderer, scene, camera, { halfResBloom: true });
+  // Half-res bloom mips on desktop; quarter/third-res on phones/tablets
+  const post = createPostProcessing(renderer, scene, camera, {
+    halfResBloom: true,
+    bloomScale: device.tier === 'phone' ? 0.25 : device.tier === 'tablet' ? 0.35 : 0.5,
+  });
 
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
@@ -440,15 +453,19 @@ async function boot(): Promise<void> {
       // or the pilot's first moments on the stick
       await new Promise<void>((r) => {
         const unseen = (e: Event) => {
-          // An unlock is the pilot letting go of the stick: the pause menu
-          const unlocked = e.type === 'pointerlockchange' && !document.pointerLockElement;
+          // An unlock (desktop) or flight pause (touch) is the pilot letting go of the stick
+          const unlocked =
+            (e.type === 'pointerlockchange' && !document.pointerLockElement) ||
+            e.type === 'flight:paused';
           if (!unlocked && document.visibilityState !== 'hidden') return;
           document.removeEventListener('pointerlockchange', unseen);
           document.removeEventListener('visibilitychange', unseen);
+          window.removeEventListener('flight:paused', unseen);
           r();
         };
         document.addEventListener('pointerlockchange', unseen);
         document.addEventListener('visibilitychange', unseen);
+        window.addEventListener('flight:paused', unseen);
       });
       const t0 = performance.now();
       renderer.forceContextLoss();

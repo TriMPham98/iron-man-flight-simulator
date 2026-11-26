@@ -3,6 +3,7 @@ import { withLogDepth } from '../render/depth';
 import { RENDER_ORDER, sortFocus } from '../render/transparency';
 import type { Suit } from '../../suit/Suit';
 import type { BoneName } from '../../suit/rig';
+import type { ReactorMode } from '../sim/reactorPower';
 import type { Particles } from './particles';
 
 /**
@@ -142,7 +143,94 @@ export interface JetState {
   palmR: number;
   /** 0–1: palms burning as full thrusters (a little longer and wider, still hand-sized). */
   palmBoost?: number;
+  /** Active Arc Reactor power routing mode (defaults to BALANCED). */
+  mode?: ReactorMode;
+  /** True during 400% OVERCHARGE. */
+  overcharge?: boolean;
 }
+
+interface ModeJetProfile {
+  lenScale: number;
+  widthScale: number;
+  cellBonus: number;
+  opacityScale: number;
+  glowScale: number;
+  bootSheath: THREE.Color;
+  bootCore: THREE.Color;
+  palmSheath: THREE.Color;
+  palmCore: THREE.Color;
+  glowColor: THREE.Color;
+  lightColor: THREE.Color;
+}
+
+const JET_PROFILES: Record<ReactorMode, ModeJetProfile> = {
+  BALANCED: {
+    lenScale: 1,
+    widthScale: 1,
+    cellBonus: 0,
+    opacityScale: 1,
+    glowScale: 1,
+    bootSheath: new THREE.Color(0x7fc4ff),
+    bootCore: new THREE.Color(0xeaf8ff),
+    palmSheath: new THREE.Color(0x8fd0ff),
+    palmCore: new THREE.Color(0xf0fbff),
+    glowColor: new THREE.Color(0xcfefff),
+    lightColor: new THREE.Color(0x9fd4ff),
+  },
+  THRUST: {
+    lenScale: 1.48,
+    widthScale: 1.32,
+    cellBonus: 2.2,
+    opacityScale: 1.22,
+    glowScale: 1.35,
+    bootSheath: new THREE.Color(0x9ae8ff),
+    bootCore: new THREE.Color(0xffffff),
+    palmSheath: new THREE.Color(0xaef0ff),
+    palmCore: new THREE.Color(0xffffff),
+    glowColor: new THREE.Color(0xe4faff),
+    lightColor: new THREE.Color(0xb8eeff),
+  },
+  WEAPONS: {
+    lenScale: 0.94,
+    widthScale: 0.96,
+    cellBonus: 0.2,
+    opacityScale: 0.98,
+    glowScale: 1,
+    bootSheath: new THREE.Color(0x84c8ff),
+    bootCore: new THREE.Color(0xf2faff),
+    palmSheath: new THREE.Color(0xa4dcff),
+    palmCore: new THREE.Color(0xfff8eb),
+    glowColor: new THREE.Color(0xd8f3ff),
+    lightColor: new THREE.Color(0xa8d8ff),
+  },
+  SHIELDS: {
+    lenScale: 0.72,
+    widthScale: 0.82,
+    cellBonus: -0.6,
+    opacityScale: 0.72,
+    glowScale: 0.78,
+    bootSheath: new THREE.Color(0x5ea2df),
+    bootCore: new THREE.Color(0xd4ecff),
+    palmSheath: new THREE.Color(0x6cb0e8),
+    palmCore: new THREE.Color(0xdcf2ff),
+    glowColor: new THREE.Color(0x9fd0f5),
+    lightColor: new THREE.Color(0x82bde8),
+  },
+};
+
+const OVERCHARGE_JET_PROFILE: ModeJetProfile = {
+  lenScale: 1.65,
+  widthScale: 1.42,
+  cellBonus: 3.0,
+  opacityScale: 1.35,
+  glowScale: 1.5,
+  bootSheath: new THREE.Color(0xb8f4ff),
+  bootCore: new THREE.Color(0xffffff),
+  palmSheath: new THREE.Color(0xc8f7ff),
+  palmCore: new THREE.Color(0xffffff),
+  glowColor: new THREE.Color(0xf0fcff),
+  lightColor: new THREE.Color(0xd4f6ff),
+};
 
 export interface GroundQuery {
   surface(x: number, z: number): number;
@@ -251,6 +339,10 @@ export class Jets {
     });
     const powers = [state.bootL, state.bootR];
     const palmPowers = [state.palmL, state.palmR];
+    const profile = state.overcharge
+      ? OVERCHARGE_JET_PROFILE
+      : JET_PROFILES[state.mode ?? 'BALANCED'];
+    this.light.color.copy(profile.lightColor);
     // One light, on the boot jets only and clear of the soles: averaged in
     // with the palms it hopped about the suit with every repulsor shot and
     // sat right on the back plate, blowing it out in flashes
@@ -258,23 +350,37 @@ export class Jets {
     const lightPos = this._v.set(0, 0, 0);
     this.boots.forEach((j, i) => {
       const k = powers[i];
-      this.drawJet(j, k, 0.6 + 1.6 * Math.pow(k, 1.3), 0.85 + 0.6 * k, t, i);
+      const baseLen = 0.6 + 1.6 * Math.pow(k, 1.3);
+      const baseWidth = 0.85 + 0.6 * k;
+      this.drawJet(
+        j,
+        k,
+        baseLen * profile.lenScale,
+        baseWidth * profile.widthScale,
+        t,
+        i,
+        profile,
+        true,
+      );
       lightSum += k;
       lightPos.addScaledVector(j.pos, k).addScaledVector(j.dir, 0.8 * k);
     });
     // Palms: a hand-sized nozzle makes a hand-sized flame — a short, hard
     // cone (≤ ~0.5 m even on boost), not a boot's column
     const pb = state.palmBoost ?? 0;
+    const palmLenScale = THREE.MathUtils.lerp(1, profile.lenScale, 0.7);
+    const palmWidthScale = THREE.MathUtils.lerp(1, profile.widthScale, 0.6);
     this.palms.forEach((j, i) => {
       const k = palmPowers[i];
-      const len = 0.1 + (0.24 + 0.14 * pb) * Math.pow(k, 1.2);
-      this.drawJet(j, k, len, THREE.MathUtils.lerp(0.7 + 0.35 * k, 0.8 + 0.45 * k, pb), t, i + 7);
+      const len = (0.1 + (0.24 + 0.14 * pb) * Math.pow(k, 1.2)) * palmLenScale;
+      const width = THREE.MathUtils.lerp(0.7 + 0.35 * k, 0.8 + 0.45 * k, pb) * palmWidthScale;
+      this.drawJet(j, k, len, width, t, i + 7, profile, false);
     });
     // It's there to wash the ground at take-off: up high it only scorched
     // the boot plates white
     if (lightSum > 0.01) lightPos.divideScalar(lightSum);
     const low = lightSum > 0.01 ? 1 - THREE.MathUtils.smoothstep(lightPos.y - Math.max(0, ground.surface(lightPos.x, lightPos.z)), 4, 25) : 0;
-    this.light.intensity = lightSum * 60 * low;
+    this.light.intensity = lightSum * 60 * low * profile.glowScale;
     if (low > 0) this.light.position.copy(lightPos);
 
     // Where the boot jets reach the ground or the sea: wash and blow-out
@@ -320,30 +426,44 @@ export class Jets {
     });
   }
 
-  private drawJet(j: Jet, k: number, len: number, width: number, t: number, seed: number): void {
+  private drawJet(
+    j: Jet,
+    k: number,
+    len: number,
+    width: number,
+    t: number,
+    seed: number,
+    profile: ModeJetProfile,
+    isBoot: boolean,
+  ): void {
     const on = k > 0.01;
     j.sheath.visible = j.core.visible = j.glow.visible = on;
     if (!on) return;
     this._q.setFromUnitVectors(this.DOWN, j.dir);
     const fl = 0.985 + 0.015 * Math.sin(t * 5.3 + seed) * Math.sin(t * 3.1 + seed * 1.7);
-    for (const [m, w, l, op] of [
-      [j.sheath, width, len, 0.85],
-      [j.core, width * 0.9, len * 0.7, 1.15],
+    const maxCells = profile.cellBonus > 0 ? 10 : 7;
+    const sheathColor = isBoot ? profile.bootSheath : profile.palmSheath;
+    const coreColor = isBoot ? profile.bootCore : profile.palmCore;
+    for (const [m, w, l, op, col] of [
+      [j.sheath, width, len, 0.85, sheathColor],
+      [j.core, width * 0.9, len * 0.7, 1.15, coreColor],
     ] as const) {
       m.position.copy(j.pos);
       m.quaternion.copy(this._q);
       m.scale.set(w, l * fl, w);
       const u = m.material.uniforms;
+      (u.uColor.value as THREE.Color).copy(col);
       u.uPower.value = k;
       // Diamonds sit a nozzle-width or so apart: their count follows the length
-      u.uCells.value = THREE.MathUtils.clamp(1.5 + l * 2.6, 1.5, 7);
-      u.uOpacity.value = (0.35 + 0.65 * k) * k * fl * op;
+      u.uCells.value = THREE.MathUtils.clamp(1.5 + l * 2.6 + profile.cellBonus, 1.5, maxCells);
+      u.uOpacity.value = (0.35 + 0.65 * k) * k * fl * op * profile.opacityScale;
       u.uTime.value = t;
     }
     // The glow sits clear of the armour: half-buried, camera shake made it blink
     j.glow.position.copy(j.pos).addScaledVector(j.dir, 0.05);
-    j.glow.scale.setScalar(0.14 + 0.3 * k);
+    j.glow.scale.setScalar((0.14 + 0.3 * k) * profile.glowScale);
+    j.glow.material.color.copy(profile.glowColor);
     const near = this.eye ? THREE.MathUtils.lerp(0.15, 1, THREE.MathUtils.smoothstep(j.glow.position.distanceTo(this.eye), 0.4, 1.4)) : 1;
-    j.glow.material.opacity = Math.min(1, k * 1.4) * near;
+    j.glow.material.opacity = Math.min(1, k * 1.4 * profile.glowScale) * near;
   }
 }

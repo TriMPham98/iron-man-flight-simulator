@@ -203,13 +203,17 @@ export class Combat {
         if (self.down > 0) return;
         const brace = self.reactiveBraceT > 0 ? 0.55 : 1;
         self.armor = Math.max(0, self.armor - (amount * self.spec.damageTaken * self.reactor.modifiers.damageTaken * brace) / 100);
+        let absorbed = 0;
         if (kind === 'beam') {
           // Absorbing the Rival Ace's Unibeam in SHIELDS mode rapidly surges the 400% capacitor
           if (self.reactor.mode === 'SHIELDS') {
-            self.reactor.feedOvercharge(Math.min(0.4, amount * 0.055), 'rivalBeam', at);
+            absorbed = self.reactor.feedOvercharge(Math.min(0.4, amount * 0.055), 'rivalBeam', at);
           }
         } else {
-          self.reactor.onArmorHit(amount, at);
+          absorbed = self.reactor.onArmorHit(amount, at);
+        }
+        if (absorbed > 0) {
+          self.emitShieldAbsorbFx(at, kind);
         }
         self.sinceHit = 0;
         self.damageFlash = Math.min(1, self.damageFlash + (kind === 'missile' ? 0.9 : kind === 'beam' ? 0.45 : 0.25));
@@ -892,6 +896,27 @@ export class Combat {
         chainKills > 0
           ? `Direct hit on the bomb bay — ${chainKills === 1 ? 'an escort went' : `${chainKills} escorts went`} up with it, sir.`
           : 'Direct hit on the open bomb bay, sir. Saved us a lot of drywall.',
+    });
+  }
+
+  /** Emit a crisp blue/gold capacitor-absorption plasma ripple & spark burst in SHIELDS mode. */
+  private emitShieldAbsorbFx(at: THREE.Vector3, kind: 'bullet' | 'missile' | 'beam'): void {
+    const count = kind === 'missile' ? 7 : kind === 'beam' ? 5 : 3;
+    const blueStart = new THREE.Color(2.4, 7.6, 14);
+    const blueEnd = new THREE.Color(0.6, 2.0, 5.5);
+    const goldStart = new THREE.Color(14, 10.5, 2.8);
+    const goldEnd = new THREE.Color(4.5, 2.6, 0.4);
+    this.particles.burst('plasma', at, Math.max(2, Math.ceil(count * 0.6)), kind === 'missile' ? 14 : 9, undefined, 1, {
+      scale: kind === 'missile' ? 1.3 : 0.9,
+      life: 0.85,
+      color: blueStart,
+      end: blueEnd,
+    });
+    this.particles.burst('spark', at, count, kind === 'missile' ? 18 : 12, undefined, 1, {
+      scale: kind === 'missile' ? 1.2 : 0.95,
+      life: 0.7,
+      color: goldStart,
+      end: goldEnd,
     });
   }
 
