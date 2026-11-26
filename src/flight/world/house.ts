@@ -387,13 +387,13 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
   // Glass lines with mullions; solid wall to the street
   facade(B, E0, Y0, Y1 - 0.45, seaward, 2.9);
   facade(B, E1, Y1, Y2 - 0.45, seaward);
-  const core0 = interior(B, E0, Y0, Y1 - 0.45, 8, WARM_CEIL, 0.3);
-  const core1 = interior(B, E1, Y1, Y2 - 0.45, 6.5, WARM_WALL, 0.26);
+  const core0 = interior(B, E0, Y0, Y1 - 0.45, 8, WARM_CEIL, 0.95);
+  const core1 = interior(B, E1, Y1, Y2 - 0.45, 6.5, WARM_WALL, 0.85);
   // Bedrooms upstairs: partitions from the glass back to the core
   alongOutline(E1, 9, (p, n) => {
     if (!seaward(p, n)) return;
     const q = p.clone().addScaledVector(n, -6.4);
-    B.lit.add(beam(p.clone().addScaledVector(n, -0.2), q, (Y1 + Y2 - 0.45) / 2, Y2 - 0.45 - Y1, 0.15), WARM_WALL, 0.3);
+    B.lit.add(beam(p.clone().addScaledVector(n, -0.2), q, (Y1 + Y2 - 0.45) / 2, Y2 - 0.45 - Y1, 0.15), WARM_WALL, 0.75);
   }, 4.5);
   // Sheers half drawn across some of the bedroom glass, and at the ends of the main floor
   for (const [o, y0, y1, k] of [
@@ -406,7 +406,7 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
       const b = inner.pts[(i + 1) % inner.pts.length];
       const n = inner.nrm[i];
       if (!seaward(a, n) || Math.sin(i * 0.61) + 0.6 * Math.sin(i * 1.93) < k) continue;
-      B.lit.add(wallQuad(a, b, y0 + 0.05, y1 - 0.05, n), 0xf2e6d2, 0.42);
+      B.lit.add(wallQuad(a, b, y0 + 0.05, y1 - 0.05, n), 0xf2e6d2, 0.95);
     }
   }
   furnish(B.litFine, E0, Y0, 7, 3.4, [sofaSet, dining, sofaSet, pianoSet, loungers], (p, n) => seaward(p, n) && !core0.contains(p.x - n.x * 3.4, p.y - n.y * 3.4));
@@ -418,7 +418,7 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
     B.litFine.add(box(1.2, 0.45, 0.9, DRUM.x + Math.cos(a) * r, Y0 + 0.22, DRUM.y + Math.sin(a) * r, -a), SOFA, 0.06);
   }
   B.litFine.add(new THREE.CylinderGeometry(0.9, 1.1, Y1 - 0.45 - Y0, 16).translate(DRUM.x, (Y0 + Y1 - 0.45) / 2, DRUM.y - 1), 0x2a2420, 0.05);
-  B.litFine.add(new THREE.CylinderGeometry(0.7, 0.7, 0.9, 16).translate(DRUM.x, Y0 + 1.2, DRUM.y - 1), new THREE.Color(1, 0.55, 0.2), 6);
+  B.litFine.add(new THREE.CylinderGeometry(0.7, 0.7, 0.9, 16).translate(DRUM.x, Y0 + 1.2, DRUM.y - 1), new THREE.Color(1, 0.55, 0.2), 10);
 
   // The workshop under the great room: a white band, a cool-lit window
   // ribbon, its floor, and the struts down into the rock
@@ -432,8 +432,9 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
     // White bands above and below the window ribbon
     B.concrete.add(wallQuad(a, b, LL_FLOOR, -3.3, LL.nrm[i]), WHITE);
     B.concrete.add(wallQuad(a, b, -1.5, Y0 - 0.9, LL.nrm[i]), WHITE);
+    B.lit.add(beam(a, b, -1.55, 0.12, 0.18, 0.02), COOL, 2.2);
   }
-  interior(B, LL, LL_FLOOR, Y0 - 1.2, 6, COOL, 0.45);
+  interior(B, LL, LL_FLOOR, Y0 - 1.2, 6, COOL, 1.15);
   // Cars and armour gantries in the workshop
   for (let i = 0; i < 6; i++) {
     const a = Math.PI * 0.2 + (i / 5) * Math.PI * 0.6;
@@ -463,8 +464,9 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
     for (let i = 0; i < p.count; i++) if (p.getY(i) > 0) p.setY(i, p.getY(i) + p.getX(i) * t.slant);
     cyl.computeVertexNormals();
     B.concrete.add(cyl.translate(t.x, Y2 + t.h / 2, t.z), WHITE);
-    // A slot of glass round each
+    // A slot of glass round each + warm interior clerestory glow
     B.glass.add(new THREE.CylinderGeometry(t.r + 0.02, t.r + 0.02, 0.5, 40, 1, true).translate(t.x, Y2 + t.h - 0.9, t.z));
+    B.lit.add(new THREE.CylinderGeometry(t.r - 0.05, t.r - 0.05, 0.42, 32, 1, true).translate(t.x, Y2 + t.h - 0.9, t.z), WARM_CEIL, 1.5);
   }
   // Skylights on the upper roof
   for (const [x, z] of [[58, 18], [80, 14], [40, 16]] as const) {
@@ -472,12 +474,23 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
     B.glass.add(box(2.0, 0.05, 1.0, x, Y2 + 0.27, z));
   }
 
+  // Long-range night architectural cove lights along the overhanging soffits & terrace edges
+  alongOutline(E0.offset(1.8), 3.6, (p, n) => {
+    if (n.y > -0.6) B.lit.add(box(0.7, 0.08, 0.18, p.x, Y1 - 0.48, p.y, -Math.atan2(n.y, n.x)), LAMP, 2.8);
+  });
+  alongOutline(E1.offset(2.0), 3.8, (p, n) => {
+    if (n.y > -0.6) B.lit.add(box(0.7, 0.08, 0.18, p.x, Y2 - 0.48, p.y, -Math.atan2(n.y, n.x)), LAMP, 2.5);
+  });
+  alongOutline(P0.offset(-0.35), 4.5, (p, n) => {
+    if (n.y > -0.3) B.lit.add(box(0.5, 0.08, 0.14, p.x, Y0 + 0.04, p.y, -Math.atan2(n.y, n.x)), LAMP, 2.2);
+  });
+
   // Soffit downlights under the overhangs
   alongOutline(E0.offset(1.8), 2.6, (p, n) => {
-    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y1 - 0.47, p.y), LAMP, 16);
+    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y1 - 0.47, p.y), LAMP, 18);
   });
   alongOutline(E1.offset(2.0), 2.6, (p, n) => {
-    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y2 - 0.47, p.y), LAMP, 16);
+    if (n.y > -0.6) B.litFine.add(new THREE.PlaneGeometry(0.22, 0.22).rotateX(Math.PI / 2).translate(p.x, Y2 - 0.47, p.y), LAMP, 18);
   });
 
   // Balustrades: the upper terrace's edge, and the deck where it hangs over the drop
@@ -506,8 +519,8 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
       B.outFine.add(box(0.85, 0.5, 0.18, FIRE.x + Math.cos(a) * 4.0, Y1 + 0.5, FIRE.y + Math.sin(a) * 4.0, -a), 0xd8d0c2);
     }
     B.concrete.add(new THREE.CylinderGeometry(1.0, 1.1, 0.45, 32).translate(FIRE.x, Y1 + 0.22, FIRE.y), 0x9a948a);
-    B.litFine.add(new THREE.CylinderGeometry(0.75, 0.75, 0.05, 32).translate(FIRE.x, Y1 + 0.47, FIRE.y), new THREE.Color(1, 0.5, 0.15), 9);
-    B.litFine.add(new THREE.ConeGeometry(0.55, 0.6, 9, 1, true).translate(FIRE.x, Y1 + 0.78, FIRE.y), new THREE.Color(1, 0.62, 0.22), 12);
+    B.litFine.add(new THREE.CylinderGeometry(0.75, 0.75, 0.05, 32).translate(FIRE.x, Y1 + 0.47, FIRE.y), new THREE.Color(1, 0.5, 0.15), 13);
+    B.litFine.add(new THREE.ConeGeometry(0.55, 0.6, 9, 1, true).translate(FIRE.x, Y1 + 0.78, FIRE.y), new THREE.Color(1, 0.62, 0.22), 17);
     umbrella(B.outFine, FIRE.x - 8, FIRE.y + 4, Y1);
     umbrella(B.outFine, FIRE.x + 8.5, FIRE.y + 3, Y1);
     loungers(B.outFine, FIRE.x - 8, FIRE.y + 4, Math.PI / 2 + 0.3, Y1);
@@ -549,8 +562,10 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
   // The spillway: a dark wet lip below the infinity edge
   B.stone.add(box(21, 0.5, 1.2, 23, PD_Y - 0.55, 54.1), 0x3a4648);
   furnish(B.concrete, PD.offset(-4.5), PD_Y, 6, 0, [loungers], (p) => p.y < 39 && p.y > 28 && p.x > 12 && p.x < 36);
-  // Pool lights
-  for (let x = 15; x < 33; x += 4) B.litFine.add(new THREE.PlaneGeometry(0.35, 0.2).translate(x, PD_Y - 0.3, 41.55), new THREE.Color(0.6, 0.95, 1), 10);
+  // Pool lights (close-up fixtures + long-range aqua cove strip)
+  for (let x = 15; x < 33; x += 4) B.litFine.add(new THREE.PlaneGeometry(0.35, 0.2).translate(x, PD_Y - 0.3, 41.55), new THREE.Color(0.6, 0.95, 1), 12);
+  B.lit.add(box(19, 0.12, 0.18, 23, PD_Y - 0.22, 41.6), new THREE.Color(0.35, 0.92, 1.0), 1.8);
+  B.lit.add(box(19, 0.12, 0.18, 23, PD_Y - 0.22, 52.0), new THREE.Color(0.35, 0.92, 1.0), 1.5);
 
   // Helical stair from the lawn up to the terrace
   {
@@ -1043,6 +1058,20 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
       else sow('bush', x, y - 0.2, z, 0.5 + rnd() * 0.9);
     }
   }
+
+  // Night Ops architectural & interior accent point lights so the cliff house glows over the dark sea
+  const accentLight = (color: number, intensity: number, dist: number, x: number, y: number, z: number) => {
+    const l = new THREE.PointLight(color, intensity, dist, 1.5);
+    l.position.set(x, y, z);
+    l.castShadow = false;
+    houseGroup.add(l);
+  };
+  accentLight(0xffb468, 55, 115, 60, Y0 + 2.4, 42); // great room warm spill
+  accentLight(0xffbe7a, 40, 95, 62, Y1 + 2.2, 22); // upper floor warm spill
+  accentLight(0x52c8ff, 48, 85, 60, -2.5, 52); // workshop cool cyan under-cantilever
+  accentLight(0x4ad8f0, 32, 70, 24, PD_Y + 1.5, 46); // pool terrace aqua glow
+  accentLight(0xffaa58, 36, 75, COURT.x, 3.2, COURT.y); // entry court warm architectural wash
+  accentLight(0xffb66c, 26, 55, PAD_L.x + 6, 3.0, PAD_L.y); // lawn / terrace edge toward pad
 
   g.add(houseGroup);
 
