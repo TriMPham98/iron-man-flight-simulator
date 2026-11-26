@@ -1491,14 +1491,14 @@ export class Vegetation {
     const treeMat = nearMat(this.nearFade, 'near');
     const sheetMat = nearMat(this.nearFade, 'near-sheet', THREE.DoubleSide);
     const tuftMat = nearMat(this.tuftFade, 'tuft');
-    const make = (geo: THREE.BufferGeometry, cap: number, mat: THREE.Material) => {
+    const make = (geo: THREE.BufferGeometry, cap: number, mat: THREE.Material, receiveShadow = true) => {
       const m = new THREE.InstancedMesh(geo, mat, cap);
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage);
       m.count = 0;
       m.frustumCulled = false;
       m.castShadow = false;
-      m.receiveShadow = true;
+      m.receiveShadow = receiveShadow;
       m.matrixAutoUpdate = false;
       this.group.add(m);
       return m;
@@ -1506,8 +1506,8 @@ export class Vegetation {
     const hiBuild = Object.fromEntries(this.kinds.map((k) => [k, withCards(() => this.species[k].build('hi'))]));
     for (const k of this.kinds) {
       const mat = this.species[k].twoSided ? sheetMat : treeMat;
-      this.near[k] = make(lo[k], this.cap[k], mat);
-      this.close[k] = make(hiBuild[k].model, this.capHi[k], mat);
+      this.near[k] = make(lo[k], this.cap[k], mat, false);
+      this.close[k] = make(hiBuild[k].model, this.capHi[k], mat, true);
     }
 
     // Leaf cards: two-sided, lit from the crown's normals whichever side
@@ -1558,10 +1558,10 @@ export class Vegetation {
       this.cards.push([owner, m]);
     };
     for (const k of this.kinds) this.cardMesh(this.close[k], hiBuild[k].cards, this.species[k].hiRange);
-    this.tuft = make(lo.bush, CAP.tuft, tuftMat);
-    this.tuftHi = make(hiBuild.bush.model, CAP.tuftHi, tuftMat);
+    this.tuft = make(lo.bush, CAP.tuft, tuftMat, false);
+    this.tuftHi = make(hiBuild.bush.model, CAP.tuftHi, tuftMat, true);
     this.cardMesh(this.tuftHi, hiBuild.bush.cards, TUFT_HI);
-    this.grass = make(grassGeometry(), CAP.grass, tuftMat);
+    this.grass = make(grassGeometry(), CAP.grass, tuftMat, true);
 
     // Plant shade: every modelled plant marks the map from its own instances
     if (renderer) {
