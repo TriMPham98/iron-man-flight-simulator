@@ -99,6 +99,9 @@ function missileMesh(team: Team, caliber: number, length: number, style: 'ironma
 
 /** Default airframes (m): enemy seekers; the suit's own come from their tubes. */
 const ENEMY_CALIBER = 0.09;
+/** Strafe-dash bloom: the time-to-go window (s) a seeker bites in, and how often it does. */
+export const BLOOM_WINDOW = 0.35;
+export const BLOOM_CHANCE = 0.8;
 const ENEMY_LENGTH = 1.5;
 
 let glowTex: THREE.Texture | null = null;
@@ -225,6 +228,31 @@ export class Missiles {
         this.events.emit('missileDecoyed', { at: m.pos });
       }
     }
+  }
+
+  /**
+   * A strafe dash's repulsor bloom, offered once as the palm fires: a white-hot
+   * plasma flash right beside the suit, hotter than the suit itself. Only a
+   * seeker in its last moments (time to go under `window`) has the suit and
+   * the bloom both in its eye and bites on the brighter one; further out it
+   * keeps the suit. Timed to the last instant it's a dodge; mashed, it's luck.
+   */
+  offerBloom(decoy: Decoy, suitPos: THREE.Vector3, suitVel: THREE.Vector3, window = BLOOM_WINDOW, chance = BLOOM_CHANCE): number {
+    let pulled = 0;
+    for (const m of this.live) {
+      if (m.team !== 'enemy' || m.decoyed || !isPlayer(m.target) || m.age <= m.coast) continue;
+      const rel = this._v.copy(m.pos).sub(suitPos);
+      const dist = rel.length();
+      const closing = -rel.dot(this._d.copy(m.vel).sub(suitVel)) / Math.max(dist, 1e-3);
+      if (closing <= 0 || dist / closing > window) continue;
+      if (Math.random() < chance) {
+        m.target = decoy;
+        m.decoyed = true;
+        pulled++;
+        this.events.emit('missileDecoyed', { at: m.pos });
+      }
+    }
+    return pulled;
   }
 
   /** Offer a hostile countermeasure flare to player seekers tracking that hostile. */

@@ -71,7 +71,7 @@ export const FLIGHT_POSTURE = 1.42;
 /** Lateral strafe burst (double-tap A/D): duration (s), cooldown (s), and peak lateral thruster accel (m/s²). */
 export const STRAFE_DASH_DURATION = 0.24;
 export const STRAFE_DASH_COOLDOWN = 0.9;
-const STRAFE_DASH_ACCEL = 155;
+const STRAFE_DASH_ACCEL = 300;
 /** Throttle airspeed range (m/s). */
 export const CRUISE_MAX = 270;
 /**

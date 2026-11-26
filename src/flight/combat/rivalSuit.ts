@@ -53,6 +53,12 @@ const REPULSOR_DMG = 6;
 const BEAM_RANGE = 1800;
 const BEAM_DPS = 25;
 const BEAM_SWEEP_RATE = 0.52;
+/**
+ * His tracking of the player (s): the Unibeam sweeps onto a filtered track
+ * (position, velocity and acceleration) that holds a steady flyer, or a
+ * steady turn, dead on but runs a beat behind a sudden jink (a strafe dash).
+ */
+export const RIVAL_TRACK_LAG = 0.4;
 
 export type RivalMode = 'stalk' | 'strafe' | 'dash' | 'evade' | 'beamCharge' | 'beamFire' | 'iced' | 'dying';
 
@@ -390,6 +396,12 @@ export class RivalSuit implements Hostile {
   private beamT = 0;
   private beamHitT = 0;
   private readonly beamDir = new THREE.Vector3(0, 0, 1);
+  /** His filtered track of the player (see {@link RIVAL_TRACK_LAG}). */
+  private readonly trackPos = new THREE.Vector3();
+  private readonly trackVel = new THREE.Vector3();
+  private readonly trackAcc = new THREE.Vector3();
+  private readonly lastPVel = new THREE.Vector3();
+  private tracking = false;
   private dashCooldown = 7;
 
   // FX / callout state
@@ -407,6 +419,7 @@ export class RivalSuit implements Hostile {
   private readonly _a = new THREE.Vector3();
   private readonly _b = new THREE.Vector3();
   private readonly _dir = new THREE.Vector3();
+  private readonly _trk = new THREE.Vector3();
   private readonly _want = new THREE.Vector3();
   private readonly _m = new THREE.Matrix4();
   private readonly _q2 = new THREE.Quaternion();
@@ -678,6 +691,21 @@ export class RivalSuit implements Hostile {
         this.setMode('evade');
       }
     }
+
+    // His track of the player (it predicts a steady flyer; a jink outruns it)
+    if (!this.tracking || dt <= 0) {
+      this.tracking = true;
+      this.trackPos.copy(player.pos);
+      this.trackVel.copy(player.vel);
+      this.trackAcc.set(0, 0, 0);
+    } else {
+      const k = 1 - Math.exp(-dt / RIVAL_TRACK_LAG);
+      const acc = this._trk.copy(player.vel).sub(this.lastPVel).divideScalar(dt);
+      this.trackAcc.lerp(acc, k);
+      this.trackVel.addScaledVector(this.trackAcc, dt).lerp(player.vel, k);
+      this.trackPos.addScaledVector(this.trackVel, dt).lerp(player.pos, k);
+    }
+    this.lastPVel.copy(player.vel);
 
     // ── Unibeam Charge & Sweep State Machine ──────────────────────────
     if (this.mode === 'beamCharge') {
@@ -1005,10 +1033,12 @@ export class RivalSuit implements Hostile {
     this.enforceFloor(ground, MIN_FLOOR_CLEARANCE, 0);
     this.posture += (0 - this.posture) * (1 - Math.exp(-dt * 6));
 
-    // Sweep beam toward player at bounded angular rate (dodgeable!)
-    const ang = this.beamDir.angleTo(toPDir);
+    // Sweep beam toward his track of the player at bounded angular rate (dodgeable!)
+    const toTrack = this._trk.copy(this.trackPos).sub(this.pos).normalize();
+    void toPDir;
+    const ang = this.beamDir.angleTo(toTrack);
     if (ang > 1e-4) {
-      const axis = this._b.crossVectors(this.beamDir, toPDir);
+      const axis = this._b.crossVectors(this.beamDir, toTrack);
       if (axis.lengthSq() > 1e-8) {
         axis.normalize();
         this.beamDir.applyAxisAngle(axis, Math.min(ang, BEAM_SWEEP_RATE * dt));

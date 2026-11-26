@@ -38,6 +38,8 @@ const HELMET_CLIP_R = 0.16;
 const NECK_FROM = [0, 1.36, -0.02] as const;
 const NECK_TO = [0, 1.52, -0.02] as const;
 const NECK_R = 0.115;
+/** How long (s) a strafe dash's repulsor bloom holds a seeker that bit on it. */
+const BLOOM_LIFE = 0.5;
 const UP = new THREE.Vector3(0, 1, 0);
 /** Auto-land is on offer within this far of the pad (m) and this high over it (m). */
 export const AUTOLAND_RANGE = 300;
@@ -87,6 +89,10 @@ export class Game {
   private readonly _axis = new THREE.Vector3();
   private readonly _clip = new THREE.Vector3();
   private readonly _dashV = new THREE.Vector3();
+  private readonly _bloomF = new THREE.Vector3();
+  private readonly _bloomU = new THREE.Vector3();
+  /** Strafe-dash repulsor blooms still hot enough to hold a seeker. */
+  private readonly blooms: { pos: THREE.Vector3; vel: THREE.Vector3; heat: number; eaten: boolean; t: number }[] = [];
   private readonly _neckTo = new THREE.Vector3();
   /** Seals the collar in the helmet view (dark, like the suit's lining). */
   private readonly neck = new THREE.Mesh(
@@ -216,7 +222,22 @@ export class Game {
     if (c.strafeDash && this.combat.down <= 0 && !this.combat.lost && !this.autoLand) {
       if (this.model.strafeDash(c.strafeDash)) {
         this.events.emit('strafeDash', { at: this.model.pos, value: c.strafeDash });
+        // The pushing palm's bloom, blown out to the far side: a seeker in
+        // its last instant may bite on it instead of the suit
+        const m = this.model;
+        const out = this._dashV.crossVectors(m.forward(this._bloomF), m.up(this._bloomU)).normalize().multiplyScalar(-c.strafeDash);
+        const bloom = { pos: m.pos.clone().addScaledVector(out, 1.2), vel: out.multiplyScalar(25).add(m.vel), heat: 2, eaten: false, t: BLOOM_LIFE };
+        this.blooms.push(bloom);
+        this.combat.missiles.offerBloom(bloom, m.pos, m.vel);
       }
+    }
+    // (it drifts off on the plume and cools; a seeker still on it flies on blind)
+    for (let i = this.blooms.length - 1; i >= 0; i--) {
+      const b = this.blooms[i];
+      b.pos.addScaledVector(b.vel, this.frameDt);
+      b.t -= this.frameDt;
+      if (b.t <= 0) b.eaten = true;
+      if (b.eaten) this.blooms.splice(i, 1);
     }
     // A hand on the stick, the throttle or the boost takes it back (once
     // they've been let go: whatever was held as L went in doesn't count)

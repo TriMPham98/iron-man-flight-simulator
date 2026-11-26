@@ -75,3 +75,29 @@ describe('player missiles on a ship', () => {
     expect(s.taken.get('radar')).toBeGreaterThan(0);
   });
 });
+
+describe('strafe-dash repulsor bloom', () => {
+  it('pulls a seeker in its last instant onto the bloom, and the suit takes nothing', () => {
+    const spy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const ms = missiles();
+    let hits = 0;
+    const suit: PlayerTarget = { pos: v(0, 500, 0), vel: v(0, 0, 0), alive: true, hit: () => void hits++ };
+    // Terminal (~0.25 s out) and far (~2 s out)
+    ms.launch({ team: 'enemy', from: v(0, 500, 85), vel: v(0, 0, -340), target: suit, coast: 0 });
+    ms.launch({ team: 'enemy', from: v(0, 500, -700), vel: v(0, 0, 340), target: suit, coast: 0 });
+    for (const m of ms.live) m.age = 0.1;
+    const bloom = { pos: v(-1.2, 500, 0), heat: 2 };
+    expect(ms.offerBloom(bloom, suit.pos, suit.vel)).toBe(1);
+    expect(ms.live[0].target).toBe(bloom);
+    expect(ms.live[1].target).toBe(suit);
+    // The dash carries the suit off the bloom: the bitten round goes off on it
+    suit.vel.set(60, 0, 0);
+    for (let i = 0; i < 30; i++) {
+      suit.pos.addScaledVector(suit.vel, 1 / 60);
+      ms.update(1 / 60, [], suit);
+    }
+    expect(ms.live).toHaveLength(1);
+    expect(hits).toBe(0);
+    spy.mockRestore();
+  });
+});
