@@ -70,8 +70,14 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.545
 // Catmull-Rom upscale of the scene (five bilinear taps: the corner taps,
 // a few percent of the weight, are dropped and the rest renormalised), in a
 // tone-compressed space so an HDR glint can't ring a dark halo round itself
+vec3 safeHdr(vec3 c) {
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  if (!(l >= 0.0 && l < 60000.0)) return vec3(0.0);
+  return max(c, 0.0);
+}
+vec3 safeScene(vec2 uv) { return safeHdr(texture2D(tScene, uv).rgb); }
 vec3 squash(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
-vec3 sceneTap(vec2 uv) { return squash(max(texture2D(tScene, uv).rgb, 0.0)); }
+vec3 sceneTap(vec2 uv) { return squash(safeScene(uv)); }
 vec3 sceneSharp(vec2 uv) {
   vec2 p = uv * uSrcRes;
   vec2 tc = floor(p - 0.5) + 0.5;
@@ -112,24 +118,26 @@ void main() {
   if (uUpscale > 0.5) {
     hdr = sceneSharp(uv);
     if (fr > 1e-5) {
-      hdr.r = texture2D(tScene, uv - c * fr).r;
-      hdr.b = texture2D(tScene, uv + c * fr).b;
+      hdr.r = safeScene(uv - c * fr).r;
+      hdr.b = safeScene(uv + c * fr).b;
     }
+  } else if (fr > 1e-5) {
+    hdr.r = safeScene(uv - c * fr).r;
+    hdr.g = safeScene(uv).g;
+    hdr.b = safeScene(uv + c * fr).b;
   } else {
-    hdr.r = texture2D(tScene, uv - c * fr).r;
-    hdr.g = texture2D(tScene, uv).g;
-    hdr.b = texture2D(tScene, uv + c * fr).b;
+    hdr = safeScene(uv);
   }
   // Supersonic peripheral speed-smear: keeps the centre razor-sharp while the
   // screen edges streak back past Mach 0.85
   if (uSpeed > 0.04 && c2 > 0.06) {
     float smearK = uSpeed * smoothstep(0.06, 0.32, c2);
     vec2 stepUv = c * (0.012 * smearK);
-    vec3 s1 = texture2D(tScene, clamp(uv - stepUv, 0.001, 0.999)).rgb;
-    vec3 s2 = texture2D(tScene, clamp(uv - stepUv * 2.0, 0.001, 0.999)).rgb;
+    vec3 s1 = safeScene(clamp(uv - stepUv, 0.001, 0.999));
+    vec3 s2 = safeScene(clamp(uv - stepUv * 2.0, 0.001, 0.999));
     hdr = mix(hdr, (hdr + s1 + s2) * (1.0 / 3.0), smearK * 0.42);
   }
-  hdr += texture2D(tBloom, uv).rgb;
+  hdr += safeHdr(texture2D(tBloom, uv).rgb);
 
   // Lens flare: ghosts strung through the centre opposite the sun
   if (uSunVis > 0.001) {

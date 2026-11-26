@@ -142,7 +142,7 @@ function rivalGeometry(): RivalGeo {
   for (const s of [-1, 1]) {
     torsoGlow.push(
       paint(
-        new THREE.BoxGeometry(0.055, 0.018, 0.02).rotateZ(-s * 0.18).translate(s * 0.042, 0.985, 0.152),
+        new THREE.BoxGeometry(0.055, 0.018, 0.02).rotateZ(-s * 0.18).translate(s * 0.042, 0.985, 0.156),
         VISOR_GLOW,
         6,
       ),
@@ -174,7 +174,7 @@ function rivalGeometry(): RivalGeo {
     paint(new THREE.TorusGeometry(0.085, 0.018, 6, 8).translate(0, 0.45, 0.205), C.dark),
   );
   torsoGlow.push(
-    paint(new THREE.CircleGeometry(0.072, 12).translate(0, 0.45, 0.214), REACTOR_GLOW, 7),
+    paint(new THREE.CircleGeometry(0.066, 12).translate(0, 0.45, 0.216), REACTOR_GLOW, 7),
   );
 
   // ── Shoulder Pauldrons, Micro-Missile Pods & Dorsal Flight Pack ──────
@@ -236,7 +236,7 @@ function rivalGeometry(): RivalGeo {
     );
     // Boot thruster emitter disc facing -Y
     torsoGlow.push(
-      paint(new THREE.CircleGeometry(0.068, 10).rotateX(Math.PI / 2).translate(x * 1.06, -1.102, -0.01), PALM_GLOW, 6),
+      paint(new THREE.CircleGeometry(0.068, 10).rotateX(Math.PI / 2).translate(x * 1.06, -1.105, -0.01), PALM_GLOW, 6),
     );
   }
 
@@ -254,7 +254,7 @@ function rivalGeometry(): RivalGeo {
       // Hand / repulsor palm emitter housing
       box(0.09, 0.09, 0.10, C.dark, side * 0.02, -0.64, 0.01),
     ];
-    const glow = paint(new THREE.CircleGeometry(0.044, 10).rotateX(Math.PI / 2).translate(side * 0.02, -0.688, 0.01), PALM_GLOW, 6);
+    const glow = paint(new THREE.CircleGeometry(0.044, 10).rotateX(Math.PI / 2).translate(side * 0.02, -0.691, 0.01), PALM_GLOW, 6);
     return { body: merge(parts), glow };
   };
 
