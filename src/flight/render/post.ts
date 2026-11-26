@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { NIGHT_OPS } from '../world/config';
 
 /**
  * The flight sim's frame: the scene into a 4× multisampled HDR target with a
@@ -48,6 +49,7 @@ uniform float uCloud;
 uniform float uExposure;
 uniform float uHelmet;
 uniform float uAspect;
+uniform float uNight;
 varying vec2 vUv;
 
 vec3 RRTAndODTFit(vec3 v) {
@@ -121,24 +123,33 @@ void main() {
   }
   hdr += texture2D(tBloom, uv).rgb;
 
-  // Lens flare: ghosts strung through the centre opposite the sun
+  // Lens flare: ghosts strung through the centre opposite the sun/moon
   if (uSunVis > 0.001) {
     vec2 axis = vec2(0.5) - uSunUv;
     vec3 f = vec3(0.0);
-    f += ghost(uv, uSunUv + axis * 0.55, 0.035, vec3(0.9, 0.55, 0.25)) * 0.35;
-    f += ghost(uv, uSunUv + axis * 0.85, 0.06, vec3(0.35, 0.6, 0.9)) * 0.18;
-    f += ghost(uv, uSunUv + axis * 1.25, 0.022, vec3(0.6, 0.9, 0.5)) * 0.3;
-    f += ghost(uv, uSunUv + axis * 1.6, 0.11, vec3(0.8, 0.45, 0.65)) * 0.09;
-    f += ghost(uv, uSunUv + axis * 2.05, 0.045, vec3(0.9, 0.7, 0.4)) * 0.14;
-    // Veiling glare round the sun itself and a faint anamorphic streak
-    vec2 ds = (uv - uSunUv) * vec2(uAspect, 1.0);
-    f += vec3(1.0, 0.75, 0.5) * 0.25 * exp(-length(ds) * 9.0);
-    f += vec3(1.0, 0.7, 0.45) * 0.35 * exp(-abs(ds.y) * 140.0) * exp(-abs(ds.x) * 2.2);
+    if (uNight > 0.5) {
+      f += ghost(uv, uSunUv + axis * 0.6, 0.04, vec3(0.35, 0.55, 0.95)) * 0.22;
+      f += ghost(uv, uSunUv + axis * 1.15, 0.055, vec3(0.45, 0.65, 1.0)) * 0.14;
+      vec2 ds = (uv - uSunUv) * vec2(uAspect, 1.0);
+      f += vec3(0.55, 0.72, 1.0) * 0.18 * exp(-length(ds) * 10.0);
+      f += vec3(0.55, 0.72, 1.0) * 0.18 * exp(-abs(ds.y) * 140.0) * exp(-abs(ds.x) * 2.4);
+    } else {
+      f += ghost(uv, uSunUv + axis * 0.55, 0.035, vec3(0.9, 0.55, 0.25)) * 0.35;
+      f += ghost(uv, uSunUv + axis * 0.85, 0.06, vec3(0.35, 0.6, 0.9)) * 0.18;
+      f += ghost(uv, uSunUv + axis * 1.25, 0.022, vec3(0.6, 0.9, 0.5)) * 0.3;
+      f += ghost(uv, uSunUv + axis * 1.6, 0.11, vec3(0.8, 0.45, 0.65)) * 0.09;
+      f += ghost(uv, uSunUv + axis * 2.05, 0.045, vec3(0.9, 0.7, 0.4)) * 0.14;
+      // Veiling glare round the sun itself and a faint anamorphic streak
+      vec2 ds = (uv - uSunUv) * vec2(uAspect, 1.0);
+      f += vec3(1.0, 0.75, 0.5) * 0.25 * exp(-length(ds) * 9.0);
+      f += vec3(1.0, 0.7, 0.45) * 0.35 * exp(-abs(ds.y) * 140.0) * exp(-abs(ds.x) * 2.2);
+    }
     hdr += f * uSunVis;
   }
 
-  // In a cloud: the world goes milky white
-  hdr = mix(hdr, vec3(1.25, 1.2, 1.15), uCloud * 0.85);
+  // In a cloud: storm mist at night vs sunlit milky white by day
+  vec3 cloudCol = mix(vec3(1.25, 1.2, 1.15), vec3(0.16, 0.22, 0.34), uNight);
+  hdr = mix(hdr, cloudCol, uCloud * (uNight > 0.5 ? 0.72 : 0.85));
 
   hdr *= uExposure;
   vec3 col = aces(hdr);
@@ -258,6 +269,7 @@ export class FlightPost {
       uExposure: { value: 1 },
       uHelmet: { value: 0 },
       uAspect: { value: 1 },
+      uNight: { value: NIGHT_OPS ? 1 : 0 },
     };
     this.final = new FullScreenQuad(
       new THREE.ShaderMaterial({

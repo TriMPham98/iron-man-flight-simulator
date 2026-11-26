@@ -20,7 +20,9 @@ import { Combat } from '../combat/combat';
 import type { SuitVariant } from '../net/protocol';
 import type { WarMachinePack } from '../net/suitVisuals';
 import { EventBus } from './events';
+import { StyleComboTracker } from './styleCombos';
 import { SPEED_OF_SOUND } from '../world/config';
+import type { GatePassResult, LandmarksUpdateResult } from '../world/landmarks';
 
 /** Physics runs at a fixed rate whatever the display does. */
 export const PHYSICS_HZ = 120;
@@ -56,6 +58,12 @@ export class Game {
   readonly input: FlightInput = EMPTY_INPUT();
   readonly events = new EventBus();
   readonly combat: Combat;
+  readonly styleCombos: StyleComboTracker;
+  /** Latest Flight Gate course state & most recent gate split. */
+  gateState: LandmarksUpdateResult | null = null;
+  lastGatePass: GatePassResult | null = null;
+  /** Optional R&D credit callback for style combo bonuses (wired by FlightApp). */
+  onStyleRd?: (points: number) => void;
   /** Active local suit variant ('ironman' Mk III vs 'warmachine' Mk II). */
   suitVariant: SuitVariant = 'ironman';
   time = 0;
@@ -85,6 +93,7 @@ export class Game {
   private readonly _axis = new THREE.Vector3();
   private readonly _clip = new THREE.Vector3();
   private readonly _neckTo = new THREE.Vector3();
+  private readonly _turb = new THREE.Vector3();
   /** Seals the collar in the helmet view (dark, like the suit's lining). */
   private readonly neck = new THREE.Mesh(
     new THREE.CapsuleGeometry(NECK_R, NECK_TO[1] - NECK_FROM[1], 6, 16),
@@ -112,6 +121,8 @@ export class Game {
       this.rig.shake += amount > 15 ? 1.4 : 0.25;
       this.particles.burst('spark', at, 6, 10, undefined, 1);
     }, world.atmosphere.uniforms);
+    this.styleCombos = new StyleComboTracker(this.combat.reactor, this.events);
+    this.combat.styleCombos = this.styleCombos;
     this.events.on((e) => {
       if (e.kind === 'reactorOvercharge' && e.value) this.rig.shake += 1.25;
       else if (e.kind === 'laserCutterFire') this.rig.shake += 0.35;
@@ -122,6 +133,9 @@ export class Game {
       else if (e.kind === 'payloadDetonation') this.rig.shake += 1.4;
       else if (e.kind === 'hotSwapCatch') this.rig.shake += 1.6;
       else if (e.kind === 'reactivePulse') this.rig.shake += 0.9;
+      else if (e.kind === 'snapDash') this.rig.shake += 0.2;
+      else if (e.kind === 'diveSlam') this.rig.shake += 0.25;
+      else if (e.kind === 'lightningCharge') this.rig.shake += 0.85;
     });
     this.neck.visible = false;
     this.neck.receiveShadow = true;
@@ -147,6 +161,10 @@ export class Game {
     // Heading toward the sun-side horizon over the water (south-west)
     const heading = Math.atan2(-0.55, 1);
     this.stopAutoLand(false);
+    this.styleCombos.reset();
+    this.world.landmarks.resetCourse();
+    this.gateState = null;
+    this.lastGatePass = null;
     this.model.placeOnGround(PAD.x, PAD.y, heading);
     this.rig.lookHeading(heading, -0.05);
   }
@@ -207,6 +225,12 @@ export class Game {
     // Backing up in a hover: S with the throttle already closed
     i.forward = c.forward + (c.throttle < 0 && this.model.speedCmd < 1 ? -1 : 0);
     if (c.pressed.has('Tab')) this.toggleAutoLand();
+    if (this.combat.down <= 0 && !this.combat.lost && !this.autoLand && c.dash && (c.dash.dir !== 0 || (c.dash.vertical ?? 0) !== 0)) {
+      if (this.model.snapDash(c.dash.dir, c.dash.vertical ?? 0)) {
+        this.events.emit('snapDash', { at: this.model.pos, value: c.dash.dir || (c.dash.vertical ?? 0) });
+        this.particles.burst('plasma', this.model.pos, 10, 14, undefined, 0.7, { scale: 0.9 });
+      }
+    }
     // A hand on the stick, the throttle or the boost takes it back (once
     // they've been let go: whatever was held as L went in doesn't count)
     if (this.autoLand) {
@@ -251,7 +275,7 @@ export class Game {
     if (byPilot) this.events.emit('jarvis', { text: 'Auto-land off. You have control.' });
   }
 
-  update(dt: number): void {
+  update(dt: number, rawDt = dt): void {
     this.time += dt;
     this.frameDt = dt;
     this.events.time = this.time;
@@ -271,6 +295,50 @@ export class Game {
     // Down (or knocked out of the sky): it's done
     if (this.autoLand && (this.model.grounded || this.combat.down > 0)) this.stopAutoLand(!this.model.grounded);
     const aim = this.rig.aim(this._aim);
+
+    // Proximity Adrenaline, Snap Reversal & Micro Hit-Stop (uses unscaled rawDt for hit-stop recovery)
+    const landmarkClear = this.world.landmarks.nearestClearance(this.model.pos);
+    const clearance = Math.min(this.model.clearance, landmarkClear?.dist ?? Infinity);
+    this.styleCombos.update(rawDt, this.model, clearance, aim);
+    for (const item of this.styleCombos.consumeStyleFeed()) {
+      if (item.rdBonus > 0) this.onStyleRd?.(item.rdBonus);
+      if (item.reason === 'proximitySkim') {
+        this.events.emit('proximitySkim', { at: this.model.pos, value: item.points, text: item.label });
+      } else {
+        this.events.emit('styleBonus', { at: this.model.pos, value: item.points, text: item.label });
+      }
+    }
+
+    // Storm Cloud Lightning Surge & Turbulence Buffeting
+    if (this.combat.down <= 0 && !this.combat.lost && this.world.consumeLightningStrike(this.model.pos)) {
+      this.combat.reactor.triggerStormSurge(this.model.pos);
+      this.events.emit('lightningCharge', { at: this.model.pos, value: 1 });
+      this.particles.burst('spark', this.model.pos, 22, 20, undefined, 1.0, { scale: 1.2 });
+    }
+    const turb = this.world.cloudTurbulence(this.model.pos, this._turb);
+    if (!this.model.grounded && turb.intensity > 0.02) {
+      this.model.vel.addScaledVector(turb.vector, dt * 6.5);
+      this.rig.shake = Math.max(this.rig.shake, turb.intensity * 0.14);
+    }
+
+    // Holographic JARVIS Flight Gate Course
+    const gs = this.world.landmarks.update(dt, this.model.pos, this.model.speed);
+    this.gateState = gs;
+    if (gs.gatePassed) {
+      const gp = gs.gatePassed;
+      this.lastGatePass = gp;
+      this.events.emit('gatePass', { at: this.model.pos, value: gp.index + 1, text: `${gp.index + 1}/${gp.total}` });
+      this.combat.reactor.feedStyleOvercharge(0.16, 'gatePass', this.model.pos);
+      if (gp.courseComplete) {
+        this.events.emit('gateCourseClear', { at: this.model.pos, value: gp.bestSec, text: `${gp.total}/${gp.total}` });
+        this.combat.reactor.feedStyleOvercharge(0.5, 'gateCourseClear', this.model.pos);
+        this.events.emit('jarvis', {
+          text: `Flight gate course complete in ${gp.bestSec.toFixed(1)} seconds, sir. Navigation telemetry logged.`,
+          at: this.model.pos,
+        });
+      }
+    }
+
     // Weapons sight from the pilot's eye; a planted camera isn't where he is
     const eye = this.rig.mode === 'flyby' || this.rig.mode === 'attract' ? this.head : this.rig.camera.position;
     if (this.controls) {
@@ -310,7 +378,7 @@ export class Game {
     // Shots leave the suit's hardware where it is drawn this frame
     if (this.controls) this.combat.afterPose();
     this.suit.boneWorldPoint('head', EYE_AT, this.head);
-    this.rig.update(dt, this.model, this.head, this.ground);
+    this.rig.update(dt, this.model, this.head, this.ground, this.styleCombos.proximityIntensity);
     // The suit's own shadow box rides with it
     const sun = this.world.atmosphere.sun;
     sun.target.position.copy(this.model.pos);

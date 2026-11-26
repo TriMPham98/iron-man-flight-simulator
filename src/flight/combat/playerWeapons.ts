@@ -295,6 +295,8 @@ export class PlayerWeapons {
   readonly laserCutter = new LaserCutterFx();
   /** Optional callback fired when repulsor bolts or the wrist laser cutter shoot down enemy missiles/bombs mid-air. */
   onOrdnanceIntercept?: (at: THREE.Vector3, kind: 'repulsor' | 'laserCutter' | 'cannon' | 'tracer' | 'buster') => void;
+  /** Optional hook to consume an active Snap-Reversal crit window for bonus hit damage. */
+  consumeReversalCrit?: () => boolean;
   private readonly fallbackReactor = STOCK_REACTOR_MODIFIERS();
 
   private readonly bolts: Bolt[] = [];
@@ -1346,12 +1348,13 @@ export class PlayerWeapons {
           struck = h;
           // Sensors L3/L5 Weak-Point Telemetry precision bonus on assisted / weak-point targets
           const sensorBonus = this.sensorCritMultiplier(h);
+          const reversalBonus = this.consumeReversalCrit?.() ? 1.75 : 1;
           const base = isBuster
             ? BUSTER_DAMAGE
             : isTracer
               ? MINIGUN_DAMAGE * this.spec.repulsorDamage * this.reactorMods.unibeamDps
               : (isRepulsor ? REPULSOR_DAMAGE : CANNON_DAMAGE) * this.spec.repulsorDamage * this.reactorMods.repulsorDamage;
-          const killed = h.damage(base * sensorBonus, hit, isRepulsor ? 'repulsor' : 'bullet');
+          const killed = h.damage(base * sensorBonus * reversalBonus, hit, isRepulsor ? 'repulsor' : 'bullet');
           if (isBuster) {
             (b.through ??= new Set()).add(h);
             if (killed && b.pierce) {

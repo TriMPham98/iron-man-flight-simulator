@@ -5,10 +5,12 @@ import { LAUNCHER_PER_ARM } from '../combat/playerWeapons';
 import { isAircraft } from '../combat/types';
 import type { SimEvent } from '../sim/events';
 import type { FlightModel } from '../sim/flightModel';
-import { AUTOLAND_LOCK_R, CRUISE_MAX } from '../sim/flightModel';
+import { AUTOLAND_LOCK_R, CRUISE_MAX, SNAP_DASH_COOLDOWN } from '../sim/flightModel';
 import type { GroundProbe } from '../sim/flightModel';
+import type { StyleComboTracker } from '../sim/styleCombos';
 import type { SuitWireframe } from './suitWireframe';
 import { BULLSEYE_R, CENTRED_R } from '../world/landingPad';
+import type { GatePassResult, LandmarksUpdateResult } from '../world/landmarks';
 
 /**
  * JARVIS's heads-up display, drawn on a 2D canvas over the frame each
@@ -261,6 +263,12 @@ export class Hud {
   /** Diegetic helmet visor surface states (0–1): sea-spray droplets and high-altitude frost creep. */
   private visorWet = 0;
   private visorFrost = 0;
+  /** Live Style Combo tracker & Flight Gate course telemetry (wired by FlightApp). */
+  styleCombos: StyleComboTracker | null = null;
+  gateState: LandmarksUpdateResult | null = null;
+  lastGatePass: GatePassResult | null = null;
+  private readonly styleFeed: Array<{ label: string; pts: number; t: number }> = [];
+  private gateFlashT = -99;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d')!;
@@ -379,6 +387,36 @@ export class Hud {
       case 'reactivePulse':
         this.showBanner(e.value === 2 ? 'NANITE SURGE' : 'REACTIVE PULSE', 'EMERGENCY SHIELD BRACE', WHITE, true);
         break;
+      case 'gatePass':
+        this.gateFlashT = this.time;
+        break;
+      case 'gateCourseClear':
+        this.showBanner('COURSE CLEAR', e.value ? `BEST TIME ${e.value.toFixed(1)}S` : 'ALL GATES CLEARED', CYAN, false);
+        break;
+      case 'lightningCharge':
+        this.showBanner('STORM SURGE', 'LIGHTNING OVERCHARGE · 400%', WHITE, true);
+        break;
+      case 'styleBonus':
+      case 'proximitySkim':
+        this.styleFeed.push({ label: e.text ?? 'STYLE', pts: e.value ?? 0, t: this.time });
+        if (this.styleFeed.length > 4) this.styleFeed.shift();
+        break;
+      case 'emergencyStart':
+        this.showBanner('EMERGENCY ALERT', e.text ?? 'INBOUND THREAT', AMBER, false);
+        break;
+      case 'emergencyClear':
+        this.showBanner('EMERGENCY RESOLVED', e.text ?? 'SECTOR CLEAR', CYAN, true);
+        break;
+      case 'grappleThrow':
+      case 'thrusterPunch':
+        this.hitMarker = Math.max(this.hitMarker, 0.85);
+        this.recoil = Math.max(this.recoil, 0.65);
+        break;
+      case 'snapDash':
+      case 'diveSlam':
+      case 'grappleGrab':
+        this.recoil = Math.max(this.recoil, 0.45);
+        break;
     }
   }
 
@@ -485,6 +523,7 @@ export class Hud {
     this.drawPadMarker(g, cam, m, s);
     this.drawTargets(g, cam, m, combat, s);
     this.drawHousePartyMarkers(g, cam, m, combat, s);
+    this.drawWaypointsAndMelee(g, cam, m, combat, cx, cy, s);
     this.drawSplashes(g, cam, s);
     this.drawWarnings(g, cam, m, combat, s);
     this.drawImpacts(g, cam, cx, cy, s);
@@ -500,9 +539,14 @@ export class Hud {
     this.panel('status', -40 * s, 0, () => {
       this.drawStatus(g, m, combat, s);
       this.drawReactor(g, combat, s);
+      this.drawMobilityAndAdrenaline(g, m, s);
     });
-    this.panel('weapons', 40 * s, 0, () => this.drawWeapons(g, combat, s));
+    this.panel('weapons', 40 * s, 0, () => {
+      this.drawWeapons(g, combat, s);
+      this.drawStyleFeed(g, s);
+    });
     this.panel('radar', 30 * s, -30 * s, () => this.drawRadar(g, cam, m, combat, s));
+    this.drawNightOpsPanels(g, combat, s);
     this.drawScope(g, dt, cam, m, s);
     this.drawAutoLand(g, dt, m, s);
     this.drawTakeoff(g, dt, s);
@@ -642,6 +686,239 @@ export class Hud {
       ? `PRESS [P] OR [SPACE] TO HOT-SWAP · ${Math.round(swap.distance)} M`
       : `EMERGENCY CHASSIS INBOUND · ${Math.round(swap.distance)} M · ${swap.timeLeft.toFixed(1)} S`;
     this.text(g, prompt, this.w / 2, this.h * 0.64, 11 * s, swap.inCatchRange ? WHITE : AMBER, 'center', JARVIS);
+  }
+
+  /** Flight Gate waypoint, Emergency waypoint, Close-Quarters contextual prompts & Reversal Crit indicator. */
+  private drawWaypointsAndMelee(
+    g: CanvasRenderingContext2D,
+    cam: THREE.PerspectiveCamera,
+    m: FlightModel,
+    c: Combat,
+    cx: number,
+    cy: number,
+    s: number,
+  ): void {
+    const drawOffscreenChevron = (pos: THREE.Vector3, color: string, label: string) => {
+      const rel = this._v.copy(pos).applyMatrix4(cam.matrixWorldInverse);
+      const ang = Math.atan2(-rel.y, rel.x);
+      const R = Math.min(this.w, this.h) * 0.41;
+      const ax = cx + Math.cos(ang) * R;
+      const ay = cy + Math.sin(ang) * R;
+      g.save();
+      g.translate(ax, ay);
+      g.rotate(ang);
+      g.strokeStyle = color;
+      g.lineWidth = 1.6;
+      g.beginPath();
+      g.moveTo(8 * s, 0);
+      g.lineTo(-4 * s, -5 * s);
+      g.lineTo(-4 * s, 5 * s);
+      g.closePath();
+      g.stroke();
+      g.restore();
+      this.text(g, label, ax, ay + (rel.y < 0 ? 14 : -14) * s, 7.5 * s, color, 'center', JARVIS);
+    };
+
+    // 1. Active Flight Gate waypoint
+    const gs = this.gateState;
+    if (gs?.activeGatePos) {
+      const gp = gs.activeGatePos;
+      const dist = gp.distanceTo(m.pos);
+      if (gs.gatesCleared > 0 || dist < 4500) {
+        const p = this.project(gp, cam);
+        const onScreen = p && p.x > 0 && p.x < this.w && p.y > 0 && p.y < this.h;
+        const distTxt = dist < 1000 ? `${Math.round(dist)}M` : `${(dist / 1000).toFixed(1)}K`;
+        const tag = `GATE ${gs.gatesCleared + 1}/${gs.totalGates} · ${distTxt}`;
+        if (onScreen) {
+          const r = 12 * s;
+          g.save();
+          g.strokeStyle = CYAN;
+          g.lineWidth = 1.6;
+          g.beginPath();
+          g.arc(p.x, p.y, r, 0, Math.PI * 2);
+          g.stroke();
+          g.strokeStyle = AMBER;
+          g.lineWidth = 1.1;
+          g.beginPath();
+          g.arc(p.x, p.y, r * 0.58, 0, Math.PI * 2);
+          g.stroke();
+          g.restore();
+          this.text(g, tag, p.x, p.y - r - 9 * s, 8 * s, CYAN, 'center', JARVIS);
+        } else if (gs.gatesCleared > 0) {
+          drawOffscreenChevron(gp, CYAN, `GATE ${gs.gatesCleared + 1}`);
+        }
+      }
+    }
+
+    // 2. Active Emergency waypoint
+    const em = c.emergencies.activeEmergency;
+    if (em && em.result === null) {
+      const dist = em.pos.distanceTo(m.pos);
+      const p = this.project(em.pos, cam);
+      const onScreen = p && p.x > 0 && p.x < this.w && p.y > 0 && p.y < this.h;
+      const distTxt = dist < 1000 ? `${Math.round(dist)}M` : `${(dist / 1000).toFixed(1)}K`;
+      const shortTag = em.kind === 'satellite' ? 'ORBITAL SAT' : em.kind === 'bomberWing' ? 'BOMBER WING' : 'DISTRESS';
+      if (onScreen) {
+        const r = (13 + 2.5 * Math.sin(this.time * 10)) * s;
+        g.save();
+        g.strokeStyle = AMBER;
+        g.lineWidth = 1.8;
+        g.beginPath();
+        g.moveTo(p.x, p.y - r);
+        g.lineTo(p.x + r, p.y);
+        g.lineTo(p.x, p.y + r);
+        g.lineTo(p.x - r, p.y);
+        g.closePath();
+        g.stroke();
+        g.restore();
+        this.text(g, `${shortTag} · ${distTxt}`, p.x, p.y - r - 10 * s, 8.5 * s, AMBER, 'center', JARVIS);
+      } else {
+        drawOffscreenChevron(em.pos, AMBER, shortTag);
+      }
+    }
+
+    // 3. Close-Quarters target bracket & contextual prompts (GRAPPLE / THROW / DIVE-SLAM)
+    const cq = c.closeQuarters;
+    const meleeTarget = cq.grabbedTarget ?? cq.availableMeleeTarget;
+    if (meleeTarget && meleeTarget.alive) {
+      const p = this.project(meleeTarget.pos, cam);
+      if (p) {
+        const r = 18 * s;
+        g.save();
+        g.strokeStyle = cq.grabbedTarget ? WHITE : CYAN;
+        g.lineWidth = 1.8;
+        g.setLineDash([4 * s, 3 * s]);
+        g.beginPath();
+        g.arc(p.x, p.y, r, 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+        g.restore();
+      }
+    }
+
+    if (c.down <= 0 && !c.lost) {
+      if (cq.grabbedTarget) {
+        this.text(g, `[T] THROW TETHERED  ·  ${cq.grabRemaining.toFixed(1)}S`, cx, cy + 54 * s, 9.5 * s, WHITE, 'center', JARVIS);
+      } else if (cq.availableMeleeTarget) {
+        this.text(g, '[T] GRAPPLE   ·   [H] THRUSTER PUNCH', cx, cy + 54 * s, 9.5 * s, CYAN, 'center', JARVIS);
+      } else if (cq.diveSlamActive) {
+        this.text(g, 'METEOR DIVE-SLAM', cx, cy + 54 * s, 10 * s, AMBER, 'center', JARVIS);
+      } else if (!m.grounded && m.clearance > 8 && cq.cooldown <= 0 && (c.hostiles.some((h) => h.alive) || c.emergencies.extraHostiles.length > 0)) {
+        this.text(g, '[Z] DIVE-SLAM', cx, cy + 54 * s, 8 * s, CYAN_DIM, 'center', JARVIS);
+      }
+      if (this.styleCombos?.reversalCritReady) {
+        this.text(g, 'REVERSAL CRIT READY', cx, cy - 48 * s, 8.5 * s, AMBER, 'center', JARVIS);
+      }
+    }
+  }
+
+  /** Snap-Dash cooldown pip & Proximity Adrenaline bar above the Reactor panel. */
+  private drawMobilityAndAdrenaline(g: CanvasRenderingContext2D, m: FlightModel, s: number): void {
+    const x0 = 286 * s;
+    const y0 = this.h - 196 * s - this.bottomInset;
+    const panelW = 176 * s;
+    const panelH = 46 * s;
+    this.glass(g, x0, y0, panelW, panelH, s);
+
+    const px = x0 + 10 * s;
+    const rx = x0 + panelW - 10 * s;
+    const dashReady = m.dashCooldown <= 0 && m.dashActive <= 0;
+    const dashFill = m.dashActive > 0 ? 1 : THREE.MathUtils.clamp(1 - m.dashCooldown / SNAP_DASH_COOLDOWN, 0, 1);
+    const dashCol = m.dashActive > 0 ? WHITE : dashReady ? CYAN : AMBER;
+    this.text(g, 'SNAP-DASH [ALT]', px, y0 + 12 * s, 7 * s, CYAN_LABEL, 'left', JARVIS);
+    this.text(g, m.dashActive > 0 ? 'BURST' : dashReady ? 'READY' : `${m.dashCooldown.toFixed(1)}S`, rx, y0 + 12 * s, 8 * s, dashCol, 'right');
+    g.fillStyle = CYAN_FAINT;
+    g.fillRect(px, y0 + 19 * s, panelW - 20 * s, 3 * s);
+    g.fillStyle = dashCol;
+    g.fillRect(px, y0 + 19 * s, (panelW - 20 * s) * dashFill, 3 * s);
+
+    const prox = THREE.MathUtils.clamp(this.styleCombos?.proximityIntensity ?? 0, 0, 1);
+    const proxCol = prox > 0.65 ? WHITE : prox > 0.2 ? AMBER : CYAN_DIM;
+    this.text(g, 'ADRENALINE', px, y0 + 31 * s, 7 * s, prox > 0.1 ? AMBER : CYAN_LABEL, 'left', JARVIS);
+    this.text(g, `${Math.round(prox * 100)}%`, rx, y0 + 31 * s, 8 * s, proxCol, 'right');
+    g.fillStyle = CYAN_FAINT;
+    g.fillRect(px, y0 + 38 * s, panelW - 20 * s, 3 * s);
+    g.fillStyle = prox > 0.15 ? AMBER : CYAN;
+    g.fillRect(px, y0 + 38 * s, (panelW - 20 * s) * prox, 3 * s);
+  }
+
+  /** Style combo multiplier & recent skill callouts above the Weapons panel. */
+  private drawStyleFeed(g: CanvasRenderingContext2D, s: number): void {
+    const LIFE = 2.6;
+    while (this.styleFeed.length && this.time - this.styleFeed[0].t > LIFE) this.styleFeed.shift();
+    const sc = this.styleCombos;
+    const activeCombo = !!sc && sc.comboCount > 0 && sc.comboTimer > 0;
+    if (!activeCombo && this.styleFeed.length === 0) return;
+
+    const x = this.w - 40 * s;
+    const panelW = 184 * s;
+    const x0 = x - 166 * s;
+    const y0 = this.h - 278 * s - this.bottomInset;
+    const panelH = 88 * s;
+    this.glass(g, x0, y0, panelW, panelH, s, true);
+
+    const mult = sc ? sc.comboMultiplier : 1;
+    const comboCol = mult >= 3 ? WHITE : mult >= 2 ? AMBER : CYAN;
+    this.text(g, 'STYLE', x - 154 * s, y0 + 13 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+    this.text(g, `×${mult.toFixed(1)}`, x - 4 * s, y0 + 13 * s, 12 * s, comboCol, 'right');
+    if (sc && sc.comboTimer > 0) {
+      const k = THREE.MathUtils.clamp(sc.comboTimer / 5.0, 0, 1);
+      g.fillStyle = CYAN_FAINT;
+      g.fillRect(x - 154 * s, y0 + 23 * s, panelW - 20 * s, 2.5 * s);
+      g.fillStyle = comboCol;
+      g.fillRect(x - 154 * s, y0 + 23 * s, (panelW - 20 * s) * k, 2.5 * s);
+    }
+
+    let fy = y0 + 38 * s;
+    for (let i = this.styleFeed.length - 1; i >= Math.max(0, this.styleFeed.length - 3); i--) {
+      const it = this.styleFeed[i];
+      const age = this.time - it.t;
+      const a = age > LIFE - 0.5 ? Math.max(0, (LIFE - age) / 0.5) : 1;
+      g.save();
+      g.globalAlpha *= a;
+      this.text(g, it.label, x - 154 * s, fy, 7.5 * s, WHITE, 'left', JARVIS);
+      if (it.pts > 0) this.text(g, `+${it.pts}`, x - 4 * s, fy, 8.5 * s, AMBER, 'right');
+      g.restore();
+      fy += 15 * s;
+    }
+  }
+
+  /** Top-left Emergency objective & Flight Gate course telemetry cards. */
+  private drawNightOpsPanels(g: CanvasRenderingContext2D, c: Combat, s: number): void {
+    const x0 = 24 * s;
+    let y0 = 72 * s;
+
+    const em = c.emergencies.activeEmergency;
+    if (em) {
+      const W = 258 * s;
+      const H = 56 * s;
+      this.glass(g, x0, y0, W, H, s);
+      const col = em.result === 'completed' ? CYAN : em.result === 'failed' ? RED : AMBER;
+      this.text(g, em.title, x0 + 10 * s, y0 + 13 * s, 8 * s, col, 'left', JARVIS);
+      const rightTxt = em.result === 'completed' ? 'CLEARED' : em.result === 'failed' ? 'FAILED' : `${Math.ceil(em.timerSec)}S`;
+      this.text(g, rightTxt, x0 + W - 10 * s, y0 + 13 * s, 9 * s, col, 'right');
+      this.text(g, em.objective.slice(0, 38), x0 + 10 * s, y0 + 29 * s, 7 * s, WHITE, 'left');
+      g.fillStyle = CYAN_FAINT;
+      g.fillRect(x0 + 10 * s, y0 + 42 * s, W - 20 * s, 3.5 * s);
+      g.fillStyle = col;
+      g.fillRect(x0 + 10 * s, y0 + 42 * s, (W - 20 * s) * THREE.MathUtils.clamp(em.progress01, 0, 1), 3.5 * s);
+      y0 += H + 8 * s;
+    }
+
+    const gs = this.gateState;
+    if (gs && (gs.gatesCleared > 0 || this.lastGatePass !== null || this.time - this.gateFlashT < 5)) {
+      const W = 258 * s;
+      const H = 42 * s;
+      this.glass(g, x0, y0, W, H, s);
+      const flash = Math.max(0, 1 - (this.time - this.gateFlashT) / 0.8);
+      this.text(g, 'FLIGHT GATES', x0 + 10 * s, y0 + 13 * s, 7.5 * s, flash > 0.2 ? WHITE : CYAN_LABEL, 'left', JARVIS);
+      this.text(g, `${gs.gatesCleared}/${gs.totalGates}`, x0 + W - 10 * s, y0 + 13 * s, 9.5 * s, CYAN, 'right');
+      const lp = this.lastGatePass;
+      const splitTxt = lp ? `SPLIT ${lp.splitSec.toFixed(1)}S` : 'COURSE ACTIVE';
+      const bestTxt = lp && lp.bestSec > 0 ? `BEST ${lp.bestSec.toFixed(1)}S` : '';
+      this.text(g, splitTxt, x0 + 10 * s, y0 + 29 * s, 7.5 * s, AMBER, 'left');
+      if (bestTxt) this.text(g, bestTxt, x0 + W - 10 * s, y0 + 29 * s, 7.5 * s, WHITE, 'right');
+    }
   }
 
   /** SPLASH where each kill fell: a burst ring, the stamp rising off it. */
@@ -2720,6 +2997,20 @@ export class Hud {
       g.stroke();
     }
     for (const h of c.hostiles) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
+    for (const h of c.emergencies.extraHostiles) if (h.alive) plot(h.pos, AMBER, 5 * s, true);
+    if (c.emergencies.activeEmergency && c.emergencies.activeEmergency.result === null) {
+      plot(c.emergencies.activeEmergency.pos, AMBER, 5.5 * s, true);
+    }
+    if (this.gateState?.activeGatePos) {
+      const { px, py } = place(this.gateState.activeGatePos);
+      g.save();
+      g.strokeStyle = CYAN;
+      g.lineWidth = 1.4;
+      g.beginPath();
+      g.arc(px, py, 4.2 * s, 0, Math.PI * 2);
+      g.stroke();
+      g.restore();
+    }
     for (const w of c.houseParty.wingmen) if (!w.done) plot(w.pos, CYAN, 4.5 * s);
     if (c.houseParty.hotSwapActive) plot(c.houseParty.podPos, WHITE, 5 * s);
     for (const ms of c.missiles.threats()) plot(ms.pos, WHITE, 3 * s);

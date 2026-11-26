@@ -1,6 +1,7 @@
 import './screens.css';
 import { isTouchDevice } from '../sim/touchMath';
 import { HOUSE_REPAIR_COST, MAX_LEVEL, UPGRADES, type RefitRefusal, type Upgrades } from '../sim/upgrades';
+import { NIGHT_OPS } from '../world/config';
 import { deviceProfile, type DeviceTier } from '../../scene/deviceProfile';
 
 /**
@@ -36,11 +37,17 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
     ['Q', 'drop (free fall)'],
     ['SHIFT', 'boost'],
     ['X', 'brake (palm jets)'],
+    ['ALT / 2× A·D·E·Q', 'snap-dash evade'],
+    ['Z', 'dive-slam (airborne)'],
+    ['T', 'grapple / throw'],
+    ['H', 'thruster punch'],
     ['LMB', 'repulsors'],
     ['RMB', 'paint · fire rockets'],
     ['SPACE', 'unibeam'],
+    ['C', 'wrist laser / flak sweep'],
     ['F', 'flares'],
     ['G', 'forearm launchers'],
+    ['1–4 / B', 'reactor power / overcharge'],
   ],
   always: [
     ['V', 'camera'],
@@ -224,7 +231,7 @@ export class Screens {
           <div class="t-eyebrow"><i class="t-reactor" aria-hidden="true"></i>STARK INDUSTRIES · J.A.R.V.I.S.</div>
           <h1>MARK <em>III</em></h1>
           <div class="t-rule" aria-hidden="true"><i></i></div>
-          <div class="sub">FLIGHT · MALIBU · GOLDEN HOUR</div>
+          <div class="sub">${NIGHT_OPS ? 'FLIGHT · MALIBU · NIGHT OPS' : 'FLIGHT · MALIBU · GOLDEN HOUR'}</div>
           <button class="cta" type="button"><span class="t-cta-label">${this.touch ? 'TAP TO ENGAGE' : 'CLICK TO ENGAGE'}</span><i aria-hidden="true">&#x2192;</i></button>
           <div class="keys">${titleKeys}</div>
         </div>
