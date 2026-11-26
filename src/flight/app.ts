@@ -529,8 +529,10 @@ export class FlightApp {
     else this.autopilot?.(game.time, c);
     if (!this.engaged || this.paused) {
       // Title / pause: the world keeps living, the controls don't
-      c.aimYaw = c.aimPitch = c.throttle = c.lateral = c.vertical = 0;
+      c.aimYaw = c.aimPitch = c.throttle = c.lateral = c.vertical = c.forward = 0;
       c.fire = c.missile = c.unibeam = c.flares = c.launcher = c.boost = c.brake = false;
+      c.dash = null;
+      c.diveSlam = c.grapple = c.punch = false;
       c.pressed.clear();
       if (!this.paused) this.handoffPilot?.(dt, c);
     }
