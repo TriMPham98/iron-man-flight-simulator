@@ -81,7 +81,7 @@ vec3 safeScene(vec2 uv) {
   float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
   if (l >= 0.0 && l < 60000.0) {
     // Suppress isolated single-pixel HDR fireflies without softening broad sun/plumes/beams
-    if (l > 6.0) {
+    if (l > 12.0) {
       vec2 px = 1.0 / max(uSrcRes, vec2(1.0));
       vec3 n0 = safeHdr(texture2D(tScene, uv + vec2(px.x, 0.0)).rgb);
       vec3 n1 = safeHdr(texture2D(tScene, uv - vec2(px.x, 0.0)).rgb);

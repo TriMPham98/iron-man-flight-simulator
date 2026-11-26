@@ -18,10 +18,10 @@ export const QUALITY_DPR: Record<Quality, number> = { low: 0.7, medium: 1, high:
  * still answers for the frame time.
  */
 export const QUALITY_GROUND: Record<Quality, { reach: number; anisotropy: number }> = {
-  low: { reach: 1, anisotropy: 1 },
-  medium: { reach: 1, anisotropy: 4 },
-  high: { reach: 1.6, anisotropy: 8 },
-  ultra: { reach: 2.6, anisotropy: 16 },
+  low: { reach: 0.75, anisotropy: 1 },
+  medium: { reach: 0.9, anisotropy: 4 },
+  high: { reach: 1.15, anisotropy: 4 },
+  ultra: { reach: 1.35, anisotropy: 8 },
 };
 
 /** HDR scene MSAA samples per preset (low skips multisample resolve for fill-rate speed). */
@@ -36,8 +36,8 @@ export const QUALITY_SAMPLES: Record<Quality, number> = {
 export const QUALITY_LOD: Record<Quality, number> = {
   low: 0.58,
   medium: 0.75,
-  high: 0.88,
-  ultra: 1.0,
+  high: 0.85,
+  ultra: 0.95,
 };
 
 export function bindFlightSettings(app: FlightApp): void {

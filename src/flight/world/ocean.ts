@@ -22,11 +22,11 @@ import { SKY_AMBIENT_FRAG, SURFACE_FRAG, SURFACE_VERT } from './ocean/surface';
 
 const GRID = 32;
 const FAR_GRID = GRID / 2;
-const FAR_LOD_START = 4;
+const FAR_LOD_START = 3;
 const CDLOD = {
   leaf: 4,
   grid: GRID,
-  rangeK: 5,
+  rangeK: 4.5,
   levels: 17,
   maxDist: 1200000,
   maxNodes: 3072,
