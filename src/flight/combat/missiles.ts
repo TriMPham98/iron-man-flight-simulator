@@ -18,6 +18,7 @@ type Team = 'player' | 'enemy';
 export interface Missile {
   team: Team;
   pos: THREE.Vector3;
+  prevPos: THREE.Vector3;
   vel: THREE.Vector3;
   speed: number;
   accel: number;
@@ -38,6 +39,12 @@ export interface Missile {
   laid: number;
   heavy: boolean;
   decoyed: boolean;
+}
+
+export interface NearMiss {
+  pos: THREE.Vector3;
+  dist: number;
+  missile: Missile;
 }
 
 const MATS = {
@@ -135,6 +142,7 @@ const isPlayer = (t: unknown): t is PlayerTarget => !!t && typeof (t as PlayerTa
 export class Missiles {
   readonly group = new THREE.Group();
   readonly live: Missile[] = [];
+  private nearMissed = new WeakSet<Missile>();
   private readonly _v = new THREE.Vector3();
   private readonly _d = new THREE.Vector3();
   private readonly _los = new THREE.Vector3();
@@ -192,6 +200,7 @@ export class Missiles {
     this.live.push({
       team: opts.team,
       pos: opts.from.clone(),
+      prevPos: opts.from.clone(),
       vel: opts.vel.clone(),
       // A rocket off a fast suit still gains on it
       speed: Math.max(base, opts.vel.length() + (heavy ? 220 : 160)),
@@ -257,6 +266,48 @@ export class Missiles {
     return this.live.filter((m) => m.team === 'enemy' && (m.onImpact !== null || isPlayer(m.target)));
   }
 
+  /** All active enemy ordnance in flight (seekers, strikes, bombs, decoyed rounds). */
+  activeEnemyMissiles(): Missile[] {
+    return this.live.filter((m) => m.team === 'enemy');
+  }
+
+  /**
+   * Shoot down any active enemy missiles/bombs whose position (or recent path)
+   * comes within `hitRadius` of the segment `a -> b`. Returns intercepted world positions.
+   */
+  interceptNearSegment(a: THREE.Vector3, b: THREE.Vector3, hitRadius: number): THREE.Vector3[] {
+    const r2 = hitRadius * hitRadius;
+    const hits: THREE.Vector3[] = [];
+    for (let i = this.live.length - 1; i >= 0; i--) {
+      const m = this.live[i];
+      if (m.team !== 'enemy') continue;
+      if (segDistSq(m.pos, a, b) <= r2 || segDistSq(m.prevPos, a, b) <= r2) {
+        hits.push(m.pos.clone());
+        this.shootDown(m);
+      }
+    }
+    return hits;
+  }
+
+  /**
+   * Detect active enemy missiles that pass within `nearMissRadius` of the suit
+   * without directly striking `playerRadius`. Each missile triggers at most once.
+   */
+  checkNearMisses(playerPos: THREE.Vector3, playerRadius: number, nearMissRadius: number): NearMiss[] {
+    const rMin2 = playerRadius * playerRadius;
+    const rMax2 = nearMissRadius * nearMissRadius;
+    const out: NearMiss[] = [];
+    for (const m of this.live) {
+      if (m.team !== 'enemy' || this.nearMissed.has(m)) continue;
+      const d2 = segDistSq(playerPos, m.prevPos, m.pos);
+      if (d2 > rMin2 && d2 <= rMax2) {
+        this.nearMissed.add(m);
+        out.push({ pos: m.pos.clone(), dist: Math.sqrt(d2), missile: m });
+      }
+    }
+    return out;
+  }
+
   /** Burn a round out of the air: it goes off where it is and does nothing more. */
   shootDown(m: Missile): void {
     const i = this.live.indexOf(m);
@@ -274,6 +325,7 @@ export class Missiles {
       m.glow.material.dispose();
     }
     this.live.length = 0;
+    this.nearMissed = new WeakSet<Missile>();
   }
 
   update(dt: number, hostiles: readonly Hostile[], player: PlayerTarget): void {
@@ -320,6 +372,7 @@ export class Missiles {
       if (m.age < m.coast) m.vel.y -= 9.81 * dt;
       else m.vel.copy(dir).multiplyScalar(newSp);
       const prev = this._v.copy(m.pos);
+      m.prevPos.copy(m.pos);
       m.pos.addScaledVector(m.vel, dt);
 
       // Orient + glow at the tail

@@ -30,6 +30,15 @@ const mats = {
   glass: new THREE.MeshStandardMaterial({ color: 0x0b0e12, metalness: 0.9, roughness: 0.12 }),
   charred: new THREE.MeshStandardMaterial({ color: 0x0d0c0b, metalness: 0.3, roughness: 0.9 }),
   lamp: new THREE.MeshStandardMaterial({ color: 0x220000, emissive: new THREE.Color(1, 0.08, 0.02), emissiveIntensity: 4 }),
+  searchGlow: new THREE.MeshStandardMaterial({ color: 0x111518, emissive: new THREE.Color(0.85, 0.95, 1.0), emissiveIntensity: 5 }),
+  searchBeam: new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.22,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  }),
 };
 
 /** Deck height above the waterline, and the hull's half-beam and ends (m, ship frame, +Z bow). */
@@ -148,6 +157,8 @@ interface FrigateGeometry {
   ciwsBase: THREE.BufferGeometry;
   ciwsYaw: THREE.BufferGeometry;
   ciwsPitch: THREE.BufferGeometry;
+  searchBeam: THREE.BufferGeometry;
+  searchLens: THREE.BufferGeometry;
 }
 
 let geoCache: FrigateGeometry | null = null;
@@ -330,6 +341,22 @@ function frigateGeometry(): FrigateGeometry {
   number.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   number.computeVertexNormals();
 
+  const beamLen = 260;
+  const searchBeam = new THREE.CylinderGeometry(0.32, 18, beamLen, 14, 1, true)
+    .translate(0, -beamLen / 2, 0)
+    .rotateX(-Math.PI / 2);
+  const bPos = searchBeam.getAttribute('position');
+  const bCol = new Float32Array(bPos.count * 3);
+  for (let i = 0; i < bPos.count; i++) {
+    const u = THREE.MathUtils.clamp(bPos.getZ(i) / beamLen, 0, 1);
+    const fade = (1 - u) * (1 - u);
+    bCol[i * 3] = 0.8 * fade;
+    bCol[i * 3 + 1] = 0.92 * fade;
+    bCol[i * 3 + 2] = 1.0 * fade;
+  }
+  searchBeam.setAttribute('color', new THREE.BufferAttribute(bCol, 3));
+  const searchLens = new THREE.SphereGeometry(0.38, 10, 8);
+
   geoCache = {
     hull: merge(hull),
     glass: merge(glass),
@@ -339,6 +366,8 @@ function frigateGeometry(): FrigateGeometry {
     ciwsBase,
     ciwsYaw,
     ciwsPitch: merge(pitch),
+    searchBeam,
+    searchLens,
   };
   return geoCache;
 }
@@ -469,6 +498,7 @@ export class Frigate {
   private readonly cells: Cell[] = [];
   private readonly radarHead = new THREE.Group();
   private readonly lamp = new THREE.Mesh(new THREE.SphereGeometry(0.25, 8, 6), mats.lamp);
+  readonly searchlights: Array<{ root: THREE.Group; baseYaw: number; basePitch: number; phase: number; sweepAmp: number; speed: number }> = [];
   private vlsReload = 6;
   private vlsSalvo = 0;
   private vlsT = 0;
@@ -500,6 +530,11 @@ export class Frigate {
   /** The guns and cells still fight (the hull is armoured while they do). */
   get armed(): boolean {
     return this.parts.some((p) => p.alive && (p.role === 'ciws' || p.role === 'vls'));
+  }
+
+  /** Number of sweeping Night Ops searchlight rigs mounted on the frigate. */
+  get searchlightCount(): number {
+    return this.searchlights.length;
   }
 
   private deep(field: Heightfield, c: THREE.Vector3, r: number): boolean {
@@ -540,6 +575,24 @@ export class Frigate {
     this.addCiws(new THREE.Vector3(0, DECK + 7, -33), false);
 
     this.parts.push(new ShipPart(this, 'hull', new THREE.Vector3(0, DECK + 2, -2), null));
+
+    // Night Ops sweeping searchlights: port & starboard bridge wings + mast forward spot
+    const lightConfigs: Array<{ at: V3; baseYaw: number; basePitch: number; phase: number; sweepAmp: number; speed: number }> = [
+      { at: [-4.4, DECK + 12.2, -3.5], baseYaw: -0.7, basePitch: -0.34, phase: 0.4, sweepAmp: 0.85, speed: 0.58 },
+      { at: [4.4, DECK + 12.2, -3.5], baseYaw: 0.7, basePitch: -0.34, phase: 2.3, sweepAmp: 0.85, speed: 0.52 },
+      { at: [0, DECK + 24.9, -4.1], baseYaw: 0, basePitch: -0.28, phase: 4.1, sweepAmp: 1.1, speed: 0.65 },
+    ];
+    for (const cfg of lightConfigs) {
+      const root = new THREE.Group();
+      root.position.set(...cfg.at);
+      const beam = new THREE.Mesh(g.searchBeam, mats.searchBeam);
+      beam.renderOrder = 5;
+      const lens = new THREE.Mesh(g.searchLens, mats.searchGlow);
+      root.add(beam, lens);
+      this.mesh.add(root);
+      this.searchlights.push({ root, ...cfg });
+    }
+
     this.mesh.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = false;
     });
@@ -572,8 +625,14 @@ export class Frigate {
     this.steer(dt, field);
     this.place(t);
     if (this.sinking) {
+      for (const s of this.searchlights) s.root.visible = false;
       this.sink(dt, particles, explosions);
       return;
+    }
+    for (const s of this.searchlights) {
+      s.root.visible = true;
+      s.root.rotation.y = s.baseYaw + Math.sin(t * s.speed + s.phase) * s.sweepAmp;
+      s.root.rotation.x = s.basePitch + Math.sin(t * s.speed * 0.72 + s.phase * 1.3) * 0.16;
     }
     const radar = this.radar.alive;
     this.radarHead.rotation.y = radar ? t * 2.2 : this.radarHead.rotation.y;

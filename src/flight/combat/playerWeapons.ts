@@ -293,6 +293,8 @@ export class PlayerWeapons {
   reactor: ReactorPower | null = null;
   /** Iron Man 2 sweeping wrist laser cutter / War Machine dual-gauntlet flak sweep. */
   readonly laserCutter = new LaserCutterFx();
+  /** Optional callback fired when repulsor bolts or the wrist laser cutter shoot down enemy missiles/bombs mid-air. */
+  onOrdnanceIntercept?: (at: THREE.Vector3, kind: 'repulsor' | 'laserCutter' | 'cannon' | 'tracer' | 'buster') => void;
   private readonly fallbackReactor = STOCK_REACTOR_MODIFIERS();
 
   private readonly bolts: Bolt[] = [];
@@ -985,12 +987,23 @@ export class PlayerWeapons {
     }
 
     this.updateBeam(this.lastDt, this.hostiles);
+    const cutterMissiles = {
+      inbound: () =>
+        typeof this.missiles.activeEnemyMissiles === 'function'
+          ? this.missiles.activeEnemyMissiles()
+          : this.missiles.inbound(),
+      shootDown: (m: Parameters<Missiles['shootDown']>[0]) => {
+        const at = m.pos.clone();
+        this.missiles.shootDown(m);
+        this.onOrdnanceIntercept?.(at, 'laserCutter');
+      },
+    };
     this.laserCutter.step(
       this.lastDt,
       this.flakOrigin(this._a),
       this.field,
       this.hostiles,
-      this.missiles,
+      cutterMissiles,
       this.particles,
       this.streaks,
       this.events,
@@ -1306,6 +1319,18 @@ export class PlayerWeapons {
       }
       let hit: THREE.Vector3 | null = null;
       let struck: Hostile | null = null;
+      // Mid-air ordnance interception: repulsor bolts (and gauntlet cannons) can shoot down incoming missiles and falling bombs
+      if ((isRepulsor || b.kind === 'cannon') && typeof this.missiles.interceptNearSegment === 'function') {
+        const intercepted = this.missiles.interceptNearSegment(prev, b.p, isRepulsor ? 3.5 : 3.0);
+        if (intercepted.length > 0) {
+          hit = intercepted[0].clone();
+          for (const at of intercepted) {
+            this.particles.burst('spark', at, 14, 18, undefined, 1);
+            this.events.emit('intercept', { at, text: 'suit' });
+            this.onOrdnanceIntercept?.(at, b.kind);
+          }
+        }
+      }
       // Against hostiles (segment vs sphere)
       const seg = this._v.copy(b.p).sub(prev);
       const len2 = seg.lengthSq();
@@ -1313,7 +1338,7 @@ export class PlayerWeapons {
       // a seeker does: the hull's capsule swallows the deck)
       const whole = b.target?.alive ? b.target.whole : undefined;
       let passing = false;
-      for (const h of hostiles) {
+      if (!hit) for (const h of hostiles) {
         if (!h.alive || b.through?.has(h) || (whole && h.whole === whole && h !== b.target)) continue;
         if (segmentToCore(h, prev, b.p, this._w, this._l) < (h.radius + pad) * (h.radius + pad)) {
           hit = this._w.clone().lerp(this._l, 0.6);
