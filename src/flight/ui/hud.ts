@@ -1261,105 +1261,109 @@ export class Hud {
   }
 
   private drawReticle(g: CanvasRenderingContext2D, cx: number, cy: number, s: number, c: Combat): void {
-    g.strokeStyle = CYAN;
-    g.lineWidth = 1.2;
-    const r = 15 * s;
-    // A shot kicks the ticks out
-    const kick = this.recoil * this.recoil * 6 * s;
-    g.beginPath();
-    g.arc(cx, cy, r, 0, Math.PI * 2);
-    g.stroke();
-    for (let i = 0; i < 4; i++) {
-      const a = (i * Math.PI) / 2;
+    this.crisp(g, () => {
+      g.strokeStyle = CYAN;
+      g.lineWidth = 1.2;
+      const r = 15 * s;
+      // A shot kicks the ticks out
+      const kick = this.recoil * this.recoil * 6 * s;
       g.beginPath();
-      g.moveTo(cx + Math.cos(a) * (r + 3 * s + kick), cy + Math.sin(a) * (r + 3 * s + kick));
-      g.lineTo(cx + Math.cos(a) * (r + 10 * s + kick), cy + Math.sin(a) * (r + 10 * s + kick));
+      g.arc(cx, cy, r, 0, Math.PI * 2);
       g.stroke();
-    }
-    // An outer ring of arcs turning slowly, faster while the repulsors cycle
-    const turn = this.time * (c.weapons.repulsorBusy ? 2.4 : 0.35);
-    const ro = r + 17 * s + kick * 0.6;
-    g.strokeStyle = CYAN_DIM;
-    for (let i = 0; i < 3; i++) {
-      const a = turn + (i * Math.PI * 2) / 3;
-      g.beginPath();
-      g.arc(cx, cy, ro, a, a + 0.55);
-      g.stroke();
-    }
-    g.fillStyle = WHITE;
-    g.fillRect(cx - 1, cy - 1, 2, 2);
-    // A kill: a bold X slams onto the sight and lingers
-    if (this.killConfirm > 0) {
-      const t = 1 - this.killConfirm;
-      const k = (11 + 10 * (1 - Math.min(1, t / 0.12)) ** 2) * s;
-      g.save();
-      g.globalAlpha *= Math.min(1, this.killConfirm * 2);
-      g.strokeStyle = t < 0.08 ? WHITE : RED;
-      g.lineWidth = 3;
-      for (const [dx, dy] of [
-        [1, 1],
-        [-1, 1],
-        [1, -1],
-        [-1, -1],
-      ]) {
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2;
         g.beginPath();
-        g.moveTo(cx + dx * k * 0.55, cy + dy * k * 0.55);
-        g.lineTo(cx + dx * k * 1.5, cy + dy * k * 1.5);
+        g.moveTo(cx + Math.cos(a) * (r + 3 * s + kick), cy + Math.sin(a) * (r + 3 * s + kick));
+        g.lineTo(cx + Math.cos(a) * (r + 10 * s + kick), cy + Math.sin(a) * (r + 10 * s + kick));
         g.stroke();
       }
-      g.restore();
-    }
-    if (this.hitMarker > 0) {
-      g.strokeStyle = `rgba(255,255,255,${this.hitMarker})`;
-      g.lineWidth = 2;
-      const k = 9 * s;
-      for (const [dx, dy] of [
-        [1, 1],
-        [-1, 1],
-        [1, -1],
-        [-1, -1],
-      ]) {
+      // An outer ring of arcs turning slowly, faster while the repulsors cycle
+      const turn = this.time * (c.weapons.repulsorBusy ? 2.4 : 0.35);
+      const ro = r + 17 * s + kick * 0.6;
+      g.strokeStyle = CYAN_DIM;
+      for (let i = 0; i < 3; i++) {
+        const a = turn + (i * Math.PI * 2) / 3;
         g.beginPath();
-        g.moveTo(cx + dx * k, cy + dy * k);
-        g.lineTo(cx + dx * k * 1.8, cy + dy * k * 1.8);
+        g.arc(cx, cy, ro, a, a + 0.55);
         g.stroke();
       }
-    }
+      g.fillStyle = WHITE;
+      g.fillRect(cx - 1, cy - 1, 2, 2);
+      // A kill: a bold X slams onto the sight and lingers
+      if (this.killConfirm > 0) {
+        const t = 1 - this.killConfirm;
+        const k = (11 + 10 * (1 - Math.min(1, t / 0.12)) ** 2) * s;
+        g.save();
+        g.globalAlpha *= Math.min(1, this.killConfirm * 2);
+        g.strokeStyle = t < 0.08 ? WHITE : RED;
+        g.lineWidth = 3;
+        for (const [dx, dy] of [
+          [1, 1],
+          [-1, 1],
+          [1, -1],
+          [-1, -1],
+        ]) {
+          g.beginPath();
+          g.moveTo(cx + dx * k * 0.55, cy + dy * k * 0.55);
+          g.lineTo(cx + dx * k * 1.5, cy + dy * k * 1.5);
+          g.stroke();
+        }
+        g.restore();
+      }
+      if (this.hitMarker > 0) {
+        g.strokeStyle = `rgba(255,255,255,${this.hitMarker})`;
+        g.lineWidth = 2;
+        const k = 9 * s;
+        for (const [dx, dy] of [
+          [1, 1],
+          [-1, 1],
+          [1, -1],
+          [-1, -1],
+        ]) {
+          g.beginPath();
+          g.moveTo(cx + dx * k, cy + dy * k);
+          g.lineTo(cx + dx * k * 1.8, cy + dy * k * 1.8);
+          g.stroke();
+        }
+      }
+    });
   }
 
   private drawMarkers(g: CanvasRenderingContext2D, cam: THREE.PerspectiveCamera, m: FlightModel, s: number): void {
-    // Flight-path marker: where the suit is actually going
-    if (m.speed > 4) {
-      const p = this.project(this._v.copy(m.pos).addScaledVector(m.vel, 200 / m.speed), cam);
-      if (p) {
-        g.strokeStyle = WHITE;
-        g.lineWidth = 1.4;
-        const r = 6 * s;
+    this.crisp(g, () => {
+      // Flight-path marker: where the suit is actually going
+      if (m.speed > 4) {
+        const p = this.project(this._v.copy(m.pos).addScaledVector(m.vel, 200 / m.speed), cam);
+        if (p) {
+          g.strokeStyle = WHITE;
+          g.lineWidth = 1.4;
+          const r = 6 * s;
+          g.beginPath();
+          g.arc(p.x, p.y, r, 0, Math.PI * 2);
+          g.moveTo(p.x - r, p.y);
+          g.lineTo(p.x - r * 2.6, p.y);
+          g.moveTo(p.x + r, p.y);
+          g.lineTo(p.x + r * 2.6, p.y);
+          g.moveTo(p.x, p.y - r);
+          g.lineTo(p.x, p.y - r * 2);
+          g.stroke();
+        }
+      }
+      // Nose: where the suit points (it chases the reticle)
+      const nose = this.project(this._v.copy(m.pos).addScaledVector(m.thrustAxis(this._w).lerp(m.forward(this._u), 1 - m.flightness), 200), cam);
+      if (nose && m.flightness > 0.3) {
+        g.strokeStyle = CYAN_DIM;
+        g.lineWidth = 1.2;
+        const k = 7 * s;
         g.beginPath();
-        g.arc(p.x, p.y, r, 0, Math.PI * 2);
-        g.moveTo(p.x - r, p.y);
-        g.lineTo(p.x - r * 2.6, p.y);
-        g.moveTo(p.x + r, p.y);
-        g.lineTo(p.x + r * 2.6, p.y);
-        g.moveTo(p.x, p.y - r);
-        g.lineTo(p.x, p.y - r * 2);
+        g.moveTo(nose.x - k, nose.y - k * 0.4);
+        g.lineTo(nose.x - k * 0.4, nose.y + k * 0.5);
+        g.lineTo(nose.x, nose.y);
+        g.lineTo(nose.x + k * 0.4, nose.y + k * 0.5);
+        g.lineTo(nose.x + k, nose.y - k * 0.4);
         g.stroke();
       }
-    }
-    // Nose: where the suit points (it chases the reticle)
-    const nose = this.project(this._v.copy(m.pos).addScaledVector(m.thrustAxis(this._w).lerp(m.forward(this._u), 1 - m.flightness), 200), cam);
-    if (nose && m.flightness > 0.3) {
-      g.strokeStyle = CYAN_DIM;
-      g.lineWidth = 1.2;
-      const k = 7 * s;
-      g.beginPath();
-      g.moveTo(nose.x - k, nose.y - k * 0.4);
-      g.lineTo(nose.x - k * 0.4, nose.y + k * 0.5);
-      g.lineTo(nose.x, nose.y);
-      g.lineTo(nose.x + k * 0.4, nose.y + k * 0.5);
-      g.lineTo(nose.x + k, nose.y - k * 0.4);
-      g.stroke();
-    }
+    });
   }
 
   /** The pad out in the world: a marker on it with its range, while the suit's in the air. */
@@ -2034,16 +2038,18 @@ export class Hud {
         const R = Math.min(this.w, this.h) * 0.42;
         const ax = cx + Math.cos(ang) * R;
         const ay = cy + Math.sin(ang) * R;
-        g.save();
-        g.translate(ax, ay);
-        g.rotate(ang);
-        g.fillStyle = hostileColor;
-        g.beginPath();
-        g.moveTo(9 * s, 0);
-        g.lineTo(-5 * s, -6 * s);
-        g.lineTo(-5 * s, 6 * s);
-        g.fill();
-        g.restore();
+        this.crisp(g, () => {
+          g.save();
+          g.translate(ax, ay);
+          g.rotate(ang);
+          g.fillStyle = hostileColor;
+          g.beginPath();
+          g.moveTo(9 * s, 0);
+          g.lineTo(-5 * s, -6 * s);
+          g.lineTo(-5 * s, 6 * s);
+          g.fill();
+          g.restore();
+        });
         continue;
       }
       const size = THREE.MathUtils.clamp(2600 / dist, 9, 60) * s;
@@ -2054,25 +2060,27 @@ export class Hud {
       if (seen === undefined) this.seenAt.set(h.id, (seen = this.time));
       const acq = Math.min(1, (this.time - seen) / 0.3);
       const bs = size * (1 + 1.6 * (1 - acq) ** 2);
-      g.save();
-      if (acq < 1) g.globalAlpha *= flick(this.time, h.id) > 0.3 ? 1 : 0.3;
-      g.strokeStyle = hostileColor;
-      g.lineWidth = 1.3;
-      // Corner brackets
-      const k = bs * 0.4;
-      for (const [sx, sy] of [
-        [-1, -1],
-        [1, -1],
-        [1, 1],
-        [-1, 1],
-      ]) {
-        g.beginPath();
-        g.moveTo(x + sx * bs, y + sy * (bs - k));
-        g.lineTo(x + sx * bs, y + sy * bs);
-        g.lineTo(x + sx * (bs - k), y + sy * bs);
-        g.stroke();
-      }
-      g.restore();
+      this.crisp(g, () => {
+        g.save();
+        if (acq < 1) g.globalAlpha *= flick(this.time, h.id) > 0.3 ? 1 : 0.3;
+        g.strokeStyle = hostileColor;
+        g.lineWidth = 1.3;
+        // Corner brackets
+        const k = bs * 0.4;
+        for (const [sx, sy] of [
+          [-1, -1],
+          [1, -1],
+          [1, 1],
+          [-1, 1],
+        ]) {
+          g.beginPath();
+          g.moveTo(x + sx * bs, y + sy * (bs - k));
+          g.lineTo(x + sx * bs, y + sy * bs);
+          g.lineTo(x + sx * (bs - k), y + sy * bs);
+          g.stroke();
+        }
+        g.restore();
+      });
       const label = `${h.label ?? (h.kind === 'sam' ? 'SAM' : 'DRN')} ${dist > 1000 ? (dist / 1000).toFixed(1) + 'k' : Math.round(dist)}`;
       if (acq >= 1) this.text(g, label, x + size + 6 * s, y - size + 6 * s, 9 * s, hostileColor);
       // Bomber Open-Bay Payload Weak-Point indicator (Pillar 6B)
@@ -2080,21 +2088,25 @@ export class Hud {
         const pulse = 0.65 + 0.35 * Math.sin(this.time * 14);
         g.save();
         g.globalAlpha *= pulse;
-        g.strokeStyle = AMBER;
-        g.lineWidth = 1.6;
-        g.beginPath();
-        g.arc(x, y + size * 0.25, size * 0.55, 0, Math.PI * 2);
-        g.stroke();
+        this.crisp(g, () => {
+          g.strokeStyle = AMBER;
+          g.lineWidth = 1.6;
+          g.beginPath();
+          g.arc(x, y + size * 0.25, size * 0.55, 0, Math.PI * 2);
+          g.stroke();
+        });
         this.text(g, 'BAY OPEN · CRIT', x, y - size - 8 * s, 8.5 * s, AMBER, 'center', JARVIS);
         g.restore();
       }
       // Health bar
       const hp = h.hp / h.maxHp;
       if (hp < 0.999) {
-        g.fillStyle = 'rgba(255,255,255,0.18)';
-        g.fillRect(x - size, y + size + 4 * s, size * 2, 2.5 * s);
-        g.fillStyle = hostileColor;
-        g.fillRect(x - size, y + size + 4 * s, size * 2 * Math.max(0, hp), 2.5 * s);
+        this.crisp(g, () => {
+          g.fillStyle = 'rgba(255,255,255,0.18)';
+          g.fillRect(x - size, y + size + 4 * s, size * 2, 2.5 * s);
+          g.fillStyle = hostileColor;
+          g.fillRect(x - size, y + size + 4 * s, size * 2 * Math.max(0, hp), 2.5 * s);
+        });
       }
       // Missile lock: a spinning diamond, numbered in salvo order (one per enemy)
       const n = locked.get(h.id);
@@ -2104,30 +2116,32 @@ export class Hud {
         if (since === undefined) this.lockedAt.set(h.id, (since = this.time));
         const lt = this.time - since;
         const slam = 1 + 1.8 * (1 - Math.min(1, lt / 0.2)) ** 2;
-        if (lt < 0.45) {
+        this.crisp(g, () => {
+          if (lt < 0.45) {
+            g.save();
+            g.globalAlpha *= 1 - lt / 0.45;
+            g.strokeStyle = WHITE;
+            g.lineWidth = 1;
+            g.beginPath();
+            g.arc(x, y, size * (1.4 + lt * 4), 0, Math.PI * 2);
+            g.stroke();
+            g.restore();
+          }
           g.save();
-          g.globalAlpha *= 1 - lt / 0.45;
+          g.translate(x, y);
+          g.rotate(this.time * 2 + (slam - 1) * 2);
           g.strokeStyle = WHITE;
-          g.lineWidth = 1;
+          g.lineWidth = 1.6;
+          const d = size * 1.35 * slam;
           g.beginPath();
-          g.arc(x, y, size * (1.4 + lt * 4), 0, Math.PI * 2);
+          g.moveTo(0, -d);
+          g.lineTo(d, 0);
+          g.lineTo(0, d);
+          g.lineTo(-d, 0);
+          g.closePath();
           g.stroke();
           g.restore();
-        }
-        g.save();
-        g.translate(x, y);
-        g.rotate(this.time * 2 + (slam - 1) * 2);
-        g.strokeStyle = WHITE;
-        g.lineWidth = 1.6;
-        const d = size * 1.35 * slam;
-        g.beginPath();
-        g.moveTo(0, -d);
-        g.lineTo(d, 0);
-        g.lineTo(0, d);
-        g.lineTo(-d, 0);
-        g.closePath();
-        g.stroke();
-        g.restore();
+        });
         this.text(g, `${n}`, x - size - 6 * s, y - size + 6 * s, 9 * s, WHITE, 'right');
       }
       // Lead pip (repulsors / cannons, or the unibeam's short sweep lag) on every
@@ -2151,151 +2165,163 @@ export class Hud {
             this.zoneAt.delete(h.id);
             zt = undefined;
           }
-          if (zt !== undefined) {
-            const snap = 1 + 1.2 * (1 - Math.min(1, (this.time - zt) / 0.12)) ** 2;
-            const b = (r + 5 * s) * snap;
-            const k = 4 * s;
-            g.save();
-            g.strokeStyle = WHITE;
-            g.lineWidth = 1.6;
-            for (let q = 0; q < 4; q++) {
-              const a = Math.PI / 4 + (q * Math.PI) / 2;
-              const bx = lead.x + Math.cos(a) * b;
-              const by = lead.y + Math.sin(a) * b;
-              const sx = -Math.sign(Math.cos(a));
-              const sy = -Math.sign(Math.sin(a));
+          this.crisp(g, () => {
+            if (zt !== undefined) {
+              const snap = 1 + 1.2 * (1 - Math.min(1, (this.time - zt) / 0.12)) ** 2;
+              const b = (r + 5 * s) * snap;
+              const k = 4 * s;
+              g.save();
+              g.strokeStyle = WHITE;
+              g.lineWidth = 1.6;
+              for (let q = 0; q < 4; q++) {
+                const a = Math.PI / 4 + (q * Math.PI) / 2;
+                const bx = lead.x + Math.cos(a) * b;
+                const by = lead.y + Math.sin(a) * b;
+                const sx = -Math.sign(Math.cos(a));
+                const sy = -Math.sign(Math.sin(a));
+                g.beginPath();
+                g.moveTo(bx + sx * k, by);
+                g.lineTo(bx, by);
+                g.lineTo(bx, by + sy * k);
+                g.stroke();
+              }
+              g.fillStyle = 'rgba(235, 250, 255, 0.35)';
               g.beginPath();
-              g.moveTo(bx + sx * k, by);
-              g.lineTo(bx, by);
-              g.lineTo(bx, by + sy * k);
-              g.stroke();
+              g.arc(lead.x, lead.y, r, 0, Math.PI * 2);
+              g.fill();
+              g.restore();
             }
-            g.fillStyle = 'rgba(235, 250, 255, 0.35)';
+            const dx = lead.x - x;
+            const dy = lead.y - y;
+            const dl = Math.hypot(dx, dy);
+            g.strokeStyle = on ? WHITE : CYAN;
+            g.lineWidth = on ? 1.8 : 1.1;
+            if (dl > r + 2 * s) {
+              g.setLineDash([3 * s, 3 * s]);
+              g.beginPath();
+              g.moveTo(x + (dx / dl) * Math.min(dl, size * 0.5), y + (dy / dl) * Math.min(dl, size * 0.5));
+              g.lineTo(lead.x - (dx / dl) * r, lead.y - (dy / dl) * r);
+              g.stroke();
+              g.setLineDash([]);
+            }
             g.beginPath();
             g.arc(lead.x, lead.y, r, 0, Math.PI * 2);
-            g.fill();
-            g.restore();
-          }
-          const dx = lead.x - x;
-          const dy = lead.y - y;
-          const dl = Math.hypot(dx, dy);
-          g.strokeStyle = on ? WHITE : CYAN;
-          g.lineWidth = on ? 1.8 : 1.1;
-          if (dl > r + 2 * s) {
-            g.setLineDash([3 * s, 3 * s]);
-            g.beginPath();
-            g.moveTo(x + (dx / dl) * Math.min(dl, size * 0.5), y + (dy / dl) * Math.min(dl, size * 0.5));
-            g.lineTo(lead.x - (dx / dl) * r, lead.y - (dy / dl) * r);
             g.stroke();
-            g.setLineDash([]);
-          }
-          g.beginPath();
-          g.arc(lead.x, lead.y, r, 0, Math.PI * 2);
-          g.stroke();
-          if (on) {
-            g.fillStyle = WHITE;
-            g.beginPath();
-            g.arc(lead.x, lead.y, 1.6 * s, 0, Math.PI * 2);
-            g.fill();
-          }
+            if (on) {
+              g.fillStyle = WHITE;
+              g.beginPath();
+              g.arc(lead.x, lead.y, 1.6 * s, 0, Math.PI * 2);
+              g.fill();
+            }
+          });
         }
       }
       const at = atOrder.get(h.id);
       if (at !== undefined) {
         // Amber ring that closes on lock; the next round's target pulses
         const next = at === 0;
-        g.strokeStyle = AMBER;
-        g.lineWidth = next ? 2 : 1.2;
         const r = size * (next ? 1.55 + 0.12 * Math.sin(this.time * 12) : 1.6);
-        g.beginPath();
-        g.arc(x, y, r, 0, Math.PI * 2);
-        g.stroke();
-        for (let k = 0; k < 4; k++) {
-          const a = (k * Math.PI) / 2 + Math.PI / 4;
+        this.crisp(g, () => {
+          g.strokeStyle = AMBER;
+          g.lineWidth = next ? 2 : 1.2;
           g.beginPath();
-          g.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
-          g.lineTo(x + Math.cos(a) * (r + 5 * s), y + Math.sin(a) * (r + 5 * s));
+          g.arc(x, y, r, 0, Math.PI * 2);
           g.stroke();
-        }
+          for (let k = 0; k < 4; k++) {
+            const a = (k * Math.PI) / 2 + Math.PI / 4;
+            g.beginPath();
+            g.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+            g.lineTo(x + Math.cos(a) * (r + 5 * s), y + Math.sin(a) * (r + 5 * s));
+            g.stroke();
+          }
+        });
         this.text(g, `AT${at + 1}`, x + r + 3 * s, y + r, 8 * s, AMBER);
       }
       // War Machine M134 shoulder Vulcan auto-lock indicator
       if (W.variant === 'warmachine' && W.minigunTarget === h) {
         const hot = W.minigunFiring;
         const r = size * (hot ? 1.48 + 0.1 * Math.sin(this.time * 28) : 1.42);
-        g.save();
-        g.strokeStyle = hot ? WHITE : AMBER;
-        g.lineWidth = hot ? 2 : 1.35;
-        g.setLineDash(hot ? [] : [4 * s, 3 * s]);
-        g.beginPath();
-        g.moveTo(x, y - r);
-        g.lineTo(x + r, y);
-        g.lineTo(x, y + r);
-        g.lineTo(x - r, y);
-        g.closePath();
-        g.stroke();
-        g.setLineDash([]);
-        g.restore();
+        this.crisp(g, () => {
+          g.save();
+          g.strokeStyle = hot ? WHITE : AMBER;
+          g.lineWidth = hot ? 2 : 1.35;
+          g.setLineDash(hot ? [] : [4 * s, 3 * s]);
+          g.beginPath();
+          g.moveTo(x, y - r);
+          g.lineTo(x + r, y);
+          g.lineTo(x, y + r);
+          g.lineTo(x - r, y);
+          g.closePath();
+          g.stroke();
+          g.setLineDash([]);
+          g.restore();
+        });
         this.text(g, hot ? 'VULCAN TRACK' : 'VULCAN LOCK', x, y - r - 8 * s, 7.5 * s, hot ? WHITE : AMBER, 'center', JARVIS);
       }
     }
     // Launcher paint: a tight amber cone
     if (W.launcherLockProgress > 0) {
       const r = Math.tan(THREE.MathUtils.degToRad(10)) * (this.h / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
-      g.strokeStyle = 'rgba(255, 184, 77, 0.35)';
-      g.lineWidth = 1;
-      g.setLineDash([2 * s, 5 * s]);
-      g.beginPath();
-      g.arc(cx, cy, r, 0, Math.PI * 2);
-      g.stroke();
-      g.setLineDash([]);
-      g.strokeStyle = AMBER;
-      g.lineWidth = 2;
-      g.beginPath();
-      g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * W.launcherLockProgress);
-      g.stroke();
+      this.crisp(g, () => {
+        g.strokeStyle = 'rgba(255, 184, 77, 0.35)';
+        g.lineWidth = 1;
+        g.setLineDash([2 * s, 5 * s]);
+        g.beginPath();
+        g.arc(cx, cy, r, 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+        g.strokeStyle = AMBER;
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * W.launcherLockProgress);
+        g.stroke();
+      });
       const lockLbl = W.variant === 'warmachine' ? 'BB LOCK' : 'AT LOCK';
       this.text(g, `${lockLbl} ${W.launcherLocks.length}/${W.launcherAmmo}`, cx, cy + r + 14 * s, 9 * s, AMBER, 'center');
     }
     // Spacebar gauge round the sight: Unibeam charge/heat (Mk III) or Vulcan spool/barrel heat (War Machine)
     const wmGunActive = W.variant === 'warmachine' && (W.minigunSpool > 0 || W.minigunFiring);
     if (W.unibeamCharge > 0 || W.unibeamOn || wmGunActive) {
-      const r = 26 * s;
-      const on = W.unibeamOn || W.minigunFiring;
-      const charge = W.variant === 'warmachine' ? W.minigunSpool : W.unibeamCharge;
-      g.strokeStyle = CYAN_FAINT;
-      g.lineWidth = 3 * s;
-      g.beginPath();
-      g.arc(cx, cy, r, 0, Math.PI * 2);
-      g.stroke();
-      g.strokeStyle = on ? (W.variant === 'warmachine' ? AMBER : WHITE) : W.variant === 'warmachine' ? AMBER : CYAN;
-      g.beginPath();
-      g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (on ? 1 : charge));
-      g.stroke();
-      if (on) {
-        const heat = W.unibeamHeat;
-        g.strokeStyle = heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.variant === 'warmachine' ? AMBER : CYAN;
-        g.lineWidth = 2 * s;
+      this.crisp(g, () => {
+        const r = 26 * s;
+        const on = W.unibeamOn || W.minigunFiring;
+        const charge = W.variant === 'warmachine' ? W.minigunSpool : W.unibeamCharge;
+        g.strokeStyle = CYAN_FAINT;
+        g.lineWidth = 3 * s;
         g.beginPath();
-        g.arc(cx, cy, r + 6 * s, Math.PI * 0.75, Math.PI * 0.75 + Math.PI * 1.5 * heat);
+        g.arc(cx, cy, r, 0, Math.PI * 2);
         g.stroke();
-      }
+        g.strokeStyle = on ? (W.variant === 'warmachine' ? AMBER : WHITE) : W.variant === 'warmachine' ? AMBER : CYAN;
+        g.beginPath();
+        g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (on ? 1 : charge));
+        g.stroke();
+        if (on) {
+          const heat = W.unibeamHeat;
+          g.strokeStyle = heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.variant === 'warmachine' ? AMBER : CYAN;
+          g.lineWidth = 2 * s;
+          g.beginPath();
+          g.arc(cx, cy, r + 6 * s, Math.PI * 0.75, Math.PI * 0.75 + Math.PI * 1.5 * heat);
+          g.stroke();
+        }
+      });
     }
     // Missile lock cone while painting
     if (W.lockProgress > 0) {
-      const r = Math.tan(THREE.MathUtils.degToRad(19)) * (this.h / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
-      g.strokeStyle = CYAN_DIM;
-      g.lineWidth = 1;
-      g.setLineDash([3 * s, 6 * s]);
-      g.beginPath();
-      g.arc(cx, cy, r, 0, Math.PI * 2);
-      g.stroke();
-      g.setLineDash([]);
-      g.strokeStyle = CYAN;
-      g.lineWidth = 2;
-      g.beginPath();
-      g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * W.lockProgress);
-      g.stroke();
+      this.crisp(g, () => {
+        const r = Math.tan(THREE.MathUtils.degToRad(19)) * (this.h / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
+        g.strokeStyle = CYAN_DIM;
+        g.lineWidth = 1;
+        g.setLineDash([3 * s, 6 * s]);
+        g.beginPath();
+        g.arc(cx, cy, r, 0, Math.PI * 2);
+        g.stroke();
+        g.setLineDash([]);
+        g.strokeStyle = CYAN;
+        g.lineWidth = 2;
+        g.beginPath();
+        g.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * W.lockProgress);
+        g.stroke();
+      });
     }
   }
 

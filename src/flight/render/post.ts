@@ -75,7 +75,45 @@ vec3 safeHdr(vec3 c) {
   if (!(l >= 0.0 && l < 60000.0)) return vec3(0.0);
   return max(c, 0.0);
 }
-vec3 safeScene(vec2 uv) { return safeHdr(texture2D(tScene, uv).rgb); }
+vec3 safeScene(vec2 uv) {
+  vec3 c = texture2D(tScene, uv).rgb;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  if (l >= 0.0 && l < 60000.0) {
+    // Suppress isolated single-pixel HDR fireflies without softening broad sun/plumes/beams
+    if (l > 6.0) {
+      vec2 px = 1.0 / max(uSrcRes, vec2(1.0));
+      vec3 n0 = safeHdr(texture2D(tScene, uv + vec2(px.x, 0.0)).rgb);
+      vec3 n1 = safeHdr(texture2D(tScene, uv - vec2(px.x, 0.0)).rgb);
+      vec3 n2 = safeHdr(texture2D(tScene, uv + vec2(0.0, px.y)).rgb);
+      vec3 n3 = safeHdr(texture2D(tScene, uv - vec2(0.0, px.y)).rgb);
+      float nl = max(max(dot(n0, vec3(0.2126, 0.7152, 0.0722)), dot(n1, vec3(0.2126, 0.7152, 0.0722))),
+                     max(dot(n2, vec3(0.2126, 0.7152, 0.0722)), dot(n3, vec3(0.2126, 0.7152, 0.0722))));
+      if (l > max(4.0, nl * 2.5)) {
+        vec3 avg = (n0 + n1 + n2 + n3) * 0.25;
+        return max(avg, vec3(0.0));
+      }
+    }
+    return max(c, 0.0);
+  }
+  // Step outside a 1-texel bilinear footprint so a poisoned texel doesn't bleed into its own fallback
+  vec2 px = 1.5 / max(uSrcRes, vec2(1.0));
+  vec3 sum = vec3(0.0);
+  float count = 0.0;
+  vec2 offs[4];
+  offs[0] = vec2(px.x, 0.0);
+  offs[1] = vec2(-px.x, 0.0);
+  offs[2] = vec2(0.0, px.y);
+  offs[3] = vec2(0.0, -px.y);
+  for (int i = 0; i < 4; i++) {
+    vec3 nc = texture2D(tScene, clamp(uv + offs[i], 0.001, 0.999)).rgb;
+    float nl = dot(nc, vec3(0.2126, 0.7152, 0.0722));
+    if (nl >= 0.0 && nl < 60000.0) {
+      sum += max(nc, 0.0);
+      count += 1.0;
+    }
+  }
+  return count > 0.0 ? sum / count : vec3(0.0);
+}
 vec3 squash(vec3 c) { return c / (1.0 + max(c.r, max(c.g, c.b))); }
 vec3 sceneTap(vec2 uv) { return squash(safeScene(uv)); }
 vec3 sceneSharp(vec2 uv) {
@@ -95,9 +133,15 @@ vec3 sceneSharp(vec2 uv) {
   float wC = w12.x * w12.y;
   float wR = w3.x * w12.y;
   float wD = w12.x * w3.y;
-  vec3 r = sceneTap(vec2(t12.x, t0.y)) * wU + sceneTap(vec2(t0.x, t12.y)) * wL + sceneTap(vec2(t12.x, t12.y)) * wC
-         + sceneTap(vec2(t3.x, t12.y)) * wR + sceneTap(vec2(t12.x, t3.y)) * wD;
-  r = clamp(r / (wU + wL + wC + wR + wD), 0.0, 0.9995);
+  vec3 cU = sceneTap(vec2(t12.x, t0.y));
+  vec3 cL = sceneTap(vec2(t0.x, t12.y));
+  vec3 cC = sceneTap(vec2(t12.x, t12.y));
+  vec3 cR = sceneTap(vec2(t3.x, t12.y));
+  vec3 cD = sceneTap(vec2(t12.x, t3.y));
+  vec3 r = cU * wU + cL * wL + cC * wC + cR * wR + cD * wD;
+  vec3 lo = min(cC, min(min(cU, cD), min(cL, cR)));
+  vec3 hi = max(cC, max(max(cU, cD), max(cL, cR)));
+  r = clamp(r / (wU + wL + wC + wR + wD), lo, min(hi, vec3(0.9995)));
   return r / (1.0 - max(r.r, max(r.g, r.b)));
 }
 
@@ -201,6 +245,7 @@ vec3 tap(vec2 uv, inout float wsum) {
   // comparison, so it lands in the else)
   float l = luminance(c);
   if (!(l >= 0.0 && l < 60000.0)) c = vec3(0.0);
+  else c = max(c, 0.0);
   float w = 1.0 / (1.0 + luminance(c));
   wsum += w;
   return c * w;

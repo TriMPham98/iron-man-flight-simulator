@@ -121,7 +121,7 @@ function droneGeometry() {
       box(0.012, 0.26, 0.12, C.storeNose, x, -0.235, -0.52),
     );
     // Nav lights on the wingtips: red to port (−x), green to starboard
-    glow.push(paint(new THREE.BoxGeometry(0.05, 0.03, 0.08).translate(s * 2.04, 0.02, -0.92), s < 0 ? 0xff2010 : 0x20ff40, 3));
+    glow.push(paint(new THREE.BoxGeometry(0.05, 0.03, 0.08).translate(s * 2.065, 0.02, -0.92), s < 0 ? 0xff2010 : 0x20ff40, 3));
   }
 
   // Dorsal intake: a scoop faired into the spine, its mouth black
@@ -144,7 +144,7 @@ function droneGeometry() {
   body.push(box(0.36, 0.02, 1.0, C.edge, 0, -0.2, 0.15));
   // Chin sensor ball with the red eye in it
   body.push(paint(new THREE.SphereGeometry(0.1, 12, 8).translate(0, -0.11, 1.55), C.glass));
-  glow.push(paint(new THREE.CircleGeometry(0.06, 12).scale(1.4, 0.8, 1).translate(0, -0.11, 1.652), new THREE.Color(1, 0.06, 0.02), 6));
+  glow.push(paint(new THREE.CircleGeometry(0.06, 12).scale(1.4, 0.8, 1).translate(0, -0.11, 1.656), new THREE.Color(1, 0.06, 0.02), 6));
 
   geoCache = { body: merge(body), glow: merge(glow) };
   return geoCache;

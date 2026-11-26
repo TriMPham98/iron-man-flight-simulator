@@ -185,10 +185,10 @@ function samGeometry(): SamGeometry {
   const radar = [
     paint(new THREE.CylinderGeometry(0.16, 0.2, 0.3, 10).translate(0, -0.05, 0), C.dark),
     paint(new THREE.BoxGeometry(2.1, 1.1, 0.14).rotateX(-0.25).translate(0, 0.62, 0.05), C.oliveDark),
-    paint(new THREE.BoxGeometry(1.96, 0.98, 0.04).translate(0, 0, 0.08).rotateX(-0.25).translate(0, 0.62, 0.05), C.array),
+    paint(new THREE.BoxGeometry(1.96, 0.98, 0.04).translate(0, 0, 0.092).rotateX(-0.25).translate(0, 0.62, 0.05), C.array),
     box(0.3, 0.5, 0.3, C.olive, 0, 0.3, -0.12),
   ];
-  for (const x of [-0.5, 0, 0.5]) radar.push(paint(new THREE.BoxGeometry(0.03, 0.98, 0.02).translate(x, 0, 0.105).rotateX(-0.25).translate(0, 0.62, 0.05), C.dark));
+  for (const x of [-0.5, 0, 0.5]) radar.push(paint(new THREE.BoxGeometry(0.03, 0.98, 0.02).translate(x, 0, 0.123).rotateX(-0.25).translate(0, 0.62, 0.05), C.dark));
 
   geoCache = {
     body: merge(body),
