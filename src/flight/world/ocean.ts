@@ -102,6 +102,11 @@ export class Ocean {
   private readonly geo: THREE.InstancedBufferGeometry;
   private lastTime = -1;
   private readonly eye = new THREE.Vector3();
+  private lodScale = 1;
+  private simDt = 0;
+  private simFrame = 0;
+  private lastSimTime = -1;
+  private lastSimPasses = 0;
 
   constructor(field: Heightfield, atmosphere: Record<string, THREE.IUniform>, renderer?: THREE.WebGLRenderer) {
     this.sim = renderer ? new OceanSim(renderer) : null;
@@ -153,6 +158,15 @@ export class Ocean {
     this.mesh.visible = !!sim;
   }
 
+  /** Scale CDLOD range thresholds and step simulation at half-rate when low. */
+  setLodScale(scale: number): void {
+    const next = THREE.MathUtils.clamp(scale, 0.35, 2);
+    if (Math.abs(next - this.lodScale) <= 1e-3) return;
+    this.lodScale = next;
+    this.cdlod.setLodScale(next);
+    this.uniforms.uR0.value = this.cdlod.r0;
+  }
+
   /**
    * Advance the sea and pick the surface patches for this view. Pass the
    * camera (a bare eye position still advances the sea, but keeps last
@@ -166,9 +180,18 @@ export class Ocean {
     const dt = this.lastTime < 0 ? 1 / 60 : Math.max(0, time - this.lastTime);
     this.lastTime = time;
     if (this.sim) {
-      this.sim.step(time, dt, this.eye);
-      this.uniforms.uFoamW0.value = this.sim.foamWorld[0];
-      this.uniforms.uFoamW1.value = this.sim.foamWorld[1];
+      const halfRate = this.lodScale < 0.8 || this.eye.y > 600;
+      this.simDt += dt;
+      if (this.lastSimTime < 0 || !halfRate || (this.simFrame++ & 1) === 0) {
+        this.sim.step(time, this.simDt, this.eye);
+        this.uniforms.uFoamW0.value = this.sim.foamWorld[0];
+        this.uniforms.uFoamW1.value = this.sim.foamWorld[1];
+        this.lastSimPasses = this.sim.passes;
+        this.simDt = 0;
+        this.lastSimTime = time;
+      } else {
+        this.lastSimPasses = 0;
+      }
     }
     if (cam) {
       const far = (cam as THREE.PerspectiveCamera).far;
@@ -189,7 +212,7 @@ export class Ocean {
 
   /** Patches drawn and simulation passes run last frame (diagnostics). */
   stats(): { nodes: number; simPasses: number } {
-    return { nodes: this.cdlod.count, simPasses: this.sim?.passes ?? 0 };
+    return { nodes: this.cdlod.count, simPasses: this.lastSimPasses };
   }
 
   dispose(): void {

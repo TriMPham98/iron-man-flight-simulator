@@ -128,6 +128,10 @@ export class FlightApp {
   readonly audioReady: Promise<void>;
   private readonly clock = new THREE.Clock();
   private adaptive!: ReturnType<typeof createAdaptiveResolution>;
+  private baseLodScale = 1;
+  private lodScale = 1;
+  private maxAdaptiveDpr = Infinity;
+  private onLodApply: ((scale: number) => void) | null = null;
   private baseExposure = 0.58;
   private raf = 0;
   private running = false;
@@ -286,7 +290,14 @@ export class FlightApp {
       helmet: 0,
     };
     this.baseExposure = this.lens.exposure;
-    this.adaptive = createAdaptiveResolution(this.resolution, () => this.post.resize(), { min: 0.7, max: this.maxDpr });
+    this.adaptive = createAdaptiveResolution(this.resolution, () => this.post.resize(), {
+      min: 0.7,
+      max: Math.min(this.maxDpr, this.maxAdaptiveDpr),
+      lodMin: Math.min(0.5, this.baseLodScale),
+      lodMax: this.baseLodScale,
+      lodInitial: this.lodScale,
+      onLodChange: (s) => this.applyLodScale(s),
+    });
 
     // ?demo plays the directed reel live; ?capture steps it frame by frame
     if (!this.opts.embedded) {
@@ -300,22 +311,70 @@ export class FlightApp {
     this.syncViewport(true);
   }
 
+  /** Sets the quality-preset LOD scale ceiling and optional world applier. */
+  setPresetLodScale(scale: number, onApply?: (scale: number) => void): void {
+    this.baseLodScale = scale;
+    this.lodScale = scale;
+    if (onApply) this.onLodApply = onApply;
+    this.adaptive?.setLodBounds(scale, Math.min(0.5, scale));
+  }
+
+  /** Caps the adaptive resolution ceiling to the active quality preset. */
+  setMaxAdaptiveDpr(max: number): void {
+    this.maxAdaptiveDpr = max;
+    this.adaptive?.setMaxPixelRatio(Math.min(this.maxDpr, max));
+  }
+
+  private applyLodScale(scale: number): void {
+    this.lodScale = scale;
+    if (this.onLodApply) {
+      this.onLodApply(scale);
+      return;
+    }
+    const w = this.world;
+    if (!w) return;
+    (w.terrain as { setLodScale?: (s: number) => void }).setLodScale?.(scale);
+    (w.vegetation as { setLodScale?: (s: number) => void }).setLodScale?.(scale);
+    w.ocean.setLodScale(scale);
+    w.clouds.setLodScale(scale);
+  }
+
   /**
    * Compiles every program the first frames need and runs a few of them
    * unseen, so the frame the handoff (or title) first shows is a steady one.
    * Parallel compile (KHR_parallel_shader_compile) keeps the main thread free.
    */
   async warm(frames = 3): Promise<void> {
-    // Everything, including what is hidden now and shown later (boot jets,
-    // flaps, weapons, sprites): three only compiles visible objects
-    await this.step('compile', async () => {
-      const hidden: THREE.Object3D[] = [];
-      this.scene.traverse((o) => {
-        if (!o.visible) {
-          hidden.push(o);
-          o.visible = true;
+    const revealAll = (setCull: boolean) => {
+      const vis: Array<[THREE.Object3D, boolean, boolean]> = [];
+      const lods: Array<[THREE.LOD, boolean]> = [];
+      const touch = (o: THREE.Object3D) => {
+        vis.push([o, o.visible, o.frustumCulled]);
+        o.visible = true;
+        if (setCull) o.frustumCulled = false;
+        if ((o as THREE.LOD).isLOD) {
+          const lod = o as THREE.LOD;
+          lods.push([lod, lod.autoUpdate]);
+          lod.autoUpdate = false;
+          for (const lvl of lod.levels) {
+            if (lvl.object && lvl.object.parent !== lod) lvl.object.traverse(touch);
+          }
         }
-      });
+      };
+      this.scene.traverse(touch);
+      return () => {
+        for (const [lod, au] of lods) lod.autoUpdate = au;
+        for (const [o, v, c] of vis) {
+          o.visible = v;
+          o.frustumCulled = c;
+        }
+      };
+    };
+
+    // Everything, including what is hidden now and shown later (boot jets,
+    // flaps, weapons, sprites, and all THREE.LOD tiers): three only compiles visible objects
+    await this.step('compile', async () => {
+      const restore = revealAll(false);
       // Into the target the scene really renders to (linear HDR, no tone
       // mapping): the programs for the canvas would be different variants
       const r = this.renderer;
@@ -325,7 +384,7 @@ export class FlightApp {
         await r.compileAsync(this.scene, this.camera);
       } finally {
         r.setRenderTarget(prev);
-        for (const o of hidden) o.visible = false;
+        restore();
       }
     });
     // Upload every texture a few at a time (the first frame would otherwise
@@ -345,28 +404,20 @@ export class FlightApp {
         for (const t of list.slice(i, i + 4)) this.renderer.initTexture(t);
       });
     }
-    // One unseen draw of everything, hidden things included and nothing
-    // culled: the GPU builds its pipeline state for each draw on first use
-    // (ANGLE/Metal), which would otherwise land on the frame the boot jets
-    // first light
+    // One unseen draw of everything, hidden things and all LOD levels included
+    // and nothing culled: the GPU builds its pipeline state for each draw on
+    // first use (ANGLE/Metal), which would otherwise land on the frame the
+    // boot jets first light or an LOD swaps
     await this.step('pipelines', () => {
       const r = this.renderer;
-      const touched: Array<[THREE.Object3D, boolean, boolean]> = [];
-      this.scene.traverse((o) => {
-        touched.push([o, o.visible, o.frustumCulled]);
-        o.visible = true;
-        o.frustumCulled = false;
-      });
+      const restore = revealAll(true);
       const prev = r.getRenderTarget();
       try {
         r.setRenderTarget((this.post as unknown as { rt: THREE.WebGLRenderTarget }).rt ?? null);
         r.render(this.scene, this.camera);
       } finally {
         r.setRenderTarget(prev);
-        for (const [o, v, c] of touched) {
-          o.visible = v;
-          o.frustumCulled = c;
-        }
+        restore();
       }
     });
     // First sim tick builds its lazy state (pools, probes)
@@ -785,7 +836,7 @@ export class FlightApp {
       const raw = this.clock.getDelta();
       this.onFrame?.(raw * 1000);
       const dt = Math.min(raw, 0.1);
-      if (!this.holdResolution) this.adaptive.update(dt);
+      if (!this.holdResolution && !this.opts.pixelRatio) this.adaptive.update(dt);
       this.frame(dt);
     };
     document.addEventListener('visibilitychange', () => {

@@ -23,14 +23,29 @@ const PROBE_AFTER = 3;
 const PROBE_AFTER_MAX = 48;
 const STEP_UP = 0.12;
 
+export interface AdaptiveOptions {
+  min?: number;
+  max?: number;
+  lodMin?: number;
+  lodMax?: number;
+  lodInitial?: number;
+  onLodChange?: (lodScale: number) => void;
+}
+
+const LOD_STEP = 0.08;
+const LOD_BIG_STEP = 0.15;
+
 export function createAdaptiveResolution(
   renderer: ResolutionRenderer,
   onChange: () => void,
-  opts: { min?: number; max?: number } = {},
+  opts: AdaptiveOptions = {},
 ) {
-  const max = opts.max ?? renderer.getPixelRatio();
-  const min = Math.min(max, opts.min ?? 0.8);
+  let max = opts.max ?? renderer.getPixelRatio();
+  let min = Math.min(max, opts.min ?? 0.8);
   let dpr = renderer.getPixelRatio();
+  let lodMax = opts.lodMax ?? 1;
+  let lodMin = Math.min(lodMax, opts.lodMin ?? 0.5);
+  let lodScale = Math.min(lodMax, Math.max(lodMin, opts.lodInitial ?? lodMax));
   let acc = 0;
   let frames = 0;
   let shortest = Infinity;
@@ -41,6 +56,8 @@ export function createAdaptiveResolution(
   let probeAfter = PROBE_AFTER;
   /** Ratio before the last step up, while that step is on trial. */
   let probeFrom = 0;
+  /** LOD scale before the last step up, while that step is on trial. */
+  let lodProbeFrom = 0;
 
   const apply = (next: number) => {
     dpr = next;
@@ -50,8 +67,15 @@ export function createAdaptiveResolution(
     goodFor = 0;
   };
 
+  const applyLod = (next: number) => {
+    lodScale = next;
+    opts.onLodChange?.(lodScale);
+    cooldown = 2;
+    goodFor = 0;
+  };
+
   return {
-    /** Feed the frame delta (s); occasionally changes the pixel ratio. */
+    /** Feed the frame delta (s); occasionally changes the pixel ratio or LOD scale. */
     update(dt: number): void {
       // Ignore tab-resume spikes
       if (dt <= 0 || dt > 0.25) return;
@@ -71,27 +95,44 @@ export function createAdaptiveResolution(
       // ~16.7-17.5 ms here, a 120 Hz one ~8.3-9
       const refresh = Math.min(...periods);
       const good = ms < Math.min(18, refresh * 1.1);
-      if (probeFrom) {
-        const from = probeFrom;
+      if (probeFrom || lodProbeFrom) {
+        const fromDpr = probeFrom;
+        const fromLod = lodProbeFrom;
         probeFrom = 0;
+        lodProbeFrom = 0;
         if (!good) {
           // The step up cost frames: back to where it held, and wait longer
           probeAfter = Math.min(PROBE_AFTER_MAX, probeAfter * 2);
-          apply(from);
+          if (fromDpr) apply(fromDpr);
+          else if (fromLod) applyLod(fromLod);
           return;
         }
         probeAfter = PROBE_AFTER;
       }
       if (ms > SLOW_MS) {
-        // Shed pixels (bigger steps when far behind)
-        const next = Math.max(min, dpr - (ms > 34 ? 0.25 : 0.12));
+        // Shed pixels first; once DPR hits its floor, step LOD scale down gracefully
+        const curDpr = Math.min(dpr, renderer.getPixelRatio());
+        const next = Math.max(min, curDpr - (ms > 34 ? 0.25 : 0.12));
         goodFor = 0;
-        if (next < dpr - 1e-3) apply(next);
+        if (next < curDpr - 1e-3) {
+          apply(next);
+        } else {
+          if (curDpr < dpr - 1e-3) dpr = curDpr;
+          if (opts.onLodChange && lodScale > lodMin + 1e-3) {
+            const nextLod = Math.max(lodMin, Math.round((lodScale - (ms > 34 ? LOD_BIG_STEP : LOD_STEP)) * 1000) / 1000);
+            if (nextLod < lodScale - 1e-3) applyLod(nextLod);
+          }
+        }
       } else if (good) {
         goodFor += 1;
-        if (goodFor >= probeAfter && dpr < max - 1e-3) {
-          probeFrom = dpr;
-          apply(Math.min(max, dpr + STEP_UP));
+        if (goodFor >= probeAfter) {
+          if (opts.onLodChange && lodScale < lodMax - 1e-3) {
+            lodProbeFrom = lodScale;
+            applyLod(Math.min(lodMax, Math.round((lodScale + LOD_STEP) * 1000) / 1000));
+          } else if (dpr < max - 1e-3) {
+            probeFrom = dpr;
+            apply(Math.min(max, dpr + STEP_UP));
+          }
         }
       } else {
         goodFor = 0;
@@ -101,17 +142,36 @@ export function createAdaptiveResolution(
     set(next: number): void {
       next = Math.min(max, Math.max(min, next));
       probeFrom = 0;
+      lodProbeFrom = 0;
       probeAfter = PROBE_AFTER;
       acc = frames = 0;
       shortest = Infinity;
       if (Math.abs(next - dpr) > 1e-3) apply(next);
       cooldown = 2.5;
     },
+    /** Update the preset LOD bounds (resets to `nextMax` and restarts probing). */
+    setLodBounds(nextMax: number, nextMin = Math.min(0.5, nextMax)): void {
+      lodMax = nextMax;
+      lodMin = Math.min(lodMax, nextMin);
+      lodProbeFrom = 0;
+      probeAfter = PROBE_AFTER;
+      if (Math.abs(lodScale - lodMax) > 1e-3) applyLod(lodMax);
+    },
+    /** Update the maximum DPR allowed by the current quality preset. */
+    setMaxPixelRatio(nextMax: number): void {
+      max = nextMax;
+      min = Math.min(max, opts.min ?? 0.8);
+      probeFrom = 0;
+      if (dpr > max) dpr = max;
+    },
     get pixelRatio() {
       return dpr;
     },
     get maxPixelRatio() {
       return max;
+    },
+    get lodScale() {
+      return lodScale;
     },
   };
 }
