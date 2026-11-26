@@ -53,6 +53,7 @@ const offText = (d: number) =>
 
 /** The glass behind the panels. */
 const GLASS = 'rgba(2, 14, 24, 0.34)';
+const JARVIS_TAG = 'J.A.R.V.I.S.  ';
 /** The holographic bloom round the linework (a CSS filter on the canvas, composited on the GPU). */
 const GLOW = 'drop-shadow(0 0 4px rgba(90, 215, 255, 0.42))';
 /** Boot: when each panel comes up after the HUD does (s), and how long it takes. */
@@ -2927,45 +2928,83 @@ export class Hud {
     const x = this.w / 2;
     // The bottom band taken (touch controls): JARVIS speaks under the heading tape instead
     const top = this.bottomInset > 0;
+    const size = 12 * s;
+    const lh = 17 * s;
+    const gap = 9 * s;
+    // Wrapped to the gap between the status and weapons panels, so a long line
+    // neither runs under them nor off the screen
+    const maxW = Math.max(160 * s, Math.min(620 * s, this.w - 2 * 300 * s));
+    g.font = `500 ${size}px ${MONO}`;
     let y = top ? 80 * s + 24 : this.h - 70 * s;
-    for (let i = this.lines.length - 1; i >= 0; i--) {
+    let rowsLeft = 6;
+    for (let i = this.lines.length - 1; i >= 0 && rowsLeft > 0; i--) {
       const l = this.lines[i];
       const age = this.time - l.t;
       if (age > 7) continue;
+      const newest = i === this.lines.length - 1;
+      let rows = this.wrapLine(g, l.text, maxW);
+      if (!newest && rows.length > rowsLeft) break;
+      rows = rows.slice(0, rowsLeft);
+      rowsLeft -= rows.length;
+      const blockH = (rows.length - 1) * lh;
+      // Bottom: the block grows upward from y; top: downward
+      const y0 = top ? y : y - blockH;
       const shown = Math.min(l.text.length, Math.floor(age * 55));
       const a = age > 6 ? 1 - (age - 6) : 1;
-      const newest = i === this.lines.length - 1;
       g.globalAlpha = this.alpha * a * (newest ? 1 : 0.55);
-      const full = `J.A.R.V.I.S.  ${l.text}`;
-      const typed = `J.A.R.V.I.S.  ${l.text.slice(0, shown)}`;
       if (newest) {
-        // A strip of glass under the line (sized to the whole of it, so it
+        // A strip of glass under the block (sized to the whole of it, so it
         // doesn't grow as it types), and a block cursor while it does
-        g.font = `500 ${12 * s}px ${MONO}`;
-        const fw = g.measureText(full).width;
+        g.font = `500 ${size}px ${MONO}`;
+        const fw = Math.max(...rows.map((r) => g.measureText(r).width));
+        const left = x - fw / 2;
         g.save();
         g.shadowBlur = 0;
-        const grad = g.createLinearGradient(x - fw / 2 - 30 * s, 0, x + fw / 2 + 30 * s, 0);
+        const grad = g.createLinearGradient(left - 30 * s, 0, left + fw + 30 * s, 0);
         grad.addColorStop(0, 'rgba(2, 14, 24, 0)');
         grad.addColorStop(0.15, GLASS);
         grad.addColorStop(0.85, GLASS);
         grad.addColorStop(1, 'rgba(2, 14, 24, 0)');
         g.fillStyle = grad;
-        g.fillRect(x - fw / 2 - 30 * s, y - 11 * s, fw + 60 * s, 22 * s);
+        g.fillRect(left - 30 * s, y0 - 11 * s, fw + 60 * s, blockH + 22 * s);
         g.fillStyle = CYAN;
-        g.fillRect(x - fw / 2 - 12 * s, y - 6 * s, 2 * s, 12 * s);
+        g.fillRect(left - 12 * s, y0 - 6 * s, 2 * s, blockH + 12 * s);
         g.restore();
-        // Typed from the left of where the whole line will sit, so it doesn't drift
-        this.text(g, typed, x - fw / 2, y, 12 * s, WHITE, 'left');
-        if (shown < l.text.length || (age < 2.5 && Math.sin(this.time * 9) > 0)) {
-          const tw = g.measureText(typed).width;
-          g.fillStyle = CYAN;
-          g.fillRect(x - fw / 2 + tw + 2 * s, y - 6 * s, 6 * s, 12 * s);
+        // Typed row by row from the left of where the whole block will sit, so it doesn't drift
+        let budget = JARVIS_TAG.length + shown;
+        let cursor: { x: number; y: number } | null = null;
+        for (let r = 0; r < rows.length && budget > 0; r++) {
+          const typed = rows[r].slice(0, budget);
+          const ry = y0 + r * lh;
+          this.text(g, typed, left, ry, size, WHITE, 'left');
+          cursor = { x: left + g.measureText(typed).width, y: ry };
+          budget -= rows[r].length + 1;
         }
-      } else this.text(g, full, x, y, 12 * s, CYAN_DIM, 'center');
-      y += top ? 20 * s : -20 * s;
+        if (cursor && (shown < l.text.length || (age < 2.5 && Math.sin(this.time * 9) > 0))) {
+          g.fillStyle = CYAN;
+          g.fillRect(cursor.x + 2 * s, cursor.y - 6 * s, 6 * s, 12 * s);
+        }
+      } else rows.forEach((r, k) => this.text(g, r, x, y0 + k * lh, size, CYAN_DIM, 'center'));
+      y = top ? y0 + blockH + lh + gap : y0 - lh - gap;
     }
     g.globalAlpha = this.alpha;
   }
-}
 
+  /** A JARVIS line, tagged and broken at spaces into rows no wider than maxW (in the current font). */
+  private wrapLine(g: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+    const words = text.split(' ');
+    const rows: string[] = [];
+    // Starts one space short, so the join below lands the tag's double space
+    let row = JARVIS_TAG.slice(0, -1);
+    for (const w of words) {
+      const next = `${row} ${w}`;
+      if (g.measureText(next).width <= maxW || row === '') row = next;
+      else {
+        rows.push(row);
+        row = w;
+      }
+    }
+    rows.push(row);
+    return rows;
+  }
+}
