@@ -874,16 +874,18 @@ const SHADE_GLSL = /* glsl */ `
   reflectedLight.directSpecular *= vegBake.r;
   reflectedLight.indirectDiffuse *= mix(0.6, 1.0, vegBake.g);
   reflectedLight.indirectSpecular *= mix(0.6, 1.0, vegBake.g);
+  // Crisp crown top/rim sunlit contrast so palms, oaks, and chaparral separate from terrain
+  vec3 vegUpV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+  vec3 vegSunV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
+  float crownTop = smoothstep(-0.35, 0.65, dot(normal, vegUpV));
+  float sunRim = smoothstep(-0.25, 0.65, dot(normal, vegSunV));
+  reflectedLight.directDiffuse *= mix(0.76, 1.24, crownTop * 0.6 + sunRim * 0.4);
   // Backlit leaves: the low golden-hour sun glowing through outer/upper crowns
   vec3 vegV = normalize(vInstWorld + vec3(0.0, 4.0, 0.0) - cameraPosition);
   float vegBack = pow(max(dot(vegV, uSunDir), 0.0), 4.0);
   float vegRim = pow(max(dot(vegV, uSunDir), 0.0), 2.0);
-  vec3 vegUpV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
-  vec3 vegSunV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
-  float crownTop = smoothstep(-0.45, 0.55, dot(normal, vegUpV));
-  float sunRim = smoothstep(-0.4, 0.5, dot(normal, vegSunV));
-  float leafGlow = mix(0.45, 1.15, crownTop) * mix(0.75, 1.15, sunRim);
-  reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * ((vegBack * 0.42 + vegRim * 0.09) * leafGlow * RECIPROCAL_PI * vegBake.r);
+  float leafGlow = mix(0.42, 1.25, crownTop) * mix(0.75, 1.22, sunRim);
+  reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * ((vegBack * 0.46 + vegRim * 0.11) * leafGlow * RECIPROCAL_PI * vegBake.r);
 `;
 
 // Leaf cards: cut out of the atlas, fading by shrinking every leaf
@@ -922,7 +924,7 @@ const CARD_MAP_GLSL = /* glsl */ `
   float leafCov = clamp(leafEdge / max(fwidth(leafEdge), 1e-4) + 0.5, 0.0, 1.0);
   if (leafCov <= 0.0) discard;
   diffuseColor.a = leafCov;
-  diffuseColor.rgb *= leaf.rgb * 1.25;
+  diffuseColor.rgb *= leaf.rgb * 1.32;
 `;
 
 // Felled trees: the close build, kept on one side of the cut (no sway)
