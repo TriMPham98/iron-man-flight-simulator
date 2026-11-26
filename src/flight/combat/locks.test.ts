@@ -61,3 +61,15 @@ describe('one lock per enemy', () => {
     expect(nextLock(eye, aim, [a], [a], CONE, 3200)).toBeNull();
   });
 });
+
+describe('line of sight', () => {
+  it('skips a candidate it cannot see and paints the next one', () => {
+    const hidden = h(0, 0, 800);
+    const open = h(60, 0, 800);
+    const locks: Lockable[] = [];
+    const sees = (x: Lockable) => x !== hidden;
+    for (let i = 0; i < 4; i++) paintLock(locks, 8, eye, aim, [hidden, open], CONE, 3200, sees);
+    expect(locks).toEqual([open]);
+    expect(nextLock(eye, aim, [hidden], [], CONE, 3200, sees)).toBeNull();
+  });
+});

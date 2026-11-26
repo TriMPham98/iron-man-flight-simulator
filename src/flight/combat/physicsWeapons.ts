@@ -7,7 +7,7 @@ import type { Explosions, SurfaceQuery } from './explosions';
 import { coreDistance, segmentToCore } from './hitShape';
 import type { Missiles } from './missiles';
 import type { PlayerWeapons } from './playerWeapons';
-import type { Hostile, HostileKind, PlayerTarget } from './types';
+import { isGroundTarget, type Hostile, type HostileKind, type PlayerTarget } from './types';
 
 /**
  * Pillar 1 — Physics as Weapons:
@@ -55,11 +55,19 @@ export function enemyIcingAlt(type: DroneType): number {
 // ── 2. Hero-Landing Shockwaves ───────────────────────────────────────────────
 
 export const SLAM_SPEED_MIN = 7;
-export const SLAM_SPEED_MAX = 45;
-export const SLAM_RADIUS_MIN = 35;
-export const SLAM_RADIUS_MAX = 140;
+/** Full power from a firm dive, not only a near-vertical plunge. */
+export const SLAM_SPEED_MAX = 32;
+export const SLAM_RADIUS_MIN = 50;
+export const SLAM_RADIUS_MAX = 170;
 export const SLAM_DAMAGE_MIN = 60;
 export const SLAM_DAMAGE_MAX = 350;
+/**
+ * Ground targets take the slam through the earth: extra damage, and it falls
+ * off far less toward the rim, so a landing anywhere near a SAM site wrecks it.
+ */
+export const SLAM_GROUND_BONUS = 1.6;
+const SLAM_FALLOFF_AIR = 0.75;
+const SLAM_FALLOFF_GROUND = 0.4;
 
 export interface HeroSlamStats {
   radius: number;
@@ -67,7 +75,7 @@ export interface HeroSlamStats {
   intensity: number;
 }
 
-/** Scale ground-slam radius (35–140 m) and peak damage (60–350) from impact speed. */
+/** Scale ground-slam radius (50–170 m) and peak damage (60–350, ×1.6 on ground targets) from impact speed. */
 export function heroSlamStats(impactSpeed: number): HeroSlamStats {
   const intensity = THREE.MathUtils.clamp((impactSpeed - SLAM_SPEED_MIN) / (SLAM_SPEED_MAX - SLAM_SPEED_MIN), 0, 1);
   return {
@@ -320,8 +328,9 @@ export class PhysicsWeapons {
       if (!h.alive) continue;
       const d = Math.max(0, coreDistance(h, at) - h.radius);
       if (d >= radius) continue;
-      const falloff = 1 - 0.75 * (d / radius);
-      const dmg = maxDamage * falloff;
+      const ground = isGroundTarget(h.kind);
+      const falloff = 1 - (ground ? SLAM_FALLOFF_GROUND : SLAM_FALLOFF_AIR) * (d / radius);
+      const dmg = maxDamage * falloff * (ground ? SLAM_GROUND_BONUS : 1);
       const killed = h.damage(dmg, at, 'ram');
       hits++;
       // Blast low-flying hostiles outward and upward from the ground slam

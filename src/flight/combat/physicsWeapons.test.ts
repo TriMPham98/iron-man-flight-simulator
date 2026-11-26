@@ -16,6 +16,8 @@ import {
   SLAM_DAMAGE_MIN,
   SLAM_RADIUS_MAX,
   SLAM_RADIUS_MIN,
+  SLAM_SPEED_MAX,
+  SLAM_SPEED_MIN,
   SONIC_SHOCK_RADIUS,
   SPLASH_EVADE_JARVIS_LINE,
   UNIBEAM_BASE_COOL,
@@ -252,14 +254,14 @@ describe('Pillar 1 — Weaponize the Icing Ceiling', () => {
 });
 
 describe('Pillar 1 — Hero-Landing Shockwaves', () => {
-  it('scales radius (35–140 m) and damage (60–350) with impactSpeed', () => {
+  it('scales radius (50–170 m) and damage (60–350) with impactSpeed', () => {
     const low = heroSlamStats(7);
     expect(low.radius).toBeCloseTo(SLAM_RADIUS_MIN);
     expect(low.maxDamage).toBeCloseTo(SLAM_DAMAGE_MIN);
-    const high = heroSlamStats(45);
+    const high = heroSlamStats(SLAM_SPEED_MAX);
     expect(high.radius).toBeCloseTo(SLAM_RADIUS_MAX);
     expect(high.maxDamage).toBeCloseTo(SLAM_DAMAGE_MAX);
-    const mid = heroSlamStats(26);
+    const mid = heroSlamStats((SLAM_SPEED_MIN + SLAM_SPEED_MAX) / 2);
     expect(mid.radius).toBeGreaterThan(low.radius);
     expect(mid.radius).toBeLessThan(high.radius);
   });
@@ -293,6 +295,18 @@ describe('Pillar 1 — Hero-Landing Shockwaves', () => {
     expect(emitted.some((e) => e.kind === 'plasma')).toBe(true);
     expect(list.some((e) => e.kind === 'heroSlam')).toBe(true);
     expect(awards.some((a) => a.why === 'SHOCKWAVE SLAM' && a.pts === AWARD.heroSlam)).toBe(true);
+  });
+
+  it('a firm landing well off a SAM still wrecks it', () => {
+    const pw = new PhysicsWeapons();
+    const { stub: particles } = makeParticles();
+    const { bus } = makeBus();
+    const sam = makeHostile({ id: 1, kind: 'sam', pos: v(70, 2, 0), hp: 220 });
+    const drone = makeHostile({ id: 2, kind: 'drone', pos: v(70, 10, 0), hp: 220, radius: 2.6 });
+    pw.onHeroLanding(v(0, 0, 0), 24, [sam, drone], makeGround({ y: 0 }), particles, bus);
+    expect(sam.alive).toBe(false);
+    // The bonus is the ground's: an aircraft at the same spot survives
+    expect(drone.alive).toBe(true);
   });
 
   it('does not emit heroSlam R&D bonus when landing hits nothing', () => {

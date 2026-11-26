@@ -5,7 +5,8 @@ import * as THREE from 'three';
  * the forearm launchers): one lock per enemy. A paint pass offers the
  * hostile nearest the aim line that isn't locked yet; once every enemy in
  * the cone is taken it offers nothing, so a salvo never doubles up on one
- * target.
+ * target. A ground target the hills hide can't be painted at all: `sees`
+ * gates every candidate on line of sight.
  */
 
 export interface Lockable {
@@ -15,9 +16,13 @@ export interface Lockable {
 
 const _d = new THREE.Vector3();
 
+/** Whether the seeker has a clear line to a candidate (default: it always does). */
+export type LockSight<T> = (h: T) => boolean;
+
 /**
  * The live hostile closest to the aim line inside the cone (cosine) and
- * range, skipping anything in `taken`. Null when there is nothing left.
+ * range, skipping anything in `taken` or out of `sees`. Null when there is
+ * nothing left.
  */
 export function nextLock<T extends Lockable>(
   eye: THREE.Vector3,
@@ -26,6 +31,7 @@ export function nextLock<T extends Lockable>(
   taken: readonly T[],
   cone: number,
   range: number,
+  sees?: LockSight<T>,
 ): T | null {
   let best: T | null = null;
   let bestDot = cone;
@@ -35,7 +41,7 @@ export function nextLock<T extends Lockable>(
     const dist = d.length();
     if (dist > range || dist < 1e-3) continue;
     const dot = d.dot(aim) / dist;
-    if (dot > bestDot) {
+    if (dot > bestDot && (!sees || sees(h))) {
       bestDot = dot;
       best = h;
     }
@@ -55,11 +61,12 @@ export function paintLock<T extends Lockable>(
   hostiles: readonly T[],
   cone: number,
   range: number,
+  sees?: LockSight<T>,
 ): T | null {
   // Drop anything that died while it was painted
   for (let i = locks.length - 1; i >= 0; i--) if (!locks[i].alive) locks.splice(i, 1);
   if (locks.length >= capacity) return null;
-  const next = nextLock(eye, aim, hostiles, locks, cone, range);
+  const next = nextLock(eye, aim, hostiles, locks, cone, range, sees);
   if (next) locks.push(next);
   return next;
 }

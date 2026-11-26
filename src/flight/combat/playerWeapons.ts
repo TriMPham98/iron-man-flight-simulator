@@ -27,7 +27,7 @@ import { coreDistance, segmentToCore } from './hitShape';
 import { LaserCutterFx } from './laserCutterFx';
 import { paintLock } from './locks';
 import type { Missiles } from './missiles';
-import type { Decoy, Hostile } from './types';
+import { isGroundTarget, type Decoy, type Hostile } from './types';
 import { UnibeamFx } from './unibeamFx';
 
 /**
@@ -373,6 +373,7 @@ export class PlayerWeapons {
   private readonly _b = new THREE.Vector3();
   private readonly _n = new THREE.Vector3();
   private readonly _l = new THREE.Vector3();
+  private readonly _los = new THREE.Vector3();
 
   constructor(
     private readonly suit: Suit,
@@ -399,6 +400,22 @@ export class PlayerWeapons {
   /** What the seekers can paint: not a jammer, which has to be shot down by hand. */
   private lockable(hostiles: readonly Hostile[]): readonly Hostile[] {
     return hostiles.some((h) => h.noLock) ? hostiles.filter((h) => !h.noLock) : hostiles;
+  }
+
+  /**
+   * A seeker can't paint a ground target through the hills: it needs a clear
+   * line from the eye to it (stopping short of its hull, so the ground it
+   * stands on doesn't count). Anything in the air is always in sight.
+   */
+  private sees(eye: THREE.Vector3): (h: Hostile) => boolean {
+    return (h) => {
+      if (!isGroundTarget(h.kind)) return true;
+      const to = this._los.copy(h.pos).sub(eye);
+      to.y += Math.min(3, h.radius * 0.5);
+      const d = to.length();
+      if (d < 1e-3) return true;
+      return this.field.raycast(eye, to.divideScalar(d), Math.max(0, d - h.radius)) < 0;
+    };
   }
 
   /** Switch live weapon suite between Iron Man Mk III and War Machine Mk II. */
@@ -592,7 +609,7 @@ export class PlayerWeapons {
                 ? Math.cos(THREE.MathUtils.degToRad(42))
                 : MISSILE_CONE;
           // One lock per enemy: the paint never doubles up on a target
-          const next = paintLock(this.locks, cap, eye, aim, this.lockable(hostiles), lockCone, MISSILE_RANGE * this.spec.missileRange);
+          const next = paintLock(this.locks, cap, eye, aim, this.lockable(hostiles), lockCone, MISSILE_RANGE * this.spec.missileRange, this.sees(eye));
           if (next) this.events.emit(this.locks.length >= cap ? 'lockFull' : 'lockTick', { at: next.pos, value: this.locks.length });
           this.lockT = 0;
         }
@@ -864,7 +881,7 @@ export class PlayerWeapons {
         const lockTime = LAUNCHER_LOCK_TIME * this.spec.launcherLock * this.jamSlow;
         this.launcherLockProgress = this.launcherLocks.length >= cap ? 1 : Math.min(1, this.launcherLockT / lockTime);
         if (this.launcherLockT >= lockTime) {
-          const next = paintLock(this.launcherLocks, cap, eye, aim, this.lockable(hostiles), LAUNCHER_CONE, LAUNCHER_RANGE * this.spec.launcherRange);
+          const next = paintLock(this.launcherLocks, cap, eye, aim, this.lockable(hostiles), LAUNCHER_CONE, LAUNCHER_RANGE * this.spec.launcherRange, this.sees(eye));
           if (next) this.events.emit(this.launcherLocks.length >= cap ? 'lockFull' : 'lockTick', { at: next.pos, value: this.launcherLocks.length });
           this.launcherLockT = 0;
         }
