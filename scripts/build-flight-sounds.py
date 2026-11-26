@@ -23,7 +23,7 @@ FROM_KIT = {
     'rocket-1': 'whoosh/fs-449995-whoosh-med-low-wav-1',
     'rocket-2': 'whoosh/fs-449994-whoosh-med-mid-wav-1',
     'flyby': 'whoosh/fs-449989-whoosh-long-mid-wav-1',
-    'zip': 'whoosh/fs-471097-knife-sword-swing-1',
+    'strafe-dash': 'boom/fs-569414-sfx-whoosh-deep-vent-1-12-wa-2',
     'charge': 'riser/fs-531729-energy-riser-3-1',
     'repulsor-zap': 'zap/kenney-scifi-laser-large-001',
     'ping-1': 'tap/kenney-impact-impact-metal-heavy-000',

@@ -13,7 +13,7 @@ deploy) come from the project library in `public/sounds/`.
 - `rocket-1.mp3` — "whoosh_med_low.wav" by DJT4NN3R (sound-layer kit id `whoosh/fs-449995-whoosh-med-low-wav-1`, CC0)
 - `rocket-2.mp3` — "whoosh_med_mid.wav" by DJT4NN3R (sound-layer kit id `whoosh/fs-449994-whoosh-med-mid-wav-1`, CC0)
 - `flyby.mp3` — "whoosh_long_mid.wav" by DJT4NN3R (sound-layer kit id `whoosh/fs-449989-whoosh-long-mid-wav-1`, CC0)
-- `zip.mp3` — "Knife/sword swing" by spycrah (sound-layer kit id `whoosh/fs-471097-knife-sword-swing-1`, CC0)
+- `strafe-dash.mp3` — "Sfx Whoosh Deep Vent 1 12.wav" by Sheyvan (sound-layer kit id `boom/fs-569414-sfx-whoosh-deep-vent-1-12-wa-2`, CC0)
 - `charge.mp3` — "Energy Riser 3" by magnuswaker (sound-layer kit id `riser/fs-531729-energy-riser-3-1`, CC0)
 - `repulsor-zap.mp3` — Kenney (kenney.nl), Sci-fi Sounds (sound-layer kit id `zap/kenney-scifi-laser-large-001`, CC0)
 - `ping-1.mp3` — Kenney (kenney.nl), Impact Sounds (sound-layer kit id `tap/kenney-impact-impact-metal-heavy-000`, CC0)

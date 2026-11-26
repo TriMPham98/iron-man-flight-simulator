@@ -52,7 +52,7 @@ export const SFX = {
   rocket1: `${KIT}rocket-1.mp3`,
   rocket2: `${KIT}rocket-2.mp3`,
   flyby: `${KIT}flyby.mp3`,
-  zip: `${KIT}zip.mp3`,
+  strafeDash: `${KIT}strafe-dash.mp3`,
   charge: `${KIT}charge.mp3`,
   repulsorZap: `${KIT}repulsor-zap.mp3`,
   // HUD: a seeker's growl and lock tone, the RWR's pulse, the HUD's chimes
@@ -605,10 +605,17 @@ export class Soundscape {
         A.play(SFX.weaponLock, { at: m.pos, gain: 0.75, ref: 8, delay: 0.06 });
         A.play(SFX.charge, { ui: true, gain: 0.72, rate: 1.1 });
         break;
-      case 'strafeDash':
-        A.play(SFX.zip, { at: at ?? m.pos, gain: 0.6, rate: 1.15, ref: 8 });
-        A.play(SFX.thrusterIgnite, { at: at ?? m.pos, gain: 0.42, rate: 1.25, ref: 8, duration: 0.25 });
+      case 'strafeDash': {
+        // Lateral RCS burst: pressurized vent blast + thruster ignition body
+        // (skipped past its ~0.35 s silent lead-in) + crisp attitude-jet hiss
+        // (skipped past its ~0.2 s lead-in) + tight low-end G-kick, zero travel lag
+        const p = at ?? m.pos;
+        A.play(SFX.strafeDash, { at: p, propagate: false, gain: wm ? 0.72 : 0.62, rate: wm ? 0.9 : 1.12, vary: 0.06, ref: 10 });
+        A.play(SFX.thrusterIgnite, { at: p, propagate: false, gain: wm ? 0.52 : 0.46, rate: wm ? 1.0 : 1.22, vary: 0.05, offset: 0.44, fadeIn: 0.015, duration: wm ? 0.4 : 0.36, lowpass: 7500, ref: 10 });
+        A.play(SFX.steamHiss, { at: p, propagate: false, gain: wm ? 0.26 : 0.22, rate: wm ? 1.02 : 1.28, vary: 0.06, offset: 0.24, fadeIn: 0.01, duration: wm ? 0.3 : 0.26, lowpass: 7500, ref: 8 });
+        A.play(SFX.heroThud, { at: p, propagate: false, gain: wm ? 0.38 : 0.24, rate: wm ? 0.95 : 1.35, vary: 0.05, lowpass: wm ? 520 : 420, duration: wm ? 0.22 : 0.18, ref: 8 });
         break;
+      }
       case 'grappleGrab':
         A.play(SFX.weaponLock, { at: at ?? m.pos, gain: 0.78, rate: 1.15, ref: 8 });
         A.play(SFX.metalClang, { at: at ?? m.pos, gain: 0.55, rate: 1.25, ref: 8 });

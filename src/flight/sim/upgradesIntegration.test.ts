@@ -185,6 +185,29 @@ describe('Close-Quarters & HitStop Integration', () => {
     for (const kind of newKinds) {
       soundscape.on({ kind, at: new THREE.Vector3(0, 100, 0), value: 1, text: 'test', t: t++ }, model);
     }
-    expect(play).toHaveBeenCalledTimes(9);
+    expect(play).toHaveBeenCalledTimes(11);
+
+    // strafeDash uses the pressurized lateral vent, active thruster-ignite body (past its silent lead-in),
+    // attitude-jet steam hiss, and a low G-kick with zero propagation lag
+    const dashCalls = play.mock.calls.slice(0, 4);
+    expect(dashCalls.map(([url]) => url)).toEqual([
+      '/sounds/flight/strafe-dash.mp3',
+      '/sounds/thruster-ignite.mp3',
+      '/sounds/steam-hiss.mp3',
+      '/sounds/flight/hero-thud.mp3',
+    ]);
+    for (const [, opts] of dashCalls) {
+      expect(opts.propagate).toBe(false);
+    }
+    expect(dashCalls[1][1].offset).toBeGreaterThan(0.35);
+    expect(dashCalls[2][1].offset).toBeGreaterThan(0.2);
+
+    // War Machine uses a heavier, lower-pitched thruster dash profile
+    play.mockClear();
+    soundscape.variant = 'warmachine';
+    soundscape.on({ kind: 'strafeDash', at: new THREE.Vector3(0, 100, 0), value: -1, t: t++ }, model);
+    expect(play).toHaveBeenCalledTimes(4);
+    expect(play.mock.calls[0][1].rate).toBeLessThan(1);
+    expect(play.mock.calls[3][1].gain).toBeGreaterThan(dashCalls[3][1].gain);
   });
 });
