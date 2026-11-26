@@ -136,9 +136,10 @@ const ALBEDO = /* glsl */ `
   float viewD = length(vTerrainPos - cameraPosition);
   // Close-up detail (grain, micro relief, triplanar cliffs) fades out with
   // distance and is skipped outright beyond it: far pixels stay cheap.
-  // uDetailReach stretches both fades (the graphics preset sets it)
-  float near = 1.0 - smoothstep(150.0 * uDetailReach, 900.0 * uDetailReach, viewD);
-  float micro = 1.0 - smoothstep(30.0 * uDetailReach, 260.0 * uDetailReach, viewD);
+  // Clamp reach so ultra presets keep crisp detail without pushing extra taps past mid-range.
+  float reach = min(uDetailReach, 1.35);
+  float near = 1.0 - smoothstep(150.0 * reach, 900.0 * reach, viewD);
+  float micro = 1.0 - smoothstep(30.0 * reach, 260.0 * reach, viewD);
   vec4 bake = texture2D(uBake, xz / uWorld + 0.5);
   tSunVis = bake.r;
   tAo = mix(0.55, 1.0, bake.g);
@@ -169,7 +170,7 @@ const ALBEDO = /* glsl */ `
   // carry grain and strata instead of streaks smeared down the slope
   float steep = smoothstep(0.3, 0.6, slope);
   vec3 tw = vec3(0.0, 1.0, 0.0);
-  if (near > 0.0 && steep > 0.0) {
+  if (near > 0.0 && steep > 0.0 && viewD < 450.0) {
     tw = pow(abs(wN), vec3(4.0));
     tw /= tw.x + tw.y + tw.z;
     float gx = tw.x > 0.02 ? tone(vTerrainPos.zy, 6.1) : 0.6;
@@ -255,7 +256,7 @@ const ALBEDO = /* glsl */ `
   // Underfoot: two finer octaves of tone (clods, pebbles, dry litter) so
   // the ground still has grain at a few metres, not a flat wash. Fades in
   // only within the micro relief's reach, so it costs nothing further out
-  float underfoot = 1.0 - smoothstep(20.0 * uDetailReach, 160.0 * uDetailReach, viewD);
+  float underfoot = 1.0 - smoothstep(20.0 * reach, 160.0 * reach, viewD);
   if (underfoot > 0.0) {
     float clod = tone(xz + 0.53, 3.1);
     float speck = tone(xz * 1.07 + 0.21, 1.1);
@@ -269,8 +270,8 @@ const ALBEDO = /* glsl */ `
   }
 
   // Mid-to-close normal relief: bridges the 71 m heightfield detail to the 6 m micro crags,
-  // fading out smoothly past mid-range so far ridges skip extra gradient reads
-  float midRelief = 1.0 - smoothstep(160.0 * uDetailReach, 720.0 * uDetailReach, viewD);
+  // fading out cleanly in fixed world metres so far ridges skip extra gradient reads
+  float midRelief = 1.0 - smoothstep(110.0, 520.0, viewD);
   if (midRelief > 0.0) {
     float ampMid = mix(mix(0.45, 0.2, beach), 1.25, rockK) * midRelief;
     vec2 gM = texture2D(uDetailGrad, xz / (uDetailSpan * 0.11) + 0.19).rg / 0.11;
