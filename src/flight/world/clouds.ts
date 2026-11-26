@@ -21,7 +21,18 @@ interface Puff {
   p: THREE.Vector3;
   r: number;
   seed: number;
+  /** 0 = largest puff in its cloud, approaching 1 = smallest. */
+  rank: number;
 }
+
+/** Rebuild sorted buffers once the camera turns past ~4° or moves past threshold. */
+const REBUILD_TURN = Math.cos(THREE.MathUtils.degToRad(4));
+const REBUILD_MOVE = 20;
+const REBUILD_MOVE_INSIDE = 4;
+const REBUILD_DRIFT = 16;
+const THIN_DIST = 10000;
+const FAR_THIN_DIST = 17000;
+const MAX_CLOUD_DIST = 25000;
 
 const VERT = /* glsl */ `
 attribute vec4 iPuff; // xyz, radius
@@ -173,6 +184,16 @@ export class Clouds {
   /** Wind drift (m/s). */
   private readonly drift = new THREE.Vector3(3.5, 0, -1.5);
   private readonly offset = new THREE.Vector3();
+  private readonly _dir = new THREE.Vector3();
+  private readonly lastEye = new THREE.Vector3(Infinity, 0, 0);
+  private readonly lastDir = new THREE.Vector3();
+  private readonly lastOffset = new THREE.Vector3(Infinity, 0, 0);
+  private lastFov = -1;
+  private lastFocusValid = false;
+  private lastFocusDist = 0;
+  private lastInside = 0;
+  private lodScale = 1;
+  private dirty = true;
 
   constructor(atmosphere: Record<string, THREE.IUniform>) {
     let s = 4242;
@@ -184,12 +205,17 @@ export class Clouds {
       const base = BASE + rnd() * 600;
       const size = 350 + rnd() * 700;
       const n = 14 + Math.floor(rnd() * 18);
+      const cluster: Array<{ p: THREE.Vector3; r: number; seed: number }> = [];
       for (let i = 0; i < n; i++) {
         const a = rnd() * Math.PI * 2;
         const r = Math.sqrt(rnd()) * size;
         const up = rnd() * rnd() * size * 0.7;
         const rad = (0.25 + rnd() * 0.35) * size * (1 - (r / size) * 0.4);
-        this.puffs.push({ p: new THREE.Vector3(cx + Math.cos(a) * r, base + up + rad * 0.35, cz + Math.sin(a) * r * 0.7), r: rad, seed: rnd() });
+        cluster.push({ p: new THREE.Vector3(cx + Math.cos(a) * r, base + up + rad * 0.35, cz + Math.sin(a) * r * 0.7), r: rad, seed: rnd() });
+      }
+      cluster.sort((a, b) => b.r - a.r);
+      for (let i = 0; i < cluster.length; i++) {
+        this.puffs.push({ ...cluster[i], rank: i / cluster.length });
       }
     }
     const N = this.puffs.length;
@@ -247,12 +273,46 @@ export class Clouds {
     this.mesh.add(this.nearMesh);
   }
 
+  /** Scale thinning/cull distances (0.35–2.0). */
+  setLodScale(scale: number): void {
+    const next = THREE.MathUtils.clamp(scale, 0.35, 2);
+    if (Math.abs(next - this.lodScale) > 1e-3) {
+      this.lodScale = next;
+      this.dirty = true;
+    }
+  }
+
   /** 0–1: how deep inside a cloud the eye is (post white-out). */
   update(dt: number, camera: THREE.Camera): number {
     this.offset.addScaledVector(this.drift, dt);
     const eye = camera.position;
     const sv = this.uniforms.uSunView.value as THREE.Vector3;
     sv.copy(this.uniforms.uSunDir.value as THREE.Vector3).transformDirection(camera.matrixWorldInverse);
+    camera.getWorldDirection(this._dir);
+    const fov = (camera as THREE.PerspectiveCamera).fov ?? 0;
+    const focusValid = sortFocus.valid;
+    const f = focusValid ? sortFocus.point.distanceToSquared(eye) : 0;
+    const focusDist = focusValid ? Math.sqrt(f) : 0;
+    const moveThresh = this.lastInside > 0 ? REBUILD_MOVE_INSIDE : REBUILD_MOVE;
+    if (
+      !this.dirty &&
+      eye.distanceToSquared(this.lastEye) < moveThresh * moveThresh &&
+      this.offset.distanceToSquared(this.lastOffset) < REBUILD_DRIFT * REBUILD_DRIFT &&
+      this._dir.dot(this.lastDir) > REBUILD_TURN &&
+      fov === this.lastFov &&
+      focusValid === this.lastFocusValid &&
+      Math.abs(focusDist - this.lastFocusDist) < 4
+    ) {
+      return this.lastInside;
+    }
+    this.dirty = false;
+    this.lastEye.copy(eye);
+    this.lastDir.copy(this._dir);
+    this.lastOffset.copy(this.offset);
+    this.lastFov = fov;
+    this.lastFocusValid = focusValid;
+    this.lastFocusDist = focusDist;
+
     this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this._vp);
     const planes = this.frustum.planes;
@@ -266,6 +326,9 @@ export class Clouds {
     const ex = eye.x;
     const ey = eye.y;
     const ez = eye.z;
+    const thinDist2 = (THIN_DIST * this.lodScale) ** 2;
+    const farThinDist2 = (FAR_THIN_DIST * this.lodScale) ** 2;
+    const maxDist2 = (MAX_CLOUD_DIST * this.lodScale) ** 2;
     for (let i = 0; i < N; i++) {
       const p = this.puffs[i];
       // Drift with the wind, wrapping round the map
@@ -275,18 +338,28 @@ export class Clouds {
       z = ((((z + half) % span) + span) % span) - half;
       const py = p.p.y;
       const pr = p.r;
-      this.raw[i * 4] = x;
-      this.raw[i * 4 + 1] = py;
-      this.raw[i * 4 + 2] = z;
-      this.raw[i * 4 + 3] = pr;
       const dx = x - ex;
       const dy = py - ey;
       const dz = z - ez;
       const d2 = dx * dx + dy * dy + dz * dz;
       const insideR = pr * 0.8;
       if (d2 < insideR * insideR) inside = Math.max(inside, 1 - Math.sqrt(d2) / insideR);
-      // Frustum cull billboarded puffs with generous sphere radius (1.45× covers 2× quad corners)
-      const rad = pr * 1.45;
+      if (d2 > maxDist2) continue;
+      // Beyond ~10 km drop smaller puffs and scale remaining puffs slightly to preserve silhouettes
+      let effR = pr;
+      if (d2 > farThinDist2) {
+        if (p.rank > 0.3) continue;
+        effR *= 1.32;
+      } else if (d2 > thinDist2) {
+        if (p.rank > 0.55) continue;
+        effR *= 1.18;
+      }
+      this.raw[i * 4] = x;
+      this.raw[i * 4 + 1] = py;
+      this.raw[i * 4 + 2] = z;
+      this.raw[i * 4 + 3] = effR;
+      // Frustum cull billboarded puffs with margin so skipped small turns don't clip screen edges
+      const rad = effR * 1.45 + Math.sqrt(d2) * 0.08 + 20;
       this._c.set(x, py, z);
       let culled = false;
       for (let k = 0; k < 5; k++) {
@@ -301,9 +374,8 @@ export class Clouds {
     }
     // Back to front, split at the suit: [far … | … near]
     sortIndicesDesc(this.order, this.keys, vis);
-    const f = sortFocus.valid ? sortFocus.point.distanceToSquared(eye) : 0;
     let split = vis;
-    if (sortFocus.valid) {
+    if (focusValid) {
       split = 0;
       while (split < vis && this.keys[this.order[split]] >= f) split++;
     }
@@ -353,7 +425,8 @@ export class Clouds {
       this.nearSeed.addUpdateRange(0, nearCount);
       this.nearSeed.needsUpdate = true;
     }
-    return Math.min(1, inside * 1.6);
+    this.lastInside = Math.min(1, inside * 1.6);
+    return this.lastInside;
   }
 
 }

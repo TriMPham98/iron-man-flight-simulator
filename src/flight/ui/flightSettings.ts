@@ -32,8 +32,23 @@ export const QUALITY_SAMPLES: Record<Quality, number> = {
   ultra: 4,
 };
 
+/** LOD distance/density scale per preset (also forms the ceiling for adaptive LOD scaling). */
+export const QUALITY_LOD: Record<Quality, number> = {
+  low: 0.65,
+  medium: 0.85,
+  high: 1.0,
+  ultra: 1.2,
+};
+
 export function bindFlightSettings(app: FlightApp): void {
   const { screens, game, audio, renderer, resolution } = app;
+  const applyWorldLod = (s: number) => {
+    const { world } = app;
+    (world.terrain as { setLodScale?: (v: number) => void }).setLodScale?.(s);
+    (world.vegetation as { setLodScale?: (v: number) => void }).setLodScale?.(s);
+    world.ocean.setLodScale(s);
+    world.clouds.setLodScale(s);
+  };
   // ── Graphics preset: cap whatever the adaptive resolution asks for ──
   let cap = Infinity;
   const setPixelRatio = resolution.setPixelRatio;
@@ -47,6 +62,11 @@ export function bindFlightSettings(app: FlightApp): void {
     const ground = QUALITY_GROUND[q];
     app.world.terrain.setDetail(ground.reach, ground.anisotropy, renderer);
     app.post?.setSamples(QUALITY_SAMPLES[q]);
+    app.post?.setLowCost(q === 'low');
+    const lod = QUALITY_LOD[q];
+    applyWorldLod(lod);
+    app.setPresetLodScale(lod, applyWorldLod);
+    app.setMaxAdaptiveDpr(Math.min(app.maxDpr, cap));
     const shadows = q !== 'low';
     if (renderer.shadowMap.enabled !== shadows) {
       renderer.shadowMap.enabled = shadows;

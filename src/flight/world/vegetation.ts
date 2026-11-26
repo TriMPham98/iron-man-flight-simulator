@@ -389,7 +389,7 @@ function crownLight(g: THREE.BufferGeometry, c: THREE.Vector3, rad: THREE.Vector
     _fe.y = _fe.y * 0.8 + 0.35;
     _fn.fromBufferAttribute(nrm, i).lerp(_fe.normalize(), 0.45).normalize();
     nrm.setXYZ(i, _fn.x, _fn.y, _fn.z);
-    const ao = (0.38 + 0.62 * S(d, 0.3, 1.0)) * (0.7 + 0.3 * THREE.MathUtils.clamp(_fl.y * 0.6 + 0.55, 0, 1));
+    const ao = (0.34 + 0.66 * S(d, 0.25, 1.0)) * (0.65 + 0.35 * THREE.MathUtils.clamp(_fl.y * 0.6 + 0.55, 0, 1));
     const blot = Math.sin(x * 1.3 + seed) * Math.sin(z * 1.1 - seed * 0.7) * Math.sin(y * 1.7 + seed * 1.3);
     _fc.fromBufferAttribute(col, i).multiplyScalar(ao * (1 + 0.3 * blot) * (0.86 + 0.28 * hash3(x, y, z, seed)));
     _fw.copy(_fc).multiply(WARM);
@@ -873,11 +873,17 @@ const SHADE_GLSL = /* glsl */ `
   reflectedLight.directDiffuse *= vegBake.r;
   reflectedLight.directSpecular *= vegBake.r;
   reflectedLight.indirectDiffuse *= mix(0.6, 1.0, vegBake.g);
-  // Backlit leaves: the low golden-hour sun glowing through crowns seen against it
+  reflectedLight.indirectSpecular *= mix(0.6, 1.0, vegBake.g);
+  // Backlit leaves: the low golden-hour sun glowing through outer/upper crowns
   vec3 vegV = normalize(vInstWorld + vec3(0.0, 4.0, 0.0) - cameraPosition);
   float vegBack = pow(max(dot(vegV, uSunDir), 0.0), 4.0);
   float vegRim = pow(max(dot(vegV, uSunDir), 0.0), 2.0);
-  reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * ((vegBack * 0.4 + vegRim * 0.08) * RECIPROCAL_PI * vegBake.r);
+  vec3 vegUpV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+  vec3 vegSunV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
+  float crownTop = smoothstep(-0.45, 0.55, dot(normal, vegUpV));
+  float sunRim = smoothstep(-0.4, 0.5, dot(normal, vegSunV));
+  float leafGlow = mix(0.45, 1.15, crownTop) * mix(0.75, 1.15, sunRim);
+  reflectedLight.indirectDiffuse += diffuseColor.rgb * uSunColor * ((vegBack * 0.42 + vegRim * 0.09) * leafGlow * RECIPROCAL_PI * vegBake.r);
 `;
 
 // Leaf cards: cut out of the atlas, fading by shrinking every leaf
@@ -973,13 +979,16 @@ const impVertBegin = (kinds: number) => /* glsl */ `
   vRight = right;
   vUpW = up;
   vFwd = fwd;
-  float grow = smoothstep(uFade.w, uFade.z, d);
-  float w = K.x * iB.x * grow;
-  float h = K.y * iA.w * grow;
+  float w = K.x * iB.x;
+  float h = K.y * iA.w;
   float gust = 0.6 + 0.4 * sin(uTime * 0.37 + origin.x * 0.004 - origin.z * 0.003);
   float sway = sin(uTime * 1.3 + origin.x * 0.05 + origin.z * 0.07) * 0.04 * gust * (position.y + 0.5) * h;
   vec3 transformed = origin + right * (position.x * 2.0 * w + sway) + up * (K.z * iA.w + (position.y + 0.5) * h);
-  vLod = smoothstep(uFade.x, uFade.y, d);
+  // Smooth dither-in over near models and dither-out at the horizon (bushes fade earlier into terrain scrub)
+  float ditherOut = iB.y < 0.5
+    ? 1.0 - smoothstep(uFade.w * 0.50, uFade.w * 0.65, d)
+    : 1.0 - smoothstep(uFade.z, uFade.w, d);
+  vLod = smoothstep(uFade.x, uFade.y, d) * ditherOut;
   vAtlas = vec2((uv.x + K.w) / ${kinds}.0, uv.y);
 `;
 const IMP_FRAG_PARS = /* glsl */ `
@@ -1380,8 +1389,27 @@ export class Vegetation {
   private readonly cache = new Map<number, CellData>();
   private readonly uniforms: Record<string, THREE.IUniform>;
   private readonly lastEye = new THREE.Vector3(Infinity, 0, 0);
+  private readonly prevEye = new THREE.Vector3(Infinity, 0, 0);
   private readonly lastDir = new THREE.Vector3();
   private lastFov = 0;
+  private smoothSpeed = 0;
+  private moveThresh = REBUILD_MOVE;
+  private lastCamera: THREE.Camera | null = null;
+  private lodScale = 1;
+  private radius = RADIUS;
+  private lodNear = LOD_NEAR;
+  private lodFar = LOD_FAR;
+  private treeHi = TREE_HI;
+  private shrubHi = SHRUB_HI;
+  private tuftR = TUFT_R;
+  private tuftHiR = TUFT_HI;
+  private cardsEnabled = true;
+  private readonly nearFade: THREE.Vector4;
+  private readonly tuftFade: THREE.Vector4;
+  private readonly impFade: THREE.Vector4;
+  private readonly cardFades: { u: THREE.Vector2; baseEnd: number }[] = [];
+  private readonly hasAtlas: boolean;
+  private shadeActive = false;
   /** Cells left unplanted at the last rebuild (over the time budget). */
   private pending = false;
   private readonly frustum = new THREE.Frustum();
@@ -1456,9 +1484,11 @@ export class Vegetation {
     // The impostors dither in across the LOD band over the models, which then
     // shrink away in its last few metres: no discard in the models' shader
     // (alpha-tested draws lose hidden-surface removal on tiled GPUs)
-    const treeMat = nearMat(new THREE.Vector4(1e6, 1e6 + 1, LOD_FAR - 14, LOD_FAR), 'near');
-    const sheetMat = nearMat(new THREE.Vector4(1e6, 1e6 + 1, LOD_FAR - 14, LOD_FAR), 'near-sheet', THREE.DoubleSide);
-    const tuftMat = nearMat(new THREE.Vector4(1e6, 1e6 + 1, TUFT_R * 0.75, TUFT_R), 'tuft');
+    this.nearFade = new THREE.Vector4(1e6, 1e6 + 1, LOD_FAR - 22, LOD_FAR);
+    this.tuftFade = new THREE.Vector4(1e6, 1e6 + 1, TUFT_R * 0.72, TUFT_R);
+    const treeMat = nearMat(this.nearFade, 'near');
+    const sheetMat = nearMat(this.nearFade, 'near-sheet', THREE.DoubleSide);
+    const tuftMat = nearMat(this.tuftFade, 'tuft');
     const make = (geo: THREE.BufferGeometry, cap: number, mat: THREE.Material) => {
       const m = new THREE.InstancedMesh(geo, mat, cap);
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -1490,7 +1520,12 @@ export class Vegetation {
       if (mat) return mat;
       const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0, side: THREE.DoubleSide, alphaToCoverage: true });
       m.envMapIntensity = 0.7;
-      const u = { ...this.uniforms, uFade: { value: new THREE.Vector4(1e6, 1e6 + 1, 1e6, 1e6 + 1) }, uLeaf: { value: leafTex }, uCardFade: { value: new THREE.Vector2(fadeEnd - REBUILD_MOVE - 36, fadeEnd - REBUILD_MOVE - 2) }, uCardNear: { value: CARD_NEAR } };
+      const pad = Math.min(REBUILD_MOVE, fadeEnd * 0.25);
+      const outEnd = Math.max(6, fadeEnd - pad - 2);
+      const inStart = Math.max(2, outEnd - 34);
+      const cardFade = new THREE.Vector2(inStart, outEnd);
+      this.cardFades.push({ u: cardFade, baseEnd: fadeEnd });
+      const u = { ...this.uniforms, uFade: { value: new THREE.Vector4(1e6, 1e6 + 1, 1e6, 1e6 + 1) }, uLeaf: { value: leafTex }, uCardFade: { value: cardFade }, uCardNear: { value: CARD_NEAR } };
       m.onBeforeCompile = (shader) => {
         Object.assign(shader.uniforms, u);
         shader.vertexShader = shader.vertexShader.replace('#include <common>', `#include <common>\n${CARD_VERT_PARS}`).replace('#include <begin_vertex>', `${NEAR_VERT_BEGIN}\n  vLeafUv = uv;`);
@@ -1613,9 +1648,11 @@ export class Vegetation {
     geo.setAttribute('iT', this.impT);
     geo.instanceCount = 0;
     const atlas = renderer ? bakeAtlas(renderer, this.kinds.map((k) => lo[k])) : null;
+    this.hasAtlas = !!atlas;
+    this.impFade = new THREE.Vector4(LOD_NEAR, LOD_FAR - 16, RADIUS * 0.82, RADIUS);
     const impU = {
       ...this.uniforms,
-      uFade: { value: new THREE.Vector4(LOD_NEAR, LOD_FAR, RADIUS * 0.85, RADIUS) },
+      uFade: { value: this.impFade },
       uKinds: { value: atlas?.kinds ?? this.kinds.map((_, i) => new THREE.Vector4(2, 6, 0, i)) },
       uAtlasC: { value: atlas?.color ?? null },
       uAtlasN: { value: atlas?.normal ?? null },
@@ -1898,19 +1935,84 @@ export class Vegetation {
     }
   }
 
+  /**
+   * Scales vegetation LOD/draw ranges and triggers a rebuild.
+   * Below 0.8 skips leaf cards and high-detail brush tufts; below 0.75 skips the plant shade pass.
+   */
+  setLodScale(scale: number): void {
+    const s = Math.max(0.35, Math.min(2.0, scale));
+    if (s === this.lodScale) return;
+    this.lodScale = s;
+    this.radius = RADIUS * s;
+    this.lodNear = LOD_NEAR * s;
+    this.lodFar = LOD_FAR * s;
+    this.treeHi = TREE_HI * s;
+    this.shrubHi = SHRUB_HI * s;
+    this.tuftR = TUFT_R * s;
+    this.tuftHiR = TUFT_HI * s;
+    this.cardsEnabled = s >= 0.8;
+    this.nearFade.set(1e6, 1e6 + 1, this.lodFar - 22 * s, this.lodFar);
+    this.tuftFade.set(1e6, 1e6 + 1, this.tuftR * 0.72, this.tuftR);
+    this.impFade.set(this.lodNear, this.lodFar - 16 * s, this.radius * 0.82, this.radius);
+    for (const { u, baseEnd } of this.cardFades) {
+      const scaledEnd = baseEnd * s;
+      const pad = Math.min(REBUILD_MOVE, scaledEnd * 0.25);
+      const outEnd = Math.max(6, scaledEnd - pad - 2 * s);
+      const inStart = Math.max(2, outEnd - 34 * s);
+      u.set(inStart, outEnd);
+    }
+    this.dirty = true;
+    if (this.lastCamera) {
+      const eye = this.lastCamera.position;
+      const ground = Math.max(0, this.field.heightAt(eye.x, eye.z));
+      const alt = eye.y - ground;
+      this.group.visible = alt < this.radius * 0.9;
+      if (this.group.visible) {
+        this.lastEye.copy(eye);
+        this.lastCamera.getWorldDirection(this.lastDir);
+        this.lastFov = (this.lastCamera as THREE.PerspectiveCamera).fov ?? 0;
+        this.rebuild(this.lastCamera, PLANT_BUDGET_MS, alt);
+      } else {
+        this.clearShade();
+      }
+    } else if (s < 0.75) {
+      this.clearShade();
+    }
+  }
+
   update(camera: THREE.PerspectiveCamera | THREE.Camera, time: number): void {
     const eye = camera.position;
-    this.felling.update(THREE.MathUtils.clamp(time - this.lastTime, 0, 0.1));
+    this.lastCamera = camera;
+    const rawDt = time - this.lastTime;
+    const dt = THREE.MathUtils.clamp(rawDt, 0, 0.1);
+    this.felling.update(dt);
+    if (rawDt > 1e-4 && this.prevEye.x !== Infinity) {
+      const instSpeed = eye.distanceTo(this.prevEye) / rawDt;
+      if (instSpeed < 2000) this.smoothSpeed += (instSpeed - this.smoothSpeed) * Math.min(1, rawDt * 4);
+      else this.smoothSpeed = 0;
+    }
+    this.prevEye.copy(eye);
     this.lastTime = time;
     this.uniforms.uTime.value = time;
     (this.uniforms.uEye.value as THREE.Vector3).copy(eye);
     const ground = Math.max(0, this.field.heightAt(eye.x, eye.z));
     const alt = eye.y - ground;
-    this.group.visible = alt < RADIUS * 0.9;
-    if (!this.group.visible) return;
+    this.group.visible = alt < this.radius * 0.9;
+    if (!this.group.visible) {
+      this.clearShade();
+      return;
+    }
+    if (alt > 300 || this.lodScale < 0.75) {
+      this.clearShade();
+    } else if (!this.shadeActive && this.renderer && this.shadeRt) {
+      this.dirty = true;
+    }
     camera.getWorldDirection(this._dir);
     const fov = (camera as THREE.PerspectiveCamera).fov ?? 0;
-    const moveThresh = alt > 180 ? 44 : REBUILD_MOVE;
+    const altBoost = THREE.MathUtils.clamp((alt - 80) * 0.2, 0, 72);
+    const speedBoost = THREE.MathUtils.clamp((this.smoothSpeed - 50) * 0.12, 0, 56);
+    const moveThresh = Math.min(110, REBUILD_MOVE + altBoost + speedBoost);
+    this.moveThresh = moveThresh;
     if (!this.pending && !this.dirty && eye.distanceToSquared(this.lastEye) < moveThresh * moveThresh && this._dir.dot(this.lastDir) > REBUILD_TURN && fov === this.lastFov) return;
     // A jump (boot, respawn, a teleport) plants the whole ring at once:
     // no point growing it in over seconds behind a cut
@@ -1918,22 +2020,37 @@ export class Vegetation {
     this.lastEye.copy(eye);
     this.lastDir.copy(this._dir);
     this.lastFov = fov;
-    this.rebuild(camera, jumped ? Infinity : PLANT_BUDGET_MS);
+    this.rebuild(camera, jumped ? Infinity : PLANT_BUDGET_MS, alt);
   }
 
   /** Visible cells into the instance lists. */
-  private rebuild(camera: THREE.Camera, budgetMs: number): void {
+  private rebuild(camera: THREE.Camera, budgetMs: number, alt = Infinity): void {
     const t0 = performance.now();
     let pending = false;
     this.dirty = false;
     const eye = camera.position;
+    if (!Number.isFinite(alt)) {
+      const ground = Math.max(0, this.field.heightAt(eye.x, eye.z));
+      alt = eye.y - ground;
+    }
     camera.updateMatrixWorld();
     this._vp.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this._vp);
     const planes = this.frustum.planes;
     const cx = Math.floor(eye.x / CELL);
     const cz = Math.floor(eye.z / CELL);
-    const reach = Math.ceil(RADIUS / CELL);
+    const reach = Math.ceil(this.radius / CELL);
+    const pad = this.moveThresh;
+    const radius2 = this.radius * this.radius;
+    const nearMax = this.lodFar + pad;
+    const nearMax2 = nearMax * nearMax;
+    const impMin = Math.max(0, this.lodNear - pad);
+    const impMin2 = impMin * impMin;
+    const bushMax = this.radius * 0.65 + pad;
+    const bushMax2 = bushMax * bushMax;
+    const tuftMax = this.tuftR + pad;
+    const tuftMax2 = tuftMax * tuftMax;
+    const tuftHiMax = this.tuftHiR + pad;
     const nearCount: Record<string, number> = Object.fromEntries(this.kinds.map((k) => [k, 0]));
     const hiCount: Record<string, number> = { ...nearCount };
     let impN = 0;
@@ -1963,6 +2080,17 @@ export class Vegetation {
       (mesh.instanceMatrix.array as Float32Array).set(src.subarray(o, o + 16), at * 16);
       (mesh.instanceColor!.array as Float32Array).set(src.subarray(o + 16, o + 19), at * 3);
     };
+    const copyImp = (src: Float32Array, o: number, w: number) => {
+      impA[w * 4] = src[o];
+      impA[w * 4 + 1] = src[o + 1];
+      impA[w * 4 + 2] = src[o + 2];
+      impA[w * 4 + 3] = src[o + 3];
+      impB[w * 2] = src[o + 4];
+      impB[w * 2 + 1] = src[o + 5];
+      impT[w * 3] = src[o + 6];
+      impT[w * 3 + 1] = src[o + 7];
+      impT[w * 3 + 2] = src[o + 8];
+    };
     const camFwdX = this._dir.x;
     const camFwdZ = this._dir.z;
     const horizLen = Math.hypot(camFwdX, camFwdZ);
@@ -1977,7 +2105,7 @@ export class Vegetation {
         const dx = Math.max(x0 - eye.x, 0, eye.x - (x0 + CELL));
         const dz = Math.max(z0 - eye.z, 0, eye.z - (z0 + CELL));
         const flat2 = dx * dx + dz * dz;
-        if (flat2 > RADIUS * RADIUS) continue;
+        if (flat2 > radius2) continue;
         const cellCx = x0 + half;
         const cellCz = z0 + half;
         // Quick back-of-camera skip before planting an uncached cell
@@ -1989,7 +2117,7 @@ export class Vegetation {
             const d2d = Math.hypot(vx, vz);
             if (d2d > CELL * 1.6 && vx * fx + vz * fz < -d2d * 0.35 - CELL) continue;
           }
-          if (flat2 > LOD_FAR * LOD_FAR && performance.now() - t0 > budgetMs) {
+          if (flat2 > this.lodFar * this.lodFar && performance.now() - t0 > budgetMs) {
             pending = true;
             continue;
           }
@@ -2000,7 +2128,7 @@ export class Vegetation {
         const midY = (c.minY + c.maxY) * 0.5;
         centre.set(c.x, midY, c.z);
         const dist = centre.distanceTo(eye);
-        const rad = Math.hypot(half * Math.SQRT2, (c.maxY - c.minY) * 0.5) + REBUILD_MOVE + dist * CULL_MARGIN;
+        const rad = Math.hypot(half * Math.SQRT2, (c.maxY - c.minY) * 0.5) + pad + dist * CULL_MARGIN;
         let inside = true;
         for (let p = 0; p < 6; p++) {
           if (planes[p].distanceToPoint(centre) < -rad) {
@@ -2015,59 +2143,103 @@ export class Vegetation {
         const dMax = Math.hypot(Math.max(Math.abs(c.x - eye.x) + half, 0), Math.max(Math.abs(c.z - eye.z) + half, 0), Math.max(Math.abs(c.minY - eye.y), Math.abs(c.maxY - eye.y)));
         for (const k of this.kinds) {
           if (!c.near[k].length) continue;
-          const hr = this.species[k].hiRange;
-          if (dMax < hr) hiCount[k] += copyNear(this.close[k], c.near[k], hiCount[k], this.capHi[k]);
-          else if (dMin > hr) {
-            if (dMin < LOD_FAR + REBUILD_MOVE) nearCount[k] += copyNear(this.near[k], c.near[k], nearCount[k], this.cap[k]);
+          const hr = (this.species[k].hiRange === SHRUB_HI ? this.shrubHi : this.species[k].hiRange === TREE_HI ? this.treeHi : this.species[k].hiRange * this.lodScale);
+          if (dMax < hr) {
+            hiCount[k] += copyNear(this.close[k], c.near[k], hiCount[k], this.capHi[k]);
+          } else if (dMin > hr) {
+            if (dMax <= nearMax) {
+              nearCount[k] += copyNear(this.near[k], c.near[k], nearCount[k], this.cap[k]);
+            } else if (dMin < nearMax) {
+              const src = c.near[k];
+              for (let o = 0; o < src.length && nearCount[k] < this.cap[k]; o += NEAR_STRIDE) {
+                const ex = src[o + 12] - eye.x;
+                const ey = src[o + 13] - eye.y;
+                const ez = src[o + 14] - eye.z;
+                if (ex * ex + ey * ey + ez * ez <= nearMax2) put(this.near[k], src, o, nearCount[k]++);
+              }
+            }
           } else {
             // Straddling the hand-over: tree by tree
             const src = c.near[k];
+            const hr2 = hr * hr;
             for (let o = 0; o < src.length; o += NEAR_STRIDE) {
               const ex = src[o + 12] - eye.x;
               const ey = src[o + 13] - eye.y;
               const ez = src[o + 14] - eye.z;
-              if (ex * ex + ey * ey + ez * ez < hr * hr) {
+              const d2 = ex * ex + ey * ey + ez * ez;
+              if (d2 < hr2) {
                 if (hiCount[k] < this.capHi[k]) put(this.close[k], src, o, hiCount[k]++);
-              } else if (nearCount[k] < this.cap[k]) put(this.near[k], src, o, nearCount[k]++);
+              } else if (d2 <= nearMax2 && nearCount[k] < this.cap[k]) {
+                put(this.near[k], src, o, nearCount[k]++);
+              }
             }
           }
         }
-        if (dMax > LOD_NEAR - REBUILD_MOVE && c.imp.length) {
-          const n = Math.min(IMP_CAP - impN, c.imp.length / IMP_STRIDE);
-          for (let q = 0; q < n; q++) {
-            const o = q * IMP_STRIDE;
-            const w = impN + q;
-            impA[w * 4] = c.imp[o];
-            impA[w * 4 + 1] = c.imp[o + 1];
-            impA[w * 4 + 2] = c.imp[o + 2];
-            impA[w * 4 + 3] = c.imp[o + 3];
-            impB[w * 2] = c.imp[o + 4];
-            impB[w * 2 + 1] = c.imp[o + 5];
-            impT[w * 3] = c.imp[o + 6];
-            impT[w * 3 + 1] = c.imp[o + 7];
-            impT[w * 3 + 2] = c.imp[o + 8];
+        if (dMax > impMin && c.imp.length) {
+          if (dMin >= impMin && dMax <= bushMax) {
+            const n = Math.min(IMP_CAP - impN, c.imp.length / IMP_STRIDE);
+            for (let q = 0; q < n; q++) copyImp(c.imp, q * IMP_STRIDE, impN + q);
+            impN += Math.max(0, n);
+          } else {
+            const src = c.imp;
+            for (let o = 0; o < src.length && impN < IMP_CAP; o += IMP_STRIDE) {
+              const ex = src[o] - eye.x;
+              const ey = src[o + 1] - eye.y;
+              const ez = src[o + 2] - eye.z;
+              const d2 = ex * ex + ey * ey + ez * ez;
+              if (d2 < impMin2) continue;
+              // Wild chaparral bushes (< 0.5 kind) dither out before horizon; skip submitting them far out
+              if (src[o + 5] < 0.5 && d2 > bushMax2) continue;
+              copyImp(src, o, impN++);
+            }
           }
-          impN += Math.max(0, n);
         }
-        if (dMin < TUFT_R + REBUILD_MOVE) {
+        if (dMin < tuftMax) {
           const t = this.tufts(c);
-          if (t && dMin < TUFT_HI + REBUILD_MOVE) {
-            // By the eye: clump by clump
-            const src = t.brush;
-            for (let o = 0; o < src.length; o += NEAR_STRIDE) {
-              const near = (src[o + 12] - eye.x) ** 2 + (src[o + 13] - eye.y) ** 2 + (src[o + 14] - eye.z) ** 2 < TUFT_HI * TUFT_HI;
-              if (near && tuftHiN < CAP.tuftHi) put(this.tuftHi, src, o, tuftHiN++);
-              else if (!near && tuftN < CAP.tuft) put(this.tuft, src, o, tuftN++);
+          if (t) {
+            if (this.cardsEnabled && dMin < tuftHiMax) {
+              // By the eye: clump by clump
+              const src = t.brush;
+              const tuftHi2 = this.tuftHiR * this.tuftHiR;
+              for (let o = 0; o < src.length; o += NEAR_STRIDE) {
+                const ex = src[o + 12] - eye.x;
+                const ey = src[o + 13] - eye.y;
+                const ez = src[o + 14] - eye.z;
+                const d2 = ex * ex + ey * ey + ez * ez;
+                if (d2 < tuftHi2) {
+                  if (tuftHiN < CAP.tuftHi) put(this.tuftHi, src, o, tuftHiN++);
+                } else if (d2 <= tuftMax2 && tuftN < CAP.tuft) {
+                  put(this.tuft, src, o, tuftN++);
+                }
+              }
+            } else if (dMax <= tuftMax) {
+              tuftN += copyNear(this.tuft, t.brush, tuftN, CAP.tuft);
+            } else {
+              const src = t.brush;
+              for (let o = 0; o < src.length && tuftN < CAP.tuft; o += NEAR_STRIDE) {
+                const ex = src[o + 12] - eye.x;
+                const ey = src[o + 13] - eye.y;
+                const ez = src[o + 14] - eye.z;
+                if (ex * ex + ey * ey + ez * ez <= tuftMax2) put(this.tuft, src, o, tuftN++);
+              }
             }
-            grassN += copyNear(this.grass, t.grass, grassN, CAP.grass);
-          } else if (t) {
-            tuftN += copyNear(this.tuft, t.brush, tuftN, CAP.tuft);
-            grassN += copyNear(this.grass, t.grass, grassN, CAP.grass);
+            if (dMax <= tuftMax) {
+              grassN += copyNear(this.grass, t.grass, grassN, CAP.grass);
+            } else {
+              const src = t.grass;
+              for (let o = 0; o < src.length && grassN < CAP.grass; o += NEAR_STRIDE) {
+                const ex = src[o + 12] - eye.x;
+                const ey = src[o + 13] - eye.y;
+                const ez = src[o + 14] - eye.z;
+                if (ex * ex + ey * ey + ez * ez <= tuftMax2) put(this.grass, src, o, grassN++);
+              }
+            }
           }
         }
       }
     }
     const upload = (attr: THREE.BufferAttribute, n: number) => {
+      if (n <= 0) return;
       attr.clearUpdateRanges();
       attr.addUpdateRange(0, n * attr.itemSize);
       attr.needsUpdate = true;
@@ -2078,22 +2250,32 @@ export class Vegetation {
         [this.close[k], hiCount[k]],
       ] as const) {
         m.count = n;
+        m.visible = n > 0;
         upload(m.instanceMatrix, n);
         upload(m.instanceColor!, n);
       }
     }
     this.tuft.count = tuftN;
+    this.tuft.visible = tuftN > 0;
     upload(this.tuft.instanceMatrix, tuftN);
     upload(this.tuft.instanceColor!, tuftN);
     this.tuftHi.count = tuftHiN;
+    this.tuftHi.visible = this.cardsEnabled && tuftHiN > 0;
     upload(this.tuftHi.instanceMatrix, tuftHiN);
     upload(this.tuftHi.instanceColor!, tuftHiN);
     this.grass.count = grassN;
+    this.grass.visible = grassN > 0;
     upload(this.grass.instanceMatrix, grassN);
     upload(this.grass.instanceColor!, grassN);
-    for (const [owner, cards] of this.cards) cards.count = owner.count;
-    this.drawShade(eye);
+    for (const [owner, cards] of this.cards) {
+      const cCount = this.cardsEnabled ? owner.count : 0;
+      cards.count = cCount;
+      cards.visible = cCount > 0;
+    }
+    if (alt <= 300 && this.lodScale >= 0.75) this.drawShade(eye);
+    else this.clearShade();
     this.imp.geometry.instanceCount = impN;
+    this.imp.visible = this.hasAtlas && impN > 0;
     upload(this.impA, impN);
     upload(this.impB, impN);
     upload(this.impT, impN);
@@ -2102,13 +2284,21 @@ export class Vegetation {
     this.stats = { cells, near: nearN, imp: impN, tuft: tuftN + tuftHiN + grassN, rebuilds: this.stats.rebuilds + 1, buildMs: +(performance.now() - t0).toFixed(2) };
   }
 
+  private clearShade(): void {
+    if (!this.shadeActive) return;
+    this.shade.box.set(0, 0, 0, 0);
+    this.shadeActive = false;
+  }
+
   /** The shade map redrawn round the eye from the lists just built. */
   private drawShade(eye: THREE.Vector3): void {
     const r = this.renderer;
     if (!r || !this.shadeRt) return;
+    const span = Math.max(SHADE_SPAN, 2 * (this.lodFar + 28));
     // Centred on a whole texel: the map doesn't swim as the eye moves
-    const texel = SHADE_SPAN / SHADE_RES;
-    this.shade.box.set(Math.round(eye.x / texel) * texel, Math.round(eye.z / texel) * texel, 1 / SHADE_SPAN, 0);
+    const texel = span / SHADE_RES;
+    this.shade.box.set(Math.round(eye.x / texel) * texel, Math.round(eye.z / texel) * texel, 1 / span, 0);
+    this.shadeActive = true;
     for (const [owner, m] of this.shadeMarks) m.count = owner.count;
     const prevTarget = r.getRenderTarget();
     const prevClear = r.getClearColor(new THREE.Color());

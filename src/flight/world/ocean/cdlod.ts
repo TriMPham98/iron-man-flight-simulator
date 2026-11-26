@@ -31,7 +31,8 @@ export type LandTest = (x0: number, z0: number, size: number) => boolean;
 export class Cdlod {
   readonly data: Float32Array;
   count = 0;
-  readonly r0: number;
+  r0: number;
+  private lodScale = 1;
   private readonly ranges: Float64Array;
   private readonly frustum = new THREE.Frustum();
   private readonly box = new THREE.Box3();
@@ -48,7 +49,14 @@ export class Cdlod {
     this.data = new Float32Array(o.maxNodes * 4);
     this.r0 = o.leaf * o.rangeK;
     this.ranges = new Float64Array(o.levels);
-    for (let l = 0; l < o.levels; l++) this.ranges[l] = this.r0 * 2 ** l;
+    this.setLodScale(1);
+  }
+
+  /** Scale CDLOD range thresholds without shrinking maxDist. */
+  setLodScale(scale: number): void {
+    this.lodScale = Math.max(0.35, Math.min(2, scale));
+    this.r0 = this.o.leaf * this.o.rangeK * this.lodScale;
+    for (let l = 0; l < this.o.levels; l++) this.ranges[l] = this.r0 * 2 ** l;
   }
 
   private sphereHit(x0: number, z0: number, size: number, r: number): boolean {

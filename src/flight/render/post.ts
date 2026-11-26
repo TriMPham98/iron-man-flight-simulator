@@ -39,6 +39,7 @@ uniform sampler2D tBloom;
 uniform vec2 uRes;
 uniform vec2 uSrcRes;
 uniform float uUpscale;
+uniform float uLowCost;
 uniform float uTime;
 uniform vec2 uSunUv;
 uniform float uSunVis;
@@ -159,27 +160,31 @@ void main() {
   // Chromatic fringe toward the edges at speed (and in the visor)
   float fr = (uSpeed * 0.0035 + uHelmet * 0.0012) * c2 * 4.0;
   vec3 hdr;
-  if (uUpscale > 0.5) {
-    hdr = sceneSharp(uv);
-    if (fr > 1e-5) {
-      hdr.r = safeScene(uv - c * fr).r;
-      hdr.b = safeScene(uv + c * fr).b;
-    }
-  } else if (fr > 1e-5) {
-    hdr.r = safeScene(uv - c * fr).r;
-    hdr.g = safeScene(uv).g;
-    hdr.b = safeScene(uv + c * fr).b;
+  if (uLowCost > 0.5) {
+    hdr = safeHdr(texture2D(tScene, uv).rgb);
   } else {
-    hdr = safeScene(uv);
-  }
-  // Supersonic peripheral speed-smear: keeps the centre razor-sharp while the
-  // screen edges streak back past Mach 0.85
-  if (uSpeed > 0.04 && c2 > 0.06) {
-    float smearK = uSpeed * smoothstep(0.06, 0.32, c2);
-    vec2 stepUv = c * (0.012 * smearK);
-    vec3 s1 = safeScene(clamp(uv - stepUv, 0.001, 0.999));
-    vec3 s2 = safeScene(clamp(uv - stepUv * 2.0, 0.001, 0.999));
-    hdr = mix(hdr, (hdr + s1 + s2) * (1.0 / 3.0), smearK * 0.42);
+    if (uUpscale > 0.5) {
+      hdr = sceneSharp(uv);
+      if (fr > 1e-5) {
+        hdr.r = safeScene(uv - c * fr).r;
+        hdr.b = safeScene(uv + c * fr).b;
+      }
+    } else if (fr > 1e-5) {
+      hdr.r = safeScene(uv - c * fr).r;
+      hdr.g = safeScene(uv).g;
+      hdr.b = safeScene(uv + c * fr).b;
+    } else {
+      hdr = safeScene(uv);
+    }
+    // Supersonic peripheral speed-smear: keeps the centre razor-sharp while the
+    // screen edges streak back past Mach 0.85
+    if (uSpeed > 0.04 && c2 > 0.06) {
+      float smearK = uSpeed * smoothstep(0.06, 0.32, c2);
+      vec2 stepUv = c * (0.012 * smearK);
+      vec3 s1 = safeScene(clamp(uv - stepUv, 0.001, 0.999));
+      vec3 s2 = safeScene(clamp(uv - stepUv * 2.0, 0.001, 0.999));
+      hdr = mix(hdr, (hdr + s1 + s2) * (1.0 / 3.0), smearK * 0.42);
+    }
   }
   hdr += safeHdr(texture2D(tBloom, uv).rgb);
 
@@ -270,6 +275,7 @@ export class FlightPost {
   private time = 0;
   /** Scene target size as a fraction of the canvas's drawing buffer (≤ 1). */
   private scale = 1;
+  private lowCost = false;
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -301,6 +307,7 @@ export class FlightPost {
       uRes: { value: new THREE.Vector2(1, 1) },
       uSrcRes: { value: new THREE.Vector2(1, 1) },
       uUpscale: { value: 0 },
+      uLowCost: { value: 0 },
       uTime: { value: 0 },
       uSunUv: { value: new THREE.Vector2() },
       uSunVis: { value: 0 },
@@ -349,6 +356,14 @@ export class FlightPost {
     prev.dispose();
   }
 
+  /** Use lower-cost bloom resolution and bilinear upscale on low quality (keeps ACES). */
+  setLowCost(low: boolean): void {
+    if (this.lowCost === low) return;
+    this.lowCost = low;
+    this.uniforms.uLowCost.value = low ? 1 : 0;
+    this.resize();
+  }
+
   /** The scene's share of the canvas resolution; takes hold at the next {@link resize}. */
   setScale(scale: number): void {
     this.scale = THREE.MathUtils.clamp(scale, 0.1, 1);
@@ -358,8 +373,9 @@ export class FlightPost {
     const out = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     const size = new THREE.Vector2(Math.max(1, Math.round(out.x * this.scale)), Math.max(1, Math.round(out.y * this.scale)));
     this.rt.setSize(size.x, size.y);
-    // UnrealBloomPass halves again internally: quarter-resolution glow
-    this.bloom.setSize(Math.round(size.x / 2), Math.round(size.y / 2));
+    // UnrealBloomPass halves again internally: quarter-res normally, eighth-res on low quality
+    const bloomDiv = this.lowCost ? 4 : 2;
+    this.bloom.setSize(Math.max(8, Math.round(size.x / bloomDiv)), Math.max(8, Math.round(size.y / bloomDiv)));
     (this.uniforms.uRes.value as THREE.Vector2).copy(out);
     (this.uniforms.uSrcRes.value as THREE.Vector2).copy(size);
     this.uniforms.uUpscale.value = size.x < out.x || size.y < out.y ? 1 : 0;

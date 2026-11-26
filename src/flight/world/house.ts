@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { simplifyGeometry, simplifierReady } from '../../utils/simplify';
 import { HOME, HOME_HEIGHT, type Heightfield } from './heightfield';
 import { FRAME_YAW, buildCliffGeometry, cliffHeight, crest, faceOut, toLocal, toWorld } from './houseCliff';
 import { Batch, Footprint, Outline, alongOutline, beam, box, fascia, flat, houseMaterials, polyGeo, slab, strut, wallQuad, type P2 } from './houseKit';
@@ -332,6 +333,214 @@ function flip(g: THREE.BufferGeometry, dir: THREE.Vector3): THREE.BufferGeometry
   }
   g.computeVertexNormals();
   return g;
+}
+
+type ProjectionMode = 'box' | 'wall';
+
+/** World-scale box/wall UVs matching Batch.build in houseKit.ts. */
+function applyBatchUVs(geo: THREE.BufferGeometry, uvScale: number, projection: ProjectionMode): void {
+  const pos = geo.getAttribute('position');
+  const nrm = geo.getAttribute('normal');
+  const uv = new Float32Array(pos.count * 2);
+  for (let i = 0; i < pos.count; i++) {
+    const ax = Math.abs(nrm.getX(i));
+    const ay = Math.abs(nrm.getY(i));
+    const az = Math.abs(nrm.getZ(i));
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    if (projection === 'wall') uv.set([(x + z * 0.7) * uvScale, y * uvScale], i * 2);
+    else if (ay >= ax && ay >= az) uv.set([x * uvScale, z * uvScale], i * 2);
+    else if (ax >= az) uv.set([z * uvScale, y * uvScale], i * 2);
+    else uv.set([x * uvScale, y * uvScale], i * 2);
+  }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+function posKey(x: number, y: number, z: number): string {
+  return `${Math.round(x * 1e5)},${Math.round(y * 1e5)},${Math.round(z * 1e5)}`;
+}
+
+interface ColorLookup {
+  map: Map<string, number>;
+  srcCol: THREE.BufferAttribute;
+  fallback: [number, number, number];
+}
+
+function buildColorLookup(src: THREE.BufferGeometry): ColorLookup {
+  const pos = src.getAttribute('position');
+  const srcCol = src.getAttribute('color') as THREE.BufferAttribute;
+  const map = new Map<string, number>();
+  let rSum = 0;
+  let gSum = 0;
+  let bSum = 0;
+  for (let i = 0; i < pos.count; i++) {
+    const k = posKey(pos.getX(i), pos.getY(i), pos.getZ(i));
+    if (!map.has(k)) map.set(k, i);
+    rSum += srcCol.getX(i);
+    gSum += srcCol.getY(i);
+    bSum += srcCol.getZ(i);
+  }
+  const n = Math.max(1, pos.count);
+  return { map, srcCol, fallback: [rSum / n, gSum / n, bSum / n] };
+}
+
+function applyColorLookup(geo: THREE.BufferGeometry, lookup: ColorLookup): void {
+  const pos = geo.getAttribute('position');
+  const col = new Float32Array(pos.count * 3);
+  const { map, srcCol, fallback } = lookup;
+  for (let i = 0; i < pos.count; i++) {
+    const idx = map.get(posKey(pos.getX(i), pos.getY(i), pos.getZ(i)));
+    if (idx !== undefined) {
+      col[i * 3] = srcCol.getX(idx);
+      col[i * 3 + 1] = srcCol.getY(idx);
+      col[i * 3 + 2] = srcCol.getZ(idx);
+    } else {
+      col[i * 3] = fallback[0];
+      col[i * 3 + 1] = fallback[1];
+      col[i * 3 + 2] = fallback[2];
+    }
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+
+function finalizeLodGeo(geo: THREE.BufferGeometry, uvScale: number, projection: ProjectionMode): THREE.BufferGeometry {
+  applyBatchUVs(geo, uvScale, projection);
+  const count = geo.getAttribute('position').count;
+  geo.setAttribute('glow', new THREE.BufferAttribute(new Float32Array(count), 1));
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+/**
+ * Attribute-preserving vertex-clustering decimation to ~`targetRatio` of the
+ * triangles. Used synchronously before meshoptimizer WASM initializes (or if
+ * meshoptimizer stops early on error bounds).
+ */
+function decimateBatchGeometry(
+  src: THREE.BufferGeometry,
+  targetRatio: number,
+  uvScale: number,
+  projection: ProjectionMode,
+  quantizeNormals: boolean,
+): THREE.BufferGeometry {
+  const pos = src.getAttribute('position');
+  const nor = src.getAttribute('normal');
+  const col = src.getAttribute('color');
+  const srcTris = Math.floor(pos.count / 3);
+  if (srcTris < 24) return src;
+
+  const targetTris = Math.max(12, Math.round(srcTris * targetRatio));
+  src.computeBoundingBox();
+  const size = new THREE.Vector3();
+  src.boundingBox?.getSize(size);
+  const maxSpan = Math.max(10, size.x, size.y, size.z);
+
+  const clusterIds = new Int32Array(pos.count);
+  const mapForCell = (cell: number): { surviving: number; count: number } => {
+    const keys = new Map<string, number>();
+    let count = 0;
+    for (let i = 0; i < pos.count; i++) {
+      const nKey = quantizeNormals && nor ? `,${Math.round(nor.getX(i))}${Math.round(nor.getY(i))}${Math.round(nor.getZ(i))}` : '';
+      const key = `${Math.floor(pos.getX(i) / cell)},${Math.floor(pos.getY(i) / cell)},${Math.floor(pos.getZ(i) / cell)}${nKey}`;
+      let id = keys.get(key);
+      if (id === undefined) {
+        id = count++;
+        keys.set(key, id);
+      }
+      clusterIds[i] = id;
+    }
+    let surviving = 0;
+    for (let i = 0; i < pos.count; i += 3) {
+      const a = clusterIds[i];
+      const b = clusterIds[i + 1];
+      const c = clusterIds[i + 2];
+      if (a !== b && b !== c && a !== c) surviving++;
+    }
+    return { surviving, count };
+  };
+
+  let lo = 0.25;
+  let hi = Math.max(8, maxSpan * 0.25);
+  let bestCell = lo;
+  let bestDiff = Infinity;
+  for (let iter = 0; iter < 5; iter++) {
+    const mid = (lo + hi) * 0.5;
+    const { surviving } = mapForCell(mid);
+    const diff = Math.abs(surviving - targetTris);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestCell = mid;
+    }
+    if (surviving > targetTris) lo = mid;
+    else hi = mid;
+  }
+
+  const { surviving, count } = mapForCell(bestCell);
+  if (surviving < 4) return src;
+
+  const sums = new Float32Array(count * 3);
+  const cSums = new Float32Array(count * 3);
+  const counts = new Uint32Array(count);
+  for (let i = 0; i < pos.count; i++) {
+    const id = clusterIds[i];
+    const k = id * 3;
+    sums[k] += pos.getX(i);
+    sums[k + 1] += pos.getY(i);
+    sums[k + 2] += pos.getZ(i);
+    if (col) {
+      cSums[k] += col.getX(i);
+      cSums[k + 1] += col.getY(i);
+      cSums[k + 2] += col.getZ(i);
+    }
+    counts[id]++;
+  }
+
+  const outPos = new Float32Array(surviving * 9);
+  const outCol = new Float32Array(surviving * 9);
+  let w = 0;
+  for (let i = 0; i < pos.count; i += 3) {
+    const a = clusterIds[i];
+    const b = clusterIds[i + 1];
+    const c = clusterIds[i + 2];
+    if (a === b || b === c || a === c) continue;
+    for (const id of [a, b, c]) {
+      const k = id * 3;
+      const inv = 1 / counts[id];
+      outPos[w] = sums[k] * inv;
+      outPos[w + 1] = sums[k + 1] * inv;
+      outPos[w + 2] = sums[k + 2] * inv;
+      outCol[w] = cSums[k] * inv;
+      outCol[w + 1] = cSums[k + 1] * inv;
+      outCol[w + 2] = cSums[k + 2] * inv;
+      w += 3;
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(outPos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(outCol, 3));
+  g.computeVertexNormals();
+  return finalizeLodGeo(g, uvScale, projection);
+}
+
+function trySimplifyBatch(
+  src: THREE.BufferGeometry,
+  ratio: number,
+  uvScale: number,
+  projection: ProjectionMode,
+  lookup: ColorLookup,
+): THREE.BufferGeometry | null {
+  const g = simplifyGeometry(src, ratio, 40);
+  if (!g) return null;
+  const srcTris = Math.floor(src.getAttribute('position').count / 3);
+  const outTris = Math.floor(g.getAttribute('position').count / 3);
+  if (outTris === 0 || outTris > srcTris * Math.min(0.85, ratio * 2.2)) {
+    g.dispose();
+    return null;
+  }
+  applyColorLookup(g, lookup);
+  return finalizeLodGeo(g, uvScale, projection);
 }
 
 /** The house's meshes, and its garden for the vegetation to draw (world space). */
@@ -920,39 +1129,121 @@ export function buildHouse(field?: Heightfield, drive?: DrivePath): { group: THR
   const houseGroup = new THREE.Group();
   houseGroup.position.set(HOME.x, HOME_HEIGHT, HOME.y);
   houseGroup.rotation.y = FRAME_YAW;
-  const keep = (m: THREE.Mesh, parent: THREE.Object3D = houseGroup) => {
-    m.receiveShadow = true;
+  const keep = (m: THREE.Mesh, parent: THREE.Object3D = houseGroup, receiveShadow = true) => {
+    m.receiveShadow = receiveShadow;
     m.castShadow = false;
     parent.add(m);
     return m;
   };
-  keep(B.rock.build(M.rock));
-  keep(B.concrete.build(M.concrete));
-  keep(B.stone.build(M.stone));
+
+  // Heavy opaque batches: 3-tier LOD (< 350 m full, 350–1100 m ~35%, > 1100 m ~12%)
+  const centre = new THREE.Vector3(60, 0, 20);
+  const makeTierGroup = () => {
+    const grp = new THREE.Group();
+    grp.position.copy(centre).negate();
+    return grp;
+  };
+  const tier0 = makeTierGroup();
+  const tier1 = makeTierGroup();
+  const tier2 = makeTierGroup();
+  tier0.name = 'house-lod-full';
+  tier1.name = 'house-lod-med';
+  tier2.name = 'house-lod-far';
+
+  const lodBatches: Array<[Batch, THREE.Material, number, ProjectionMode, boolean]> = [
+    [B.rock, M.rock, 1 / 16, 'wall', false],
+    [B.concrete, M.concrete, 0.25, 'box', true],
+    [B.stone, M.stone, 0.25, 'box', true],
+    [B.lawn, M.foliage, 0.25, 'box', false],
+  ];
+  const pendingUpgrades: Array<() => void> = [];
+  for (const [batch, mat, uvScale, projection, quantizeNormals] of lodBatches) {
+    if (batch.empty) continue;
+    const fullMesh = keep(batch.build(mat), tier0, true);
+    const srcGeo = fullMesh.geometry;
+    const lookup = buildColorLookup(srcGeo);
+
+    const medSimp = trySimplifyBatch(srcGeo, 0.35, uvScale, projection, lookup);
+    const farSimp = trySimplifyBatch(srcGeo, 0.12, uvScale, projection, lookup);
+    const medMesh = keep(
+      new THREE.Mesh(medSimp ?? decimateBatchGeometry(srcGeo, 0.35, uvScale, projection, quantizeNormals), mat),
+      tier1,
+      false,
+    );
+    medMesh.name = `${batch.name}-med`;
+    const farMesh = keep(
+      new THREE.Mesh(farSimp ?? decimateBatchGeometry(srcGeo, 0.12, uvScale, projection, quantizeNormals), mat),
+      tier2,
+      false,
+    );
+    farMesh.name = `${batch.name}-far`;
+
+    if (!medSimp || !farSimp) {
+      pendingUpgrades.push(() => {
+        if (!srcGeo.getAttribute('position')) return;
+        if (!medSimp) {
+          const g = trySimplifyBatch(srcGeo, 0.35, uvScale, projection, lookup);
+          if (g) {
+            const old = medMesh.geometry;
+            medMesh.geometry = g;
+            if (old !== srcGeo) old.dispose();
+          }
+        }
+        if (!farSimp) {
+          const g = trySimplifyBatch(srcGeo, 0.12, uvScale, projection, lookup);
+          if (g) {
+            const old = farMesh.geometry;
+            farMesh.geometry = g;
+            if (old !== srcGeo) old.dispose();
+          }
+        }
+      });
+    }
+  }
+  if (pendingUpgrades.length > 0) {
+    void simplifierReady
+      .then(() => {
+        for (const run of pendingUpgrades) run();
+      })
+      .catch(() => undefined);
+  }
+
+  const lod = new THREE.LOD();
+  lod.name = 'house-lod';
+  lod.position.copy(centre);
+  lod.addLevel(tier0, 0);
+  lod.addLevel(tier1, 350);
+  lod.addLevel(tier2, 1100);
+  houseGroup.add(lod);
+
   keep(B.metal.build(M.metal));
   keep(B.lit.build(M.lit));
   const pool = keep(B.water.build(M.water));
-  keep(B.lawn.build(M.foliage));
   if (drive && field) keep(buildDrive(drive, field.uniforms, COURT, COURT_R, paving));
-  const glass = keep(B.glass.build(M.glass));
-  glass.renderOrder = 1;
-  // Fine detail: gone at range
-  const centre = new THREE.Vector3(60, 0, 20);
-  const fine = new THREE.Group();
-  fine.position.copy(centre).negate();
+
+  // Fine detail + transparent glass: culled beyond 900 m
+  const fine = makeTierGroup();
+  fine.name = 'house-detail-full';
   keep(B.metalFine.build(M.metal), fine);
   keep(B.litFine.build(M.lit), fine);
   keep(B.outFine.build(M.concrete), fine);
-  const lod = new THREE.LOD();
-  lod.position.copy(centre);
-  lod.addLevel(fine, 0);
-  lod.addLevel(new THREE.Object3D(), 900);
-  houseGroup.add(lod);
+  const glass = keep(B.glass.build(M.glass), fine);
+  glass.renderOrder = 1;
+  const detailLod = new THREE.LOD();
+  detailLod.name = 'house-detail-lod';
+  detailLod.position.copy(centre);
+  detailLod.addLevel(fine, 0);
+  detailLod.addLevel(new THREE.Object3D(), 900);
+  houseGroup.add(detailLod);
 
-  // Pool ripples drift
+  // Pool ripples drift (skipped when camera is > 900 m away)
   const water = M.water.normalMap!;
   const t0 = performance.now();
-  pool.onBeforeRender = () => {
+  const poolW = toWorld(23, 47);
+  const poolWorld = new THREE.Vector3(poolW.x, HOME_HEIGHT + PD_Y, poolW.y);
+  const WATER_ANIM_DIST_SQ = 900 * 900;
+  pool.onBeforeRender = (_renderer, _scene, camera) => {
+    if (camera && camera.position.distanceToSquared(poolWorld) > WATER_ANIM_DIST_SQ) return;
     const t = (performance.now() - t0) / 1000;
     water.offset.set(t * 0.012, t * 0.007);
   };
