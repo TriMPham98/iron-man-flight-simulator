@@ -98,20 +98,11 @@ export type SimEventKind =
   | 'housePartyLaunch'
   | 'hotSwapLaunch'
   | 'hotSwapCatch'
-  // Mobility, Close-Quarters, World & Style Combos
-  | 'snapDash'
-  | 'diveSlam'
+  // Lateral Strafe & Close-Quarters
+  | 'strafeDash'
   | 'grappleGrab'
   | 'grappleThrow'
   | 'thrusterPunch'
-  | 'gatePass'
-  | 'gateCourseClear'
-  | 'lightningCharge'
-  | 'styleBonus'
-  | 'ordnanceIntercept'
-  | 'emergencyStart'
-  | 'emergencyClear'
-  | 'proximitySkim'
   // Picture (directed reels)
   | 'cameraCut';
 

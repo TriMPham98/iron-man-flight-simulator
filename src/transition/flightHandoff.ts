@@ -224,6 +224,12 @@ export function createFlightHandoff(opts: { reducedMotion: boolean }) {
   let lifted = false;
   let said = false;
   let held = false;
+  /**
+   * The flight mix's context, made inside the click when the sim was still
+   * building (Safari only lets a context start in a gesture; the sim's own
+   * unlock comes seconds later, from a frame, and would stay silent).
+   */
+  let gestureCtx: AudioContext | null = null;
 
   // Workshop lens: start pose → hero framing → drift
   const camFrom = new THREE.Vector3();
@@ -388,6 +394,11 @@ export function createFlightHandoff(opts: { reducedMotion: boolean }) {
     fa.hud.alpha = 0;
     fa.volumeScale = 0;
     fa.applyVolume();
+    if (gestureCtx) {
+      const ctx = gestureCtx;
+      gestureCtx = null;
+      fa.audio.makeContext = () => ctx;
+    }
     void fa.audio.unlock().then(() => fa.sounds.start());
     fa.holdResolution = true;
     fa.cameraOverride = plan ? launchCamera(fa) : flightCamera(fa);
@@ -648,9 +659,17 @@ export function createFlightHandoff(opts: { reducedMotion: boolean }) {
     active = true;
     stats.start();
     stats.mark('cue');
-    // Inside the click: unlock the flight mix now if it exists (else the page's
-    // sticky activation lets it start unmuted later)
-    void app?.audio.unlock();
+    // Inside the click: unlock the flight mix now, or (sim still building)
+    // make its context now and hand it over at the swap
+    if (app) void app.audio.unlock();
+    else {
+      try {
+        gestureCtx = new AudioContext({ latencyHint: 'interactive' });
+        void gestureCtx.resume();
+      } catch {
+        /* no Web Audio: the sim's own unlock tries again */
+      }
+    }
     void preload().catch(() => {
       location.href = '/flight.html';
     });

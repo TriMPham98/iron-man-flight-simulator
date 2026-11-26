@@ -169,8 +169,6 @@ const DEBOUNCE: Partial<Record<SimEvent['kind'], number>> = {
   skip: 0.15,
   boostStart: 0.3,
   ricochet: 0.08,
-  snapDash: 0.25,
-  proximitySkim: 0.4,
 };
 
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)];
@@ -607,14 +605,9 @@ export class Soundscape {
         A.play(SFX.weaponLock, { at: m.pos, gain: 0.75, ref: 8, delay: 0.06 });
         A.play(SFX.charge, { ui: true, gain: 0.72, rate: 1.1 });
         break;
-      case 'snapDash':
-        A.play(SFX.rocket2, { at: at ?? m.pos, gain: 0.72, rate: 1.35, vary: 0.06, ref: 8, duration: 0.32 });
-        A.play(SFX.zip, { at: at ?? m.pos, gain: 0.65, rate: 1.15, ref: 8 });
-        A.play(SFX.thrusterIgnite, { at: at ?? m.pos, gain: 0.45, rate: 1.3, ref: 8, duration: 0.28 });
-        break;
-      case 'diveSlam':
-        A.play(SFX.rocket1, { at: at ?? m.pos, gain: 0.85, rate: 0.74, ref: 10 });
-        A.play(SFX.jet, { at: at ?? m.pos, gain: 0.55, rate: 1.15, ref: 12, duration: 0.75 });
+      case 'strafeDash':
+        A.play(SFX.zip, { at: at ?? m.pos, gain: 0.6, rate: 1.15, ref: 8 });
+        A.play(SFX.thrusterIgnite, { at: at ?? m.pos, gain: 0.42, rate: 1.25, ref: 8, duration: 0.25 });
         break;
       case 'grappleGrab':
         A.play(SFX.weaponLock, { at: at ?? m.pos, gain: 0.78, rate: 1.15, ref: 8 });
@@ -628,37 +621,6 @@ export class Soundscape {
         A.play(SFX.impact, { at: at ?? m.pos, gain: 0.95, rate: 0.9, ref: 10 });
         A.play(SFX.heroThud, { at: at ?? m.pos, gain: 0.85, rate: 1.25, ref: 8, duration: 0.35 });
         A.play(SFX.metalClang, { at: at ?? m.pos, gain: 0.55, rate: 0.95, ref: 8 });
-        break;
-      case 'gatePass':
-        A.play(SFX.ping3, { ui: true, gain: 0.42, rate: 1.0 + Math.min(0.45, Math.max(0, (e.value ?? 1) - 1) * 0.04) });
-        A.play(SFX.flyby, { at: at ?? m.pos, gain: 0.35, rate: 1.25, ref: 14, duration: 0.5 });
-        break;
-      case 'gateCourseClear':
-        A.play(SFX.waveClear, { ui: true, gain: 0.62 });
-        A.play(SFX.killConfirm, { ui: true, gain: 0.42, rate: 1.2, delay: 0.14 });
-        break;
-      case 'lightningCharge':
-        A.play(SFX.sparkCrackle, { at: at ?? m.pos, gain: 0.95, rate: 0.9, ref: 12 });
-        A.play(SFX.charge, { ui: true, gain: 0.85, rate: 1.2 });
-        A.play(SFX.deepBoom, { at: at ?? m.pos, gain: 0.65, rate: 0.85, ref: 16 });
-        break;
-      case 'styleBonus':
-        A.play(SFX.ping2, { ui: true, gain: 0.34, rate: 1.18 });
-        break;
-      case 'ordnanceIntercept':
-        A.play(SFX.ping4, { ui: true, gain: 0.34, rate: 1.2 });
-        if (at) A.play(SFX.sparkCrackle, { at, gain: 0.45, rate: 1.1, ref: 18, duration: 0.3 });
-        break;
-      case 'emergencyStart':
-        A.play(SFX.rwrChirp, { ui: true, gain: 0.55, rate: 1.1 });
-        A.play(SFX.waveStart, { ui: true, gain: 0.42, rate: 1.05, delay: 0.12 });
-        break;
-      case 'emergencyClear':
-        A.play(SFX.waveClear, { ui: true, gain: 0.52, rate: 1.1 });
-        A.play(SFX.killConfirm, { ui: true, gain: 0.36, delay: 0.1 });
-        break;
-      case 'proximitySkim':
-        A.play(SFX.ping1, { ui: true, gain: 0.2, rate: 1.28 });
         break;
       case 'unibeamCharge':
         A.play(SFX.charge, { at: m.pos, gain: 0.9, ref: 8, delay: 0.15 });

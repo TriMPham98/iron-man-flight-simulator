@@ -12,9 +12,8 @@ import { applyTouch, TouchState } from './touchMath';
  * boosts, X fires the palms forward to brake. LMB repulsors, RMB missile lock
  * (release to fire), Space unibeam, C sweeping wrist laser cutter, F flares,
  * G forearm launchers, 1/2/3/4 reactor power allocation (Thrust / Weapons /
- * Shields / Balanced), B manual overcharge trigger, AltLeft (or double-tap
- * A/D/E/Q) directional snap-dash, Z targeted dive-slam, T mid-air grapple/throw,
- * H thruster punch.
+ * Shields / Balanced), B manual overcharge trigger, double-tap A/D lateral
+ * strafe burst, T mid-air grapple/throw, H thruster punch.
  * On a pad: right stick aims, left stick strafes / rolls (and moves in a
  * hover), triggers are throttle and brake, A/X climb/descend, L3 boost,
  * RB repulsors, LB missiles, Y unibeam, B flares, R3 camera, D-pad down
@@ -42,26 +41,22 @@ export interface Controls {
   /** One-shot presses (true for one frame). */
   pressed: Set<string>;
   zoom: number;
-  /** Optional one-shot directional snap-dash trigger (AltLeft or double-tap A/D/E/Q). */
-  dash?: { dir: -1 | 0 | 1; vertical?: -1 | 0 | 1 } | null;
-  /** One-shot Dive-Slam trigger (KeyZ). */
-  diveSlam?: boolean;
+  /** One-shot lateral strafe burst from double-tapping A (−1) or D (+1). */
+  strafeDash?: -1 | 0 | 1;
   /** One-shot Grapple / Throw trigger (KeyT). */
   grapple?: boolean;
   /** One-shot Thruster Punch trigger (KeyH). */
   punch?: boolean;
 }
 
-/** Conflict-free keyboard bindings for mobility & close-quarters actions. */
+/** Maximum interval (ms) between taps on A/D to trigger a lateral strafe burst. */
+const DOUBLE_TAP_MS = 280;
+
+/** Conflict-free keyboard bindings for close-quarters actions. */
 export const ACTION_KEYS = {
-  SNAP_DASH: 'AltLeft',
-  DIVE_SLAM: 'KeyZ',
   GRAPPLE: 'KeyT',
   PUNCH: 'KeyH',
 } as const;
-
-/** Maximum interval (ms) between taps on A/D/E/Q to fire a directional snap-dash. */
-const DOUBLE_TAP_MS = 280;
 
 const MOUSE_SENS = 0.0021;
 const PAD_RATE = 2.4;
@@ -81,7 +76,7 @@ export class Input {
   private wheel = 0;
   private padPrev = new Map<number, boolean>();
   private readonly lastTapMs = new Map<string, number>();
-  private pendingDash: { dir: -1 | 0 | 1; vertical?: -1 | 0 | 1 } | null = null;
+  private pendingStrafeDash: -1 | 0 | 1 = 0;
   /** Ramped (linear) key axes; the output is eased from these. */
   private keyLateral = 0;
   private keyVertical = 0;
@@ -99,31 +94,24 @@ export class Input {
       if (e.repeat) return;
       this.keys.add(e.code);
       this.pressedQueue.add(e.code);
-      if (e.code === 'KeyA' || e.code === 'KeyD' || e.code === 'KeyE' || e.code === 'KeyQ') {
+      if (e.code === 'KeyA' || e.code === 'KeyD') {
         const now = performance.now();
         const prev = this.lastTapMs.get(e.code) ?? -Infinity;
         if (now - prev <= DOUBLE_TAP_MS) {
-          this.pendingDash =
-            e.code === 'KeyA'
-              ? { dir: -1, vertical: 0 }
-              : e.code === 'KeyD'
-                ? { dir: 1, vertical: 0 }
-                : e.code === 'KeyE'
-                  ? { dir: 0, vertical: 1 }
-                  : { dir: 0, vertical: -1 };
+          this.pendingStrafeDash = e.code === 'KeyA' ? -1 : 1;
           this.lastTapMs.delete(e.code);
         } else {
           this.lastTapMs.set(e.code, now);
         }
       }
-      if (['Space', 'Tab', 'KeyF', 'KeyG', 'KeyQ', 'KeyE', 'ControlLeft', 'AltLeft'].includes(e.code)) e.preventDefault();
+      if (['Space', 'Tab', 'KeyF', 'KeyG', 'KeyQ', 'KeyE', 'ControlLeft'].includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => {
       this.keys.clear();
       this.buttons = 0;
       this.lastTapMs.clear();
-      this.pendingDash = null;
+      this.pendingStrafeDash = 0;
       this.touch.clear();
     });
     document.addEventListener('mousemove', (e) => {
@@ -177,21 +165,14 @@ export class Input {
   read(dt: number): Controls {
     const k = (a: string, b: string) => (this.key(a) ? 1 : 0) - (this.key(b) ? 1 : 0);
     const sens = MOUSE_SENS * this.sensitivity;
-    const latRaw = k('KeyD', 'KeyA');
-    const vertRaw = k('KeyE', 'KeyQ') + (this.key('ControlLeft') ? -1 : 0);
-    let dash = this.pendingDash;
-    this.pendingDash = null;
-    if (!dash && this.pressedQueue.has(ACTION_KEYS.SNAP_DASH)) {
-      const d = (latRaw > 0 ? 1 : latRaw < 0 ? -1 : 0) as -1 | 0 | 1;
-      const v = (vertRaw > 0 ? 1 : vertRaw < 0 ? -1 : 0) as -1 | 0 | 1;
-      dash = d !== 0 || v !== 0 ? { dir: d, vertical: v } : { dir: 1, vertical: 0 };
-    }
+    const strafeDash = this.pendingStrafeDash;
+    this.pendingStrafeDash = 0;
     const c: Controls = {
       aimYaw: -this.mouseDX * sens,
       aimPitch: -this.mouseDY * sens * (this.invertY ? -1 : 1),
       throttle: k('KeyW', 'KeyS'),
-      lateral: latRaw,
-      vertical: vertRaw,
+      lateral: k('KeyD', 'KeyA'),
+      vertical: k('KeyE', 'KeyQ') + (this.key('ControlLeft') ? -1 : 0),
       forward: 0,
       boost: this.key('ShiftLeft', 'ShiftRight'),
       brake: this.key('KeyX'),
@@ -202,8 +183,7 @@ export class Input {
       launcher: this.key('KeyG'),
       pressed: new Set(this.pressedQueue),
       zoom: this.wheel,
-      dash,
-      diveSlam: this.pressedQueue.has(ACTION_KEYS.DIVE_SLAM),
+      strafeDash,
       grapple: this.pressedQueue.has(ACTION_KEYS.GRAPPLE),
       punch: this.pressedQueue.has(ACTION_KEYS.PUNCH),
     };

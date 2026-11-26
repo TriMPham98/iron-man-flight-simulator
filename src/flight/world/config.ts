@@ -1,11 +1,9 @@
 import * as THREE from 'three';
 
 /**
- * The world: a 32 km stretch of coastal range on the Pacific, flown in
- * Night Ops by default (moonlit silver-blue sky, dark coastal indigo haze,
- * glowing cliff house and storm-lit clouds). Metres throughout; +Y up, the
- * ocean lies to the south (+Z) and the moon hangs low in the west-south-west
- * over the water.
+ * The world: a 32 km stretch of coastal range on the Pacific, flown at
+ * golden hour. Metres throughout; +Y up, the ocean lies to the south (+Z)
+ * and the sun hangs low in the west-south-west over the water.
  */
 export const WORLD_SIZE = 32768;
 /** Heightfield texels per side (16 m each). */
@@ -18,56 +16,11 @@ export const DETAIL_SPAN = 192;
 export const TERRAIN_PITCH = 4;
 export const SEA_LEVEL = 0;
 
-export interface LightingPreset {
-  readonly night: boolean;
-  /** Direction toward the primary celestial light (unit). */
-  readonly dir: THREE.Vector3;
-  readonly color: THREE.Color;
-  readonly intensity: number;
-  readonly hemiSky: number;
-  readonly hemiGround: number;
-  readonly hemiIntensity: number;
-  readonly envIntensity: number;
-  readonly fogDensity: number;
-  readonly fogFalloff: number;
-}
-
-/** Night Ops: cool silver-blue moonlight over the Pacific and dark indigo haze. */
-export const NIGHT_LIGHTING: LightingPreset = {
-  night: true,
-  dir: new THREE.Vector3(-0.74, 0.16, 0.65).normalize(),
-  color: new THREE.Color(0.64, 0.78, 1.0),
-  intensity: 1.65,
-  hemiSky: 0x2b4575,
-  hemiGround: 0x0a0f1c,
-  hemiIntensity: 0.78,
-  envIntensity: 0.9,
-  fogDensity: 1 / 25000,
-  fogFalloff: 1 / 1300,
-};
-
-/** Legacy golden-hour preset (preserved for compatibility). */
-export const DAY_LIGHTING: LightingPreset = {
-  night: false,
-  dir: new THREE.Vector3(-0.74, 0.122, 0.66).normalize(),
-  color: new THREE.Color(1.0, 0.78, 0.56),
-  intensity: 4.4,
-  hemiSky: 0x6b86ad,
-  hemiGround: 0x2a241c,
-  hemiIntensity: 0.25,
-  envIntensity: 0.8,
-  fogDensity: 1 / 30000,
-  fogFalloff: 1 / 1400,
-};
-
-export const NIGHT_OPS = true;
-export const ACTIVE_LIGHTING: LightingPreset = NIGHT_OPS ? NIGHT_LIGHTING : DAY_LIGHTING;
-
-/** Direction toward the primary sky light (unit: moon in Night Ops). */
-export const SUN_DIR = ACTIVE_LIGHTING.dir.clone();
-/** Direct moonlight (or sun) colour. */
-export const SUN_COLOR = ACTIVE_LIGHTING.color.clone();
-export const SUN_INTENSITY = ACTIVE_LIGHTING.intensity;
+/** Direction toward the sun (unit). Elevation ~7°. */
+export const SUN_DIR = new THREE.Vector3(-0.74, 0.122, 0.66).normalize();
+/** Direct sun colour × intensity (warm, low sun through a long air path). */
+export const SUN_COLOR = new THREE.Color(1.0, 0.78, 0.56);
+export const SUN_INTENSITY = 4.4;
 
 /** Speed of sound at sea level (m/s): Mach readout, sonic boom, sound delay. */
 export const SPEED_OF_SOUND = 343;

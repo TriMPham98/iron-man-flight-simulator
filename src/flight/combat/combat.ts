@@ -4,15 +4,13 @@ import { Streaks } from '../fx/streaks';
 import type { EventBus } from '../sim/events';
 import type { FlightModel } from '../sim/flightModel';
 import { ACTION_KEYS, type Controls } from '../sim/input';
-import type { StyleComboTracker } from '../sim/styleCombos';
+import type { HitStop } from '../sim/hitStop';
 import type { Suit } from '../../suit/Suit';
-import { SPEED_OF_SOUND } from '../world/config';
 import { HOME, type Heightfield } from '../world/heightfield';
 import { strikeMarks, structureTop } from '../world/house';
 import { CloseQuarters } from './closeQuarters';
 import { Dreadnought, type BossPart } from './dreadnought';
 import { BOMB_CHAIN_DAMAGE, BOMB_CHAIN_RADIUS, Drone, Guns, JAM_RANGE, type DroneType } from './drones';
-import { EmergencyManager } from './emergencies';
 import { Explosions, type SurfaceQuery } from './explosions';
 import { Frigate, type ShipPart } from './frigate';
 import { HouseCiws } from './houseCiws';
@@ -108,14 +106,8 @@ export class Combat {
   readonly houseCiws: HouseCiws;
   /** Close-Quarters combat: targeted dive-slam + mid-air grapple/throw + thruster punch. */
   readonly closeQuarters = new CloseQuarters();
-  /** Dynamic free-flight & between-wave emergencies (falling satellite, coastal bombers, distress flare). */
-  readonly emergencies: EmergencyManager;
-  /** Optional style combo & hit-stop tracker wired by Game. */
-  styleCombos: StyleComboTracker | null = null;
-  /** Pauses EmergencyManager while a standalone MissionManager mission is active. */
-  emergenciesPaused = false;
-  /** Optional R&D ledger callback wired by FlightApp. */
-  onAwardRd?: (points: number, reason: string) => void;
+  /** Optional micro hit-stop tracker wired by Game. */
+  hitStop: HitStop | null = null;
   /** Armour L3/L5 Reactive Pulse state (cooldown & active 2 s damage brace). */
   reactivePulseCd = 0;
   reactiveBraceT = 0;
@@ -185,13 +177,7 @@ export class Combat {
     this.reactor = new ReactorPower(events);
     this.houseParty = new HousePartyManager(hazeUniforms);
     this.houseCiws = new HouseCiws(field, hazeUniforms);
-    this.emergencies = new EmergencyManager(hazeUniforms);
     this.weapons.reactor = this.reactor;
-    this.weapons.onOrdnanceIntercept = (at, kind) => {
-      this.styleCombos?.recordOrdnanceIntercept(kind, at);
-      this.events.emit('ordnanceIntercept', { at, text: kind });
-    };
-    this.weapons.consumeReversalCrit = () => this.styleCombos?.consumeReversalCrit() ?? false;
     this.model.reactor = this.reactor.modifiers;
     this.group.add(
       this.streaks.mesh,
@@ -202,7 +188,6 @@ export class Combat {
       this.closeQuarters.group,
       this.houseParty.group,
       this.houseCiws.group,
-      this.emergencies.group,
     );
     this.group.name = 'combat';
     this.samSpots = samSites(field, HOME, 6, 3);
@@ -215,7 +200,7 @@ export class Combat {
         return self.down <= 0;
       },
       hit(amount: number, at: THREE.Vector3, kind: 'bullet' | 'missile' | 'beam') {
-        if (self.down > 0 || model.dashInvuln) return;
+        if (self.down > 0) return;
         const brace = self.reactiveBraceT > 0 ? 0.55 : 1;
         self.armor = Math.max(0, self.armor - (amount * self.spec.damageTaken * self.reactor.modifiers.damageTaken * brace) / 100);
         if (kind === 'beam') {
@@ -298,7 +283,6 @@ export class Combat {
     this.missiles.clear();
     this.physics.reset();
     this.closeQuarters.reset();
-    this.emergencies.reset();
     this.houseParty.reset();
     this.houseCiws.reset();
     this.reactivePulseCd = 0;
@@ -489,35 +473,28 @@ export class Combat {
     }
 
     this.streaks.begin();
-    const targets = this.allHostiles();
     // A jammer in reach has the seekers (less whatever the suit's sensors shrug off)
     const jammed = this.drones.some((d) => d.alive && d.type === 'jammer' && d.pos.distanceToSquared(this.model.pos) < JAM_RANGE * JAM_RANGE);
     this.jam += ((jammed ? 1 - this.spec.jamResist : 0) - this.jam) * Math.min(1, dt * 3);
     this.weapons.jam = this.jam;
-    this.weapons.update(dt, c, aim, eye, targets, this.down <= 0);
+    this.weapons.update(dt, c, aim, eye, this.hostiles, this.down <= 0);
     if (this.down <= 0 && !this.lost) {
-      if ((c.diveSlam || c.pressed.has(ACTION_KEYS.DIVE_SLAM)) && this.closeQuarters.startDiveSlam(this.model, aim, this.ground, targets)) {
-        this.events.emit('diveSlam', { at: this.model.pos });
-      }
       if (c.grapple || c.pressed.has(ACTION_KEYS.GRAPPLE)) {
-        const res = this.closeQuarters.tryMeleeAction(this.model, aim, targets, this.ground, this.explosions, this.particles, {
+        const res = this.closeQuarters.tryMeleeAction(this.model, aim, this.hostiles, this.ground, this.explosions, this.particles, {
           mode: 'grab',
           events: this.events,
         });
         if (res.action === 'grab') this.events.emit('grappleGrab', { at: res.target?.pos ?? this.model.pos, text: res.target?.kind });
         else if (res.action === 'throw') this.events.emit('grappleThrow', { at: res.target?.pos ?? this.model.pos, text: res.target?.kind });
       } else if (c.punch || c.pressed.has(ACTION_KEYS.PUNCH)) {
-        const res = this.closeQuarters.tryMeleeAction(this.model, aim, targets, this.ground, this.explosions, this.particles, {
+        const res = this.closeQuarters.tryMeleeAction(this.model, aim, this.hostiles, this.ground, this.explosions, this.particles, {
           mode: 'punch',
           events: this.events,
         });
         if (res.action === 'punch') this.events.emit('thrusterPunch', { at: res.target?.pos ?? this.model.pos, text: res.target?.kind });
       }
     }
-    const slamImpact = this.closeQuarters.update(dt, this.model, aim, targets, this.ground, this.explosions, this.particles, this.events);
-    if (slamImpact?.impacted && slamImpact.kills > 0) {
-      this.styleCombos?.triggerHitStop(0.055, 0.12);
-    }
+    this.closeQuarters.update(dt, this.model, aim, this.hostiles, this.ground, this.explosions, this.particles, this.events);
     for (const d of this.drones) {
       d.update(dt, t, this.player, this.ground, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
       if (!d.flybyDone && d.alive && d.pos.distanceTo(this.model.pos) < 120) {
@@ -550,7 +527,7 @@ export class Combat {
       dt,
       t,
       this.model,
-      targets,
+      this.hostiles,
       this.ground,
       this.missiles,
       this.particles,
@@ -565,14 +542,14 @@ export class Combat {
       this.armor = 1;
       this.reactiveBraceT = Math.max(this.reactiveBraceT, 3.0);
       this.reactor.feedOvercharge(0.35, 'hotSwap', this.model.pos);
-      this.styleCombos?.triggerHitStop(0.05, 0.12);
+      this.hitStop?.trigger(0.05, 0.12);
     } else if (swapRes === 'missed' && !this.lost) {
       this.markSuitLost();
     }
     this.houseCiws.update(
       dt,
       this.spec.houseCiwsTier,
-      targets,
+      this.hostiles,
       this.particles,
       this.streaks,
       this.events,
@@ -581,43 +558,7 @@ export class Combat {
     );
     this.intercept(dt);
     this.guns.update(dt, this.player, this.ground, this.particles, this.streaks, this.events);
-    this.missiles.update(dt, targets, this.player);
-    if (this.down <= 0 && !this.lost && this.styleCombos) {
-      for (const nm of this.missiles.checkNearMisses(this.model.pos, 3.2, 14)) {
-        this.styleCombos.recordMissileNearMiss(nm.dist, nm.pos);
-      }
-    }
-    if (!this.emergenciesPaused && !this.lost) {
-      const prevEm = this.emergencies.activeEmergency;
-      const wasCompleted = prevEm?.result === 'completed';
-      const eligible = this.wavesEnabled && !this.hostiles.some((h) => h.alive);
-      const nextEm = this.emergencies.update(
-        dt,
-        t,
-        this.model.pos,
-        this.model.vel,
-        {
-          field: this.field,
-          home: HOME,
-          particles: this.particles,
-          explosions: this.explosions,
-          events: this.events,
-          spawnDrone: (at, heading, type) => this.spawnDrone(at, heading, type),
-          awardRd: this.onAwardRd,
-          feedOvercharge: (amount, reason, at) => this.reactor.feedOvercharge(amount, reason, at),
-        },
-        eligible,
-      );
-      if (!prevEm && nextEm && nextEm.result === null) {
-        this.events.emit('emergencyStart', { at: nextEm.pos, text: nextEm.title });
-      } else if (nextEm && nextEm.result === 'completed' && !wasCompleted) {
-        this.events.emit('emergencyClear', {
-          at: nextEm.pos,
-          value: this.emergencies.lastReward?.rd ?? 50,
-          text: nextEm.title,
-        });
-      }
-    }
+    this.missiles.update(dt, this.hostiles, this.player);
     // Kills: count, blow the SAMs (drones crash on their own)
     for (let i = this.hostiles.length - 1; i >= 0; i--) {
       const h = this.hostiles[i];
@@ -640,18 +581,15 @@ export class Combat {
         } else if (h.kind === 'boss') {
           const part = h as BossPart;
           part.owner.partDestroyed(part, this.explosions, this.events);
-          if (part.role === 'core') this.styleCombos?.triggerHitStop(0.055, 0.12);
+          if (part.role === 'core') this.hitStop?.trigger(0.055, 0.12);
           if ((part.role === 'core' || part.role === 'engine') && this.model.pos.distanceTo(part.pos) < 550) {
             this.reactor.feedOvercharge(part.role === 'core' ? 0.65 : 0.2, 'bossExplosion', part.pos);
           }
         } else if (h.kind === 'rival') {
           (h as RivalSuit).onDestroyed(this.explosions, this.events);
           this.reactor.feedOvercharge(0.5, 'rivalDefeated', h.pos);
-          this.styleCombos?.triggerHitStop(0.055, 0.12);
+          this.hitStop?.trigger(0.055, 0.12);
         } else {
-          if (this.model.speed >= SPEED_OF_SOUND || (h as Drone).destabilized > 0) {
-            this.styleCombos?.recordSonicKill(h.pos);
-          }
           if (h.kind === 'bomber' && (h as Drone).payloadDetonated) {
             this.detonateBomberPayload(h as Drone);
           } else {
@@ -731,11 +669,6 @@ export class Combat {
   /** Pending camera shake from physics-weapon and close-quarters impacts. */
   consumeShake(): number {
     return this.physics.consumeShake() + this.closeQuarters.consumeShake();
-  }
-
-  private allHostiles(): readonly Hostile[] {
-    const extra = this.emergencies.extraHostiles;
-    return extra.length ? [...this.hostiles, ...extra] : this.hostiles;
   }
 
   private readonly counted = new Set<number>();

@@ -236,36 +236,6 @@ describe('ReactorPower', () => {
     expect(reactor.overcharge).toBe(0);
     expect(reactor.modifiers).toEqual(STOCK_REACTOR_MODIFIERS());
   });
-
-  it('triggers 400% overcharge instantly on storm lightning strike and feeds style overcharge', () => {
-    const bus = new EventBus();
-    const seen: SimEvent[] = [];
-    bus.on((e) => seen.push(e));
-    const reactor = new ReactorPower(bus);
-    reactor.autoOvercharge = false;
-
-    const added = reactor.feedStyleOvercharge(0.25, 'missileNearMiss', new THREE.Vector3(10, 50, 10));
-    expect(added).toBeCloseTo(0.25);
-    expect(reactor.overcharge).toBeCloseTo(0.25);
-    expect(reactor.lastFeedReason).toBe('missileNearMiss');
-    expect(reactor.overchargeActive).toBe(false);
-
-    // Storm lightning strike fills capacitor to 1 and forces 400% overcharge even with autoOvercharge=false
-    expect(reactor.triggerStormSurge(new THREE.Vector3(0, 400, 0))).toBe(true);
-    expect(reactor.overcharge).toBe(1);
-    expect(reactor.overchargeActive).toBe(true);
-    expect(reactor.overchargeRemaining).toBeCloseTo(OVERCHARGE_DURATION);
-    expect(reactor.displayCode).toBe('400%');
-    expect(reactor.lastFeedReason).toBe('stormSurge');
-    expect(reactor.modifiers).toEqual(OVERCHARGE_MODIFIERS);
-    expect(seen.some((e) => e.kind === 'reactorOvercharge' && e.value === 1)).toBe(true);
-
-    // A second storm strike mid-overcharge refreshes the full 400% window
-    reactor.update(3.0);
-    expect(reactor.overchargeRemaining).toBeCloseTo(OVERCHARGE_DURATION - 3.0);
-    reactor.triggerStormSurge();
-    expect(reactor.overchargeRemaining).toBeCloseTo(OVERCHARGE_DURATION);
-  });
 });
 
 describe('LaserCutterFx', () => {

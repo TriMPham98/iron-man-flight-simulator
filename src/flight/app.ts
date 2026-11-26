@@ -22,7 +22,7 @@ import { SuitWireframe } from './ui/suitWireframe';
 import { TouchControls } from './ui/touchControls';
 import type { Screens } from './ui/screens';
 import { bindFlightSettings } from './ui/flightSettings';
-import { NIGHT_OPS, SUN_DIR } from './world/config';
+import { SUN_DIR } from './world/config';
 import { World } from './world/world';
 import { PAD, PAD_Y } from './world/house';
 
@@ -128,7 +128,7 @@ export class FlightApp {
   readonly audioReady: Promise<void>;
   private readonly clock = new THREE.Clock();
   private adaptive!: ReturnType<typeof createAdaptiveResolution>;
-  private baseExposure = NIGHT_OPS ? 0.98 : 0.58;
+  private baseExposure = 0.58;
   private raf = 0;
   private running = false;
   private visible = true;
@@ -282,7 +282,7 @@ export class FlightApp {
       speed: 0,
       damage: 0,
       cloud: 0,
-      exposure: Number(q.get('exp') ?? (NIGHT_OPS ? 0.98 : 0.58)),
+      exposure: Number(q.get('exp') ?? 0.58),
       helmet: 0,
     };
     this.baseExposure = this.lens.exposure;
@@ -444,17 +444,16 @@ export class FlightApp {
       this.sunBlocked = world.field.raycast(camera.position, SUN_DIR, 16000) > 0 ? 1 : 0;
     }
     const edge = inView ? 1 - THREE.MathUtils.smoothstep(Math.max(Math.abs(p.x), Math.abs(p.y)), 0.75, 1.25) : 0;
-    const flareScale = NIGHT_OPS ? 0.45 : 1;
-    const goal = edge * (1 - this.sunBlocked) * (game.rig.mode === 'helmet' ? 1.2 : 0.8) * flareScale;
+    const goal = edge * (1 - this.sunBlocked) * (game.rig.mode === 'helmet' ? 1.2 : 0.8);
     lens.sunVis += (goal - lens.sunVis) * (1 - Math.exp(-dt / 0.12));
     lens.sunUv.set(p.x * 0.5 + 0.5, p.y * 0.5 + 0.5);
     lens.helmet = game.rig.mode === 'helmet' ? 1 : 0;
     lens.speed = Math.min(1, Math.max(0, (game.model.speed - 120) / 300));
     lens.damage = game.combat.damageFlash;
     lens.cloud += (world.inCloud - lens.cloud) * (1 - Math.exp(-dt / 0.15));
-    // Eye adaptation: stop down into the sun/moon, open up away from it
+    // Eye adaptation: stop down into the sun, open up away from it
     const sunward = Math.max(0, this.camDir.dot(SUN_DIR));
-    const expGoal = this.baseExposure * THREE.MathUtils.lerp(NIGHT_OPS ? 1.12 : 1.18, NIGHT_OPS ? 0.88 : 0.72, sunward * sunward);
+    const expGoal = this.baseExposure * THREE.MathUtils.lerp(1.18, 0.72, sunward * sunward);
     lens.exposure += (expGoal - lens.exposure) * (1 - Math.exp(-dt / 0.8));
   }
 
@@ -531,8 +530,8 @@ export class FlightApp {
       // Title / pause: the world keeps living, the controls don't
       c.aimYaw = c.aimPitch = c.throttle = c.lateral = c.vertical = c.forward = 0;
       c.fire = c.missile = c.unibeam = c.flares = c.launcher = c.boost = c.brake = false;
-      c.dash = null;
-      c.diveSlam = c.grapple = c.punch = false;
+      c.strafeDash = 0;
+      c.grapple = c.punch = false;
       c.pressed.clear();
       if (!this.paused) this.handoffPilot?.(dt, c);
     }
@@ -554,10 +553,9 @@ export class FlightApp {
       if (code === 'KeyM' && !director && !this.autopilot) this.openMultiplayerMenu();
     }
     game.applyControls(c);
-    game.combat.emergenciesPaused = !!this.missions.current;
     // In multiplayer, opening Esc or a drawer frees the mouse without freezing physics/network sync
     const simPaused = this.paused && !this.multiplayer?.active;
-    const simDt = simPaused ? 0 : game.styleCombos.effectiveDt(dt);
+    const simDt = simPaused ? 0 : game.hitStop.effectiveDt(dt);
     if (!simPaused) {
       game.update(simDt, dt);
       this.missions.update(simDt, {
@@ -599,9 +597,6 @@ export class FlightApp {
       : home
         ? `RETURN TO THE PAD TO REFIT · ${this.upgrades.state.rd} R&D`
         : null;
-    hud.styleCombos = game.styleCombos;
-    hud.gateState = game.gateState;
-    hud.lastGatePass = game.lastGatePass;
     hud.draw(dt, camera, game.model, game.combat, game.ground, game.rig.mode === 'helmet');
     this.missionHud.update(camera, game.model.pos, this.missions.telemetry, this.engaged && !director && !cinematic);
     this.multiplayerHud?.update(camera, game.model.pos, this.engaged && !director && !cinematic);
@@ -636,12 +631,6 @@ export class FlightApp {
     sync();
     combat.refitDue = () => !game.onPad && upgrades.affordable;
     upgrades.onAward = (points, reason) => game.events.emit('rdAward', { value: points, text: reason });
-    combat.onAwardRd = (points, reason) => {
-      if (!this.director && !this.autopilot) upgrades.earn(points, reason);
-    };
-    game.onStyleRd = (points) => {
-      if (!this.director && !this.autopilot) upgrades.credit(points);
-    };
     game.events.on((e) => {
       if (!this.director && !this.autopilot) upgrades.event(e);
     });

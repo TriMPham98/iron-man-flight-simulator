@@ -28,14 +28,6 @@ const mats = {
   paint: new THREE.MeshStandardMaterial({ vertexColors: true, metalness: 0.45, roughness: 0.55 }),
   glow: glowMaterial(),
   charred: new THREE.MeshStandardMaterial({ color: 0x0b0b0c, metalness: 0.2, roughness: 0.95 }),
-  searchBeam: new THREE.MeshBasicMaterial({
-    vertexColors: true,
-    transparent: true,
-    opacity: 0.2,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  }),
 };
 
 const C = {
@@ -159,8 +151,6 @@ interface Geo {
   hangar: THREE.BufferGeometry;
   core: THREE.BufferGeometry;
   cage: THREE.BufferGeometry;
-  searchBeam: THREE.BufferGeometry;
-  searchLens: THREE.BufferGeometry;
 }
 
 let geoCache: Geo | null = null;
@@ -315,23 +305,6 @@ function geometry(): Geo {
   for (let k = 0; k < 3; k++) ribs.push(paint(new THREE.TorusGeometry(5.3, 0.3, 6, 24).rotateY((k * Math.PI) / 3), C.edge));
   ribs.push(paint(new THREE.TorusGeometry(5.3, 0.3, 6, 24).rotateX(Math.PI / 2), C.edge));
 
-  // Night Ops sweeping searchlight beam cone (+Z from origin) + lens glow
-  const beamLen = 380;
-  const searchBeam = new THREE.CylinderGeometry(0.45, 26, beamLen, 16, 1, true)
-    .translate(0, -beamLen / 2, 0)
-    .rotateX(-Math.PI / 2);
-  const bPos = searchBeam.getAttribute('position');
-  const bCol = new Float32Array(bPos.count * 3);
-  for (let i = 0; i < bPos.count; i++) {
-    const u = THREE.MathUtils.clamp(bPos.getZ(i) / beamLen, 0, 1);
-    const fade = (1 - u) * (1 - u);
-    bCol[i * 3] = 0.78 * fade;
-    bCol[i * 3 + 1] = 0.9 * fade;
-    bCol[i * 3 + 2] = 1.0 * fade;
-  }
-  searchBeam.setAttribute('color', new THREE.BufferAttribute(bCol, 3));
-  const searchLens = paint(new THREE.SphereGeometry(0.65, 10, 8), new THREE.Color(0.85, 0.95, 1.0), 6);
-
   geoCache = {
     hull: merge(hull),
     glow: merge(glow),
@@ -346,8 +319,6 @@ function geometry(): Geo {
     hangar,
     core,
     cage: merge(ribs),
-    searchBeam,
-    searchLens,
   };
   return geoCache;
 }
@@ -396,7 +367,6 @@ export class Dreadnought {
   private readonly shellMat = new THREE.MeshStandardMaterial({ color: 0x000000, emissive: new THREE.Color(0.5, 0.25, 1), emissiveIntensity: 0.5, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false });
   private readonly nozzles: THREE.Mesh[] = [];
   private readonly drones: Array<{ alive: boolean; pos?: THREE.Vector3; damage?: (amount: number, at: THREE.Vector3, kind: DamageKind) => boolean }> = [];
-  readonly searchlights: Array<{ root: THREE.Group; baseYaw: number; basePitch: number; phase: number; sweepAmp: number; speed: number }> = [];
   hangarDetonated = false;
   private spiralCalled = false;
   private cannonT = 3;
@@ -458,11 +428,6 @@ export class Dreadnought {
     return this.list;
   }
 
-  /** Number of Night Ops searchlight rigs mounted on the dreadnought. */
-  get searchlightCount(): number {
-    return this.searchlights.length;
-  }
-
   // ── Model ────────────────────────────────────────────────────────────
   private build(): void {
     const g = geometry();
@@ -507,23 +472,6 @@ export class Dreadnought {
     core.add(new THREE.Mesh(g.core, mats.glow), new THREE.Mesh(g.cage, mats.paint));
     add('core', AT.core, core);
 
-    // Night Ops sweeping searchlights: dorsal bridge spot + twin ventral wing-shoulder spots
-    const lightConfigs: Array<{ at: V3; baseYaw: number; basePitch: number; phase: number; sweepAmp: number; speed: number }> = [
-      { at: [0, 10.6, 22], baseYaw: 0, basePitch: -0.34, phase: 0.2, sweepAmp: 0.95, speed: 0.55 },
-      { at: [-16, -4.2, 24], baseYaw: -0.45, basePitch: 0.36, phase: 1.7, sweepAmp: 0.7, speed: 0.48 },
-      { at: [16, -4.2, 24], baseYaw: 0.45, basePitch: 0.36, phase: 3.4, sweepAmp: 0.7, speed: 0.52 },
-    ];
-    for (const cfg of lightConfigs) {
-      const root = new THREE.Group();
-      root.position.set(...cfg.at);
-      const beam = new THREE.Mesh(g.searchBeam, mats.searchBeam);
-      beam.renderOrder = 5;
-      const lens = new THREE.Mesh(g.searchLens, mats.glow);
-      root.add(beam, lens);
-      this.mesh.add(root);
-      this.searchlights.push({ root, ...cfg });
-    }
-
     this.mesh.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = false;
     });
@@ -546,13 +494,6 @@ export class Dreadnought {
     if (!this.falling && (!this.core.alive || this.enginesUp === 0)) this.bringDown(explosions, events);
     this.steer(dt, t, field);
     this.place(t);
-    for (const s of this.searchlights) {
-      s.root.visible = !this.falling;
-      if (!this.falling) {
-        s.root.rotation.y = s.baseYaw + Math.sin(t * s.speed + s.phase) * s.sweepAmp;
-        s.root.rotation.x = s.basePitch + Math.sin(t * s.speed * 0.67 + s.phase * 1.3) * 0.14;
-      }
-    }
     if (this.falling) {
       this.fall(dt, field, particles, explosions);
       return;
@@ -778,7 +719,6 @@ export class Dreadnought {
     }
     this.shell.visible = false;
     for (const n of this.nozzles) n.visible = false;
-    for (const s of this.searchlights) s.root.visible = false;
     explosions.blast(this.core.pos, 24, { debris: 30, burn: false, vel: this.vel });
     events.emit('jarvis', { text: 'She is coming down, sir. I would not be underneath.' });
   }

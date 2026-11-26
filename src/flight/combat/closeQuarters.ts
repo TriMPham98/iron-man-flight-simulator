@@ -8,15 +8,11 @@ import type { Hostile, HostileKind } from './types';
 
 /**
  * Close-Quarters Superhero Combat:
- *  1. Targeted Dive-Slam ("Meteor Ground-Pound"): airborne suit locks into a
- *     steep supersonic dive toward an aimed target or ground point, triggers a
- *     scaled shockwave on impact damaging SAMs/ships/drones/boss parts, and
- *     executes an automatic upward rebound hop (`vel.y = 32`).
- *  2. Mid-Air Grapple / Throw & Thruster Punch: within ~12 m of an enemy
- *     aircraft (`drone`, `bomber`, `interceptor`, `jammer`), either grabs it
- *     on a 1.8 s tether and hurls it at 180 m/s as an explosive kinetic
- *     projectile (`260` splash damage), or delivers a Thruster Punch sending
- *     it hurtling along `aimDir` into nearby targets.
+ *  Mid-Air Grapple / Throw & Thruster Punch: within ~12 m of an enemy
+ *  aircraft (`drone`, `bomber`, `interceptor`, `jammer`), either grabs it
+ *  on a 1.8 s tether and hurls it at 180 m/s as an explosive kinetic
+ *  projectile (`260` splash damage), or delivers a Thruster Punch sending
+ *  it hurtling along `aimDir` into nearby targets.
  */
 
 export const MELEE_RANGE = 12;
@@ -26,35 +22,15 @@ export const THROW_SPLASH_DAMAGE = 260;
 export const THROW_SPLASH_RADIUS = 42;
 export const PUNCH_SPEED = 155;
 export const PUNCH_DAMAGE = 85;
-export const DIVE_SLAM_SPEED = 380;
-export const DIVE_SLAM_REBOUND_VY = 32;
-export const DIVE_SLAM_RADIUS = 125;
-export const DIVE_SLAM_DAMAGE = 320;
-export const DIVE_SLAM_COOLDOWN = 2.5;
 export const MELEE_COOLDOWN = 0.65;
 
-export type MeleeFlightModel = Pick<FlightModel, 'pos' | 'vel' | 'grounded'> & {
-  boosting?: boolean;
-  hipHeight?: () => number;
-};
-
-export type CloseQuartersGround = SurfaceQuery & {
-  raycast?: (origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number) => number;
-};
+export type MeleeFlightModel = Pick<FlightModel, 'pos' | 'vel' | 'grounded'>;
 
 export type MeleeActionKind = 'grab' | 'throw' | 'punch' | 'none';
 
 export interface MeleeActionResult {
   action: MeleeActionKind;
   target: Hostile | null;
-}
-
-export interface DiveSlamImpact {
-  impacted: boolean;
-  at: THREE.Vector3;
-  hits: number;
-  kills: number;
-  shake: number;
 }
 
 interface ThrownTarget {
@@ -94,22 +70,13 @@ export class CloseQuarters {
 
   /** HUD-readable state. */
   grabbedTarget: Hostile | null = null;
-  diveSlamActive = false;
   availableMeleeTarget: Hostile | null = null;
   cooldown = 0;
   grabRemaining = 0;
 
-  readonly diveTarget = new THREE.Vector3();
-  private diveHostile: Hostile | null = null;
-  private diveStartY = 0;
-  private diveElapsed = 0;
-  private readonly prevSuitPos = new THREE.Vector3();
-  private hasPrevSuitPos = false;
-
   private readonly thrown: ThrownTarget[] = [];
   private readonly rings: ShockRing[] = [];
   private pendingShake = 0;
-  private trailAcc = 0;
 
   private readonly _v = new THREE.Vector3();
   private readonly _w = new THREE.Vector3();
@@ -123,15 +90,10 @@ export class CloseQuarters {
   reset(): void {
     this.grabbedTarget = null;
     this.grabRemaining = 0;
-    this.diveSlamActive = false;
-    this.diveHostile = null;
-    this.diveElapsed = 0;
     this.availableMeleeTarget = null;
     this.cooldown = 0;
-    this.hasPrevSuitPos = false;
     this.thrown.length = 0;
     this.pendingShake = 0;
-    this.trailAcc = 0;
     for (const r of this.rings) {
       this.group.remove(r.mesh);
       r.mat.dispose();
@@ -174,77 +136,6 @@ export class CloseQuarters {
       }
     }
     return best;
-  }
-
-  /**
-   * Targeted Dive-Slam ("Meteor Ground-Pound"):
-   * locks the airborne suit into a steep supersonic dive toward the aimed
-   * hostile or terrain/water surface point.
-   */
-  startDiveSlam(
-    model: MeleeFlightModel,
-    aimDir: THREE.Vector3,
-    ground: CloseQuartersGround,
-    hostiles: readonly Hostile[],
-  ): boolean {
-    if (model.grounded || this.diveSlamActive || this.cooldown > 0) return false;
-
-    const surfHere = ground.surface(model.pos.x, model.pos.z);
-    const hipH = model.hipHeight ? model.hipHeight() : 1.0;
-    const clearance = model.pos.y - hipH - surfHere;
-    if (clearance < 5 && !hostiles.some((h) => h.alive && h.pos.y < model.pos.y - 3)) return false;
-
-    const dir = this._v.copy(aimDir);
-    if (dir.lengthSq() < 1e-6) dir.set(0, -1, 0);
-    dir.normalize();
-
-    // 1. Prefer an aimed hostile near the sight line (SAM, ship, boss, drone)
-    let aimedHostile: Hostile | null = null;
-    let bestDot = Math.cos(THREE.MathUtils.degToRad(14));
-    for (const h of hostiles) {
-      if (!h.alive) continue;
-      const to = this._w.copy(h.pos).sub(model.pos);
-      const d = to.length();
-      if (d < 4 || d > 2600) continue;
-      const dot = to.dot(dir) / d;
-      if (dot > bestDot) {
-        bestDot = dot;
-        aimedHostile = h;
-      }
-    }
-
-    const target = new THREE.Vector3();
-    if (aimedHostile) {
-      target.copy(aimedHostile.pos);
-    } else {
-      // 2. Raycast aim against terrain/water; if looking level/up, project steep downward strike ahead
-      const diveRay = dir.clone();
-      if (diveRay.y > -0.15) {
-        diveRay.y = -0.85;
-        diveRay.normalize();
-      }
-      const hitDist = this.raycastSurface(model.pos, diveRay, 2600, ground);
-      if (hitDist > 0) {
-        target.copy(model.pos).addScaledVector(diveRay, hitDist);
-      } else {
-        target.set(model.pos.x + diveRay.x * 120, ground.surface(model.pos.x + diveRay.x * 120, model.pos.z + diveRay.z * 120), model.pos.z + diveRay.z * 120);
-      }
-    }
-
-    this.diveSlamActive = true;
-    this.diveTarget.copy(target);
-    this.diveHostile = aimedHostile;
-    this.diveStartY = model.pos.y;
-    this.diveElapsed = 0;
-    this.prevSuitPos.copy(model.pos);
-    this.hasPrevSuitPos = true;
-
-    const diveDir = this._w.copy(this.diveTarget).sub(model.pos);
-    if (diveDir.lengthSq() < 1e-4) diveDir.set(0, -1, 0);
-    else diveDir.normalize();
-    model.vel.copy(diveDir).multiplyScalar(DIVE_SLAM_SPEED);
-    if ('boosting' in model) model.boosting = true;
-    return true;
   }
 
   /**
@@ -316,7 +207,7 @@ export class CloseQuarters {
     return this.throwGrabbed(model, dir, explosions, particles, events);
   }
 
-  /** Per-frame update for active grapple tether, thrown kinetic projectiles, dive-slam & rings. */
+  /** Per-frame update for active grapple tether, thrown kinetic projectiles & rings. */
   update(
     dt: number,
     model: MeleeFlightModel,
@@ -326,7 +217,7 @@ export class CloseQuarters {
     explosions: Explosions,
     particles: Particles,
     events?: EventBus,
-  ): DiveSlamImpact | null {
+  ): void {
     this.cooldown = Math.max(0, this.cooldown - dt);
     this.updateRings(dt);
 
@@ -396,69 +287,6 @@ export class CloseQuarters {
         this.thrown.splice(i, 1);
       }
     }
-
-    // 3. Targeted Dive-Slam
-    if (!this.diveSlamActive) {
-      this.prevSuitPos.copy(model.pos);
-      this.hasPrevSuitPos = true;
-      return null;
-    }
-
-    if (!this.hasPrevSuitPos) {
-      this.prevSuitPos.copy(model.pos);
-      this.hasPrevSuitPos = true;
-    }
-
-    this.diveElapsed += dt;
-    if (this.diveHostile && this.diveHostile.alive) {
-      this.diveTarget.copy(this.diveHostile.pos);
-    }
-
-    const toTarget = this._w.copy(this.diveTarget).sub(model.pos);
-    const distToTarget = toTarget.length();
-    if (distToTarget > 0.5) {
-      toTarget.divideScalar(distToTarget);
-      model.vel.copy(toTarget).multiplyScalar(DIVE_SLAM_SPEED);
-    }
-
-    // Supersonic meteor dive trail
-    this.trailAcc += dt * 40;
-    while (this.trailAcc >= 1) {
-      this.trailAcc -= 1;
-      particles.emit('plasma', model.pos, model.vel.clone().multiplyScalar(0.1), { scale: 1.25, life: 0.3 });
-      particles.emit('fire', model.pos, undefined, { scale: 0.9, life: 0.25 });
-    }
-
-    const surf = ground.surface(model.pos.x, model.pos.z);
-    const hipH = model.hipHeight ? model.hipHeight() : 1.0;
-    let impactAt: THREE.Vector3 | null = null;
-
-    if (model.pos.y <= surf + hipH + 1.2) {
-      impactAt = new THREE.Vector3(model.pos.x, surf, model.pos.z);
-    } else if (distToTarget <= Math.max(8, DIVE_SLAM_SPEED * dt * 1.25)) {
-      impactAt = this.diveTarget.clone();
-    } else {
-      // Check swept contact with aimed or ground/ship/boss hostiles
-      for (const h of hostiles) {
-        if (!h.alive) continue;
-        if (h !== this.diveHostile && h.kind !== 'ship' && h.kind !== 'boss' && h.kind !== 'sam') continue;
-        const r = h.radius + 4;
-        if (segmentToCore(h, this.prevSuitPos, model.pos, this._seg, this._core) <= r * r) {
-          impactAt = this._seg.clone();
-          break;
-        }
-      }
-    }
-
-    if (!impactAt && this.diveElapsed >= 6.5) {
-      impactAt = model.pos.clone();
-    }
-
-    this.prevSuitPos.copy(model.pos);
-
-    if (!impactAt) return null;
-
-    return this.resolveDiveSlamImpact(model, impactAt, surf, hipH, hostiles, ground, explosions, particles, events);
   }
 
   private throwGrabbed(
@@ -553,98 +381,6 @@ export class CloseQuarters {
 
     this.pendingShake += 1.7;
     events?.emit('bigExplosion', { at, value: 11 });
-  }
-
-  private resolveDiveSlamImpact(
-    model: MeleeFlightModel,
-    impactAt: THREE.Vector3,
-    surf: number,
-    hipH: number,
-    hostiles: readonly Hostile[],
-    ground: SurfaceQuery,
-    explosions: Explosions,
-    particles: Particles,
-    events?: EventBus,
-  ): DiveSlamImpact {
-    this.diveSlamActive = false;
-    this.diveHostile = null;
-    this.cooldown = DIVE_SLAM_COOLDOWN;
-
-    // Keep the suit cleanly above surface and execute automatic upward rebound hop (vel.y = 32)
-    model.pos.x = impactAt.x;
-    model.pos.z = impactAt.z;
-    model.pos.y = Math.max(impactAt.y + hipH + 0.5, surf + hipH + 0.5);
-    model.vel.set(model.vel.x * 0.25, DIVE_SLAM_REBOUND_VY, model.vel.z * 0.25);
-    model.grounded = false;
-
-    const drop = Math.max(0, this.diveStartY - impactAt.y);
-    const scale = THREE.MathUtils.clamp(0.85 + drop / 400, 0.85, 1.35);
-    const radius = DIVE_SLAM_RADIUS * scale;
-    const maxDamage = DIVE_SLAM_DAMAGE * scale;
-
-    let hits = 0;
-    let kills = 0;
-    for (const h of hostiles) {
-      if (!h.alive) continue;
-      const d = Math.max(0, coreDistance(h, impactAt) - h.radius);
-      if (d >= radius) continue;
-      const falloff = 1 - 0.65 * (d / radius);
-      const dmg = maxDamage * falloff;
-      const killed = h.damage(dmg, impactAt, 'ram');
-      hits++;
-      if (isGrappleableAircraft(h.kind)) {
-        const away = this._v.copy(h.pos).sub(impactAt);
-        away.y = Math.max(away.y, 18);
-        if (away.lengthSq() < 1e-4) away.set(1, 1, 0);
-        away.normalize();
-        h.vel.addScaledVector(away, 80 * falloff);
-        h.threatened = Math.max(h.threatened, 1.5);
-      }
-      if (killed) {
-        kills++;
-        events?.emit('kill', { at: h.pos, text: h.kind });
-      }
-    }
-
-    const ringAt = new THREE.Vector3(impactAt.x, Math.max(impactAt.y, surf) + 0.4, impactAt.z);
-    this.spawnRing(ringAt, 3, radius, 0.55, 0xffaa44, 0.9);
-    this.spawnRing(ringAt, 2, radius * 0.72, 0.4, 0x7ad8ff, 0.75);
-    explosions.blast(impactAt, 10, { debris: 14, burn: !ground.isWater(impactAt.x, impactAt.z) });
-    particles.burst('spark', ringAt, 34, 28, UP, 1.2, { scale: 1.3 });
-    particles.burst('plasma', ringAt, 16, 22, UP, 1.0, { scale: 1.1 });
-    if (ground.isWater(impactAt.x, impactAt.z) && impactAt.y <= surf + 4) {
-      ground.foam?.(impactAt.x, impactAt.z, impactAt.x, impactAt.z, Math.min(24, radius * 0.22), 1.5);
-    }
-
-    const shake = 2.1 + (kills > 0 ? 0.6 : 0);
-    this.pendingShake += shake;
-    events?.emit('heroSlam', { at: ringAt, value: Math.max(1, kills) });
-    return { impacted: true, at: impactAt, hits, kills, shake };
-  }
-
-  private raycastSurface(origin: THREE.Vector3, dir: THREE.Vector3, maxDist: number, ground: CloseQuartersGround): number {
-    if (ground.raycast) {
-      const d = ground.raycast(origin, dir, maxDist);
-      if (d > 0) return d;
-    }
-    const steps = 48;
-    const ds = maxDist / steps;
-    let prevD = 0;
-    let prevClear = origin.y - ground.surface(origin.x, origin.z);
-    for (let i = 1; i <= steps; i++) {
-      const d = i * ds;
-      const x = origin.x + dir.x * d;
-      const y = origin.y + dir.y * d;
-      const z = origin.z + dir.z * d;
-      const clear = y - ground.surface(x, z);
-      if (clear <= 0) {
-        const frac = prevClear > 0 ? prevClear / Math.max(1e-4, prevClear - clear) : 0;
-        return prevD + (d - prevD) * frac;
-      }
-      prevD = d;
-      prevClear = clear;
-    }
-    return -1;
   }
 
   private spawnRing(at: THREE.Vector3, r0: number, r1: number, dur: number, color: number, peakOpacity: number): void {

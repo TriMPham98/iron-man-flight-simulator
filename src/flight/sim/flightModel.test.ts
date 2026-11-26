@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { EMPTY_INPUT, FlightModel, G_LIMIT, MAX_MACH, SNAP_DASH_COOLDOWN, SNAP_DASH_DURATION, type GroundProbe } from './flightModel';
-import { CameraRig } from './cameraRig';
+import { EMPTY_INPUT, FlightModel, G_LIMIT, MAX_MACH, STRAFE_DASH_COOLDOWN, STRAFE_DASH_DURATION, type GroundProbe } from './flightModel';
 import { MAX_LEVEL, UPGRADES } from './upgrades';
 
 /** Flat ground at y = 0 (or sea, for the water tests). */
@@ -1084,92 +1083,39 @@ describe('FlightModel', () => {
     });
   });
 
-  describe('directional thruster snap-dash', () => {
-    it('fires a ~0.24 s lateral snap-dash with dashInvuln and ~1.2 s cooldown', () => {
+  describe('double-tap A/D lateral strafe', () => {
+    it('fires a crisp lateral strafe burst with cooldown and supports input.strafeDash', () => {
       const m = new FlightModel(flat());
       m.pos.set(0, 500, 0);
-      m.vel.set(0, 0, 150);
+      m.vel.set(0, 0, 140);
       m.grounded = false;
       m.flightness = 1;
       m.posture = 1.42;
-      m.speedCmd = 150;
+      m.speedCmd = 140;
       m.airT = 5;
 
-      expect(m.dashInvuln).toBe(false);
-      expect(m.dashCooldown).toBe(0);
+      expect(m.strafeDash(1)).toBe(true);
+      expect(m.strafeDashActive).toBeCloseTo(STRAFE_DASH_DURATION);
+      expect(m.strafeDashCooldown).toBeCloseTo(STRAFE_DASH_COOLDOWN);
+      expect(m.strafeDashDir).toBe(1);
+      expect(m.strafeDash(-1)).toBe(false);
 
-      // Right snap-dash (+1 => -X when facing +Z)
-      expect(m.snapDash(1)).toBe(true);
-      expect(m.dashActive).toBeCloseTo(SNAP_DASH_DURATION);
-      expect(m.dashCooldown).toBeCloseTo(SNAP_DASH_COOLDOWN);
-      expect(m.dashInvuln).toBe(true);
-      expect(m.dashDir).toBe(1);
-
-      // Cannot re-trigger while active or on cooldown
-      expect(m.snapDash(-1)).toBe(false);
-
-      // Mid-dash (~0.12 s): still invulnerable and laterally kicked
       run(m, 0.12, (i) => i.aim.set(0, 0, 1));
-      expect(m.dashActive).toBeGreaterThan(0.08);
-      expect(m.dashInvuln).toBe(true);
       expect(m.vel.x).toBeLessThan(-12);
 
-      // Finish the 0.24 s burst: invulnerability ends, cooldown remains
       run(m, 0.16, (i) => i.aim.set(0, 0, 1));
-      expect(m.dashActive).toBe(0);
-      expect(m.dashInvuln).toBe(false);
-      expect(m.dashDir).toBe(0);
-      expect(m.dashCooldown).toBeGreaterThan(0.8);
-      expect(m.snapDash(-1)).toBe(false);
+      expect(m.strafeDashActive).toBe(0);
+      expect(m.strafeDashDir).toBe(0);
+      expect(m.strafeDashCooldown).toBeGreaterThan(0.5);
 
-      // Wait out remainder of 1.2 s cooldown, then trigger a vertical evade
-      run(m, 1.0, (i) => i.aim.set(0, 0, 1));
-      expect(m.dashCooldown).toBe(0);
-      const vyBefore = m.vel.y;
-      expect(m.snapDash(0, 1)).toBe(true);
-      run(m, 0.24, (i) => i.aim.set(0, 0, 1));
-      expect(m.vel.y).toBeGreaterThan(vyBefore + 20);
-    });
+      run(m, STRAFE_DASH_COOLDOWN, (i) => i.aim.set(0, 0, 1));
+      expect(m.strafeDashCooldown).toBe(0);
 
-    it('supports input.dash and pops off the ground when triggered grounded', () => {
-      const m = new FlightModel(flat());
-      m.placeOnGround(0, 0, 0);
       const input = EMPTY_INPUT();
-      input.dash = { dir: -1, vertical: 1 };
+      input.aim.set(0, 0, 1);
+      input.strafeDash = -1;
       m.step(1 / 120, input);
-      expect(m.grounded).toBe(false);
-      expect(m.dashInvuln).toBe(true);
-      expect(m.vel.x).toBeGreaterThan(0.5);
-      expect(m.vel.y).toBeGreaterThan(4);
-    });
-
-    it('drives CameraRig bank/whip impulse on dash and dynamic FOV rush on proximityIntensity', () => {
-      const m = new FlightModel(flat());
-      m.pos.set(0, 300, 0);
-      m.vel.set(0, 0, 180);
-      m.grounded = false;
-      m.flightness = 1;
-      m.posture = 1.42;
-      m.speedCmd = 180;
-
-      const cam = new THREE.PerspectiveCamera(62, 16 / 9, 0.1, 20000);
-      const rig = new CameraRig(cam);
-      rig.mode = 'chase';
-      rig.lookHeading(0);
-      const head = new THREE.Vector3(0, 301.5, 0);
-
-      // Baseline settled FOV
-      for (let i = 0; i < 60; i++) rig.update(1 / 60, m, head, flat(), 0);
-      const baseFov = cam.fov;
-
-      // High proximity adrenaline widens FOV subtly
-      for (let i = 0; i < 30; i++) rig.update(1 / 60, m, head, flat(), 1.0);
-      expect(cam.fov).toBeGreaterThan(baseFov + 4);
-
-      // Snap-dash imparts camera shake & whip bank
-      m.snapDash(1);
-      rig.update(1 / 60, m, head, flat(), 0);
-      expect(rig.shake).toBeGreaterThan(0.2);
+      expect(m.strafeDashDir).toBe(-1);
     });
   });
 });

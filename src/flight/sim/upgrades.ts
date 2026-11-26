@@ -436,9 +436,6 @@ export const AWARD = {
   kineticRam: 25,
   iceKill: 25,
   payloadDetonation: 45,
-  /** Holographic JARVIS flight gates & full course clear. */
-  gatePass: 15,
-  gateCourseClear: 100,
 } as const;
 /** What the award for a kill is called, where the kind's own name won't do. */
 const DOWNED: Partial<Record<string, string>> = { frigate: 'WARSHIP SUNK', boss: 'DREADNOUGHT SYSTEM OUT', dreadnought: 'DREADNOUGHT DOWN', rival: 'RIVAL ACE DOWN' };
@@ -549,14 +546,6 @@ export class Upgrades {
     this.onAward(points, reason);
   }
 
-  /** Credits R&D points without emitting a duplicate HUD `rdAward` event (used when StyleComboTracker already emitted it). */
-  credit(points: number): void {
-    if (points <= 0) return;
-    this.state.rd += points;
-    this.state.earned += points;
-    this.commit();
-  }
-
   /** Pays out on the sim's events. */
   event(e: SimEvent): void {
     switch (e.kind) {
@@ -617,12 +606,6 @@ export class Upgrades {
         break;
       case 'payloadDetonation':
         this.earn(AWARD.payloadDetonation + Math.max(0, e.value ?? 0) * 15, 'PAYLOAD CHAIN-DETONATION');
-        break;
-      case 'gatePass':
-        this.earn(AWARD.gatePass, e.text ? `GATE ${e.text}` : 'FLIGHT GATE');
-        break;
-      case 'gateCourseClear':
-        this.earn(AWARD.gateCourseClear, 'FLIGHT COURSE CLEAR');
         break;
     }
   }

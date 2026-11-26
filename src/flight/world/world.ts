@@ -8,11 +8,10 @@ import { buildHouse } from './house';
 import { gradeDrive } from './drive';
 import { LandingPad } from './landingPad';
 import { GARDEN } from './housePlants';
-import { Clouds, type CloudTurbulence } from './clouds';
-import { Landmarks } from './landmarks';
+import { Clouds } from './clouds';
 import { hazeAll } from '../render/haze';
 
-/** Land, sea, sky and coastal landmarks, built once at boot. */
+/** Land, sea and sky, built once at boot. */
 export class World {
   readonly field: Heightfield;
   readonly atmosphere: Atmosphere;
@@ -21,7 +20,6 @@ export class World {
   readonly vegetation: Vegetation;
   readonly clouds: Clouds;
   readonly pad: LandingPad;
-  readonly landmarks: Landmarks;
   /** 0–1: the eye is inside a cloud. */
   inCloud = 0;
   readonly group = new THREE.Group();
@@ -44,30 +42,10 @@ export class World {
     hazeAll(house, this.atmosphere.uniforms);
     this.pad = new LandingPad();
     hazeAll(this.pad.group, this.atmosphere.uniforms);
-    this.landmarks = new Landmarks(this.field);
-    hazeAll(this.landmarks.group, this.atmosphere.uniforms);
     this.clouds = new Clouds(this.atmosphere.uniforms);
-    this.group.add(this.terrain.group, this.ocean.mesh, this.vegetation.group, house, this.pad.group, this.landmarks.group, this.clouds.mesh);
+    this.group.add(this.terrain.group, this.ocean.mesh, this.vegetation.group, house, this.pad.group, this.clouds.mesh);
     this.group.name = 'world';
     scene.add(this.group);
-  }
-
-  /** 0–1: current storm cloud lightning flash intensity. */
-  get lightningFlash(): number {
-    return this.clouds.lightningIntensity;
-  }
-
-  /**
-   * Returns true once per storm flash when the suit at `pos` is inside dense
-   * cloud cover (`inCloud > 0.25`) during an active lightning discharge.
-   */
-  consumeLightningStrike(pos: THREE.Vector3): boolean {
-    return this.clouds.consumeLightningStrike(pos, this.inCloud);
-  }
-
-  /** Cloud turbulence buffeting vector and normalized intensity (0–1) at `pos`. */
-  cloudTurbulence(pos: THREE.Vector3, out?: THREE.Vector3): CloudTurbulence {
-    return this.clouds.turbulence(pos, this.inCloud, out);
   }
 
   update(dt: number, camera: THREE.PerspectiveCamera): void {
@@ -76,6 +54,5 @@ export class World {
     this.ocean.update(camera, this.time);
     this.vegetation.update(camera, this.time);
     this.inCloud = this.clouds.update(dt, camera);
-    this.landmarks.animate(dt);
   }
 }
