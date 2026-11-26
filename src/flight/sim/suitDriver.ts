@@ -3,7 +3,7 @@ import { MINI_ROCKETS, type FlapId, type FlightCheckFrame } from '../../animatio
 import { applyPose, createRig, type FlightPose, type LimbOffsets, type SuitRig } from '../../suit/rigPose';
 import { boneSpec, type BoneName } from '../../suit/rig';
 import type { Suit } from '../../suit/Suit';
-import { FLIGHT_POSTURE, type FlightModel } from './flightModel';
+import { FLIGHT_POSTURE, STRAFE_DASH_COOLDOWN, type FlightModel } from './flightModel';
 import { GRAVITY } from '../world/config';
 
 /**
@@ -98,6 +98,15 @@ const ASSIST_TWIST = Math.PI / 2;
 /** Forearm roll for the braking arms (palms to the travel, elbows soft). */
 const BRAKE_TWIST = -0.5;
 const BRAKE_ELBOW = 0.25;
+/**
+ * Strafe-dash push: the upper arm rolled a little outward so the elbow
+ * points down and back under the straight-out arm, palm square to the side
+ * (the brake's inward roll pointed it straight up: a chicken wing).
+ */
+const DASH_TWIST = 0.4;
+const DASH_ELBOW = 0.15;
+/** How long (s) the strafe-dash arm stays punched out from the double-tap. */
+const DASH_HOLD = 0.34;
 
 /**
  * A braking arm's bearing in the chest frame (rad, + out to its own side)
@@ -382,6 +391,10 @@ export class SuitDriver {
   /** Palm roll flick per hand, sprung: [value, velocity]. */
   private readonly rollFlickL = new THREE.Vector2();
   private readonly rollFlickR = new THREE.Vector2();
+  /** Strafe-dash push per hand, sprung: [value, velocity] (the hand on the far side of the dash). */
+  private readonly dashPushL = new THREE.Vector2();
+  private readonly dashPushR = new THREE.Vector2();
+  private dashDir: -1 | 0 | 1 = 0;
   /** Aim line in the body frame, smoothed, and the side it last sat on (for targets dead astern). */
   private readonly aimBody = new THREE.Vector3(0, 0, 1);
   private aimSign = 1;
@@ -866,6 +879,44 @@ export class SuitDriver {
       }
     }
 
+    // Strafe dash (double-tap A/D): the hand on the far side of the dash
+    // punches straight out sideways, palm flat and facing away, and its
+    // repulsor shoves the suit across (right dash → left palm firing left).
+    // A fast spring in (the punch), a softer one back to trim; a raised
+    // repulsor arm keeps its shot
+    {
+      // (held a beat past the burst itself so the push reads, then let go)
+      if (m.strafeDashActive > 0 && m.strafeDashDir !== 0) this.dashDir = m.strafeDashDir;
+      const dir = m.strafeDashCooldown > STRAFE_DASH_COOLDOWN - DASH_HOLD ? this.dashDir : 0;
+      const live = this.dangle * (1 - crouch) * (1 - ub);
+      springTo(this.dashPushL, dir > 0 ? live : 0, dir > 0 ? 34 : 14, 0.72, dt);
+      springTo(this.dashPushR, dir < 0 ? live : 0, dir < 0 ? 34 : 14, 0.72, dt);
+      for (const side of ['L', 'R'] as const) {
+        const s = side === 'L' ? 1 : -1;
+        const k = clamp01((side === 'L' ? this.dashPushL : this.dashPushR).x) * (1 - (side === 'L' ? arms.aimL : arms.aimR));
+        if (k <= 1e-3) continue;
+        // Straight out along the body's lateral axis (the axis the dash
+        // accelerates along), a touch low and ahead so it clears the hip
+        const tc = _tgt.set(s, 0, 0).applyQuaternion(chestQ);
+        tc.set(s * tc.x, tc.y - 0.22, tc.z + 0.12);
+        const tgt = clampReach(tc.normalize());
+        const palm = suit.palms[0] ?? { at: [0.35, 0.96, 0.03], normal: [-0.94, -0.34, -0.04] };
+        const [abd, flex, w] = aimArm(palm.at, palm.normal, tgt, DASH_TWIST, DASH_ELBOW, 1.4);
+        const hand = [-0.12, -0.08, -0.05, -0.03, 0.0];
+        limbs[`arm${side}`] = lerp(limbs[`arm${side}`], abd, k);
+        limbs[`armFlex${side}`] = lerp(limbs[`armFlex${side}`], flex, k);
+        limbs[`armTwist${side}`] = lerp(limbs[`armTwist${side}`], DASH_TWIST, k);
+        limbs[`elbow${side}`] = lerp(limbs[`elbow${side}`], DASH_ELBOW, k);
+        if (side === 'L') {
+          wristL = lerp(wristL, w, k);
+          fingersL = fingersL.map((f, i) => lerp(f, hand[i], k));
+        } else {
+          wristR = lerp(wristR, w, k);
+          fingersR = fingersR.map((f, i) => lerp(f, hand[i], k));
+        }
+      }
+    }
+
     // The air worries at the flared limbs: a tremor that grows with the
     // stream on them (the buffet you hear), nothing in a hover
     const buffet = Math.max(fk, palmK) * m.airbrake * THREE.MathUtils.smoothstep(sp, 6, 140) * (0.5 + 0.5 * eff);
@@ -901,7 +952,8 @@ export class SuitDriver {
         this.sv.fill(0);
         this.primed = true;
       }
-      const armW = lerp(15, 26, aimK) + 10 * pre;
+      // (a strafe dash snaps the pushing arm out: it's over in a quarter second)
+      const armW = lerp(15, 26, aimK) + 10 * pre + 18 * clamp01(Math.max(this.dashPushL.x, this.dashPushR.x));
       for (let i = 0; i < N_SPRINGS; i++) {
         const leg = i >= ARM_CHANNELS && i < LIMB_KEYS.length;
         [this.sx[i], this.sv[i]] = springStep(this.sx[i], this.sv[i], goals[i], leg ? 12 : armW, 0.85, dt);
@@ -1046,14 +1098,17 @@ export class SuitDriver {
     springTo(this.rollFlickR, clamp01(-rollKick * 0.45), 14, 0.75, dt);
     const flickL = 0.7 * clamp01(this.rollFlickL.x) * (1 - arms.aimL);
     const flickR = 0.7 * clamp01(this.rollFlickR.x) * (1 - arms.aimR);
+    // Strafe dash: the pushing palm burns flat out while the arm is out
+    const dashL = clamp01(this.dashPushL.x * 1.15) * (1 - arms.aimL);
+    const dashR = clamp01(this.dashPushR.x * 1.15) * (1 - arms.aimR);
     // On boost the palms are thrusters as much as the boots: trailing aft,
     // they burn at the boots' level (a raised arm keeps its shot)
     this.outputs.palmBoost += ((m.boosting ? 1 : 0) - this.outputs.palmBoost) * (1 - Math.exp(-dt / 0.15));
     const pb = this.outputs.palmBoost;
     const palmsL = lerp(palms, this.outputs.bootL, pb);
     const palmsR = lerp(palms, this.outputs.bootR, pb);
-    this.outputs.palmL = clamp01(Math.max(palmsL * (1 - 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimL) * (1 - ub), assistL, flickL, brakeL, arms.guns ? 0 : arms.flashL));
-    this.outputs.palmR = clamp01(Math.max(palmsR * (1 + 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimR) * (1 - ub), assistR, flickR, brakeR, arms.guns ? 0 : arms.flashR));
+    this.outputs.palmL = clamp01(Math.max(palmsL * (1 - 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimL) * (1 - ub), assistL, flickL, brakeL, dashL, arms.guns ? 0 : arms.flashL));
+    this.outputs.palmR = clamp01(Math.max(palmsR * (1 + 0.3 * m.trimRoll * (1 - pb)) * (1 - arms.aimR) * (1 - ub), assistR, flickR, brakeR, dashR, arms.guns ? 0 : arms.flashR));
 
     const pose: FlightPose = {
       stance: 0,

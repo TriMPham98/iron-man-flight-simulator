@@ -211,6 +211,11 @@ export class Jets {
   }
 
   /** Nozzle positions and thrust directions (world), after the suit is posed. */
+  /** A palm nozzle as of the last update (0 left, 1 right): where it sits and the way its jet points. */
+  palmNozzle(i: 0 | 1): { readonly pos: THREE.Vector3; readonly dir: THREE.Vector3 } {
+    return this.palms[i];
+  }
+
   update(dt: number, suit: Suit, state: JetState, ground: GroundQuery, particles: Particles, suitVel: THREE.Vector3): void {
     this.time += dt;
     const t = this.time;

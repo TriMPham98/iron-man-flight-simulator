@@ -86,6 +86,7 @@ export class Game {
   private readonly _owed = new THREE.Vector3();
   private readonly _axis = new THREE.Vector3();
   private readonly _clip = new THREE.Vector3();
+  private readonly _dashV = new THREE.Vector3();
   private readonly _neckTo = new THREE.Vector3();
   /** Seals the collar in the helmet view (dark, like the suit's lining). */
   private readonly neck = new THREE.Mesh(
@@ -215,7 +216,6 @@ export class Game {
     if (c.strafeDash && this.combat.down <= 0 && !this.combat.lost && !this.autoLand) {
       if (this.model.strafeDash(c.strafeDash)) {
         this.events.emit('strafeDash', { at: this.model.pos, value: c.strafeDash });
-        this.particles.burst('plasma', this.model.pos, 8, 12, undefined, 0.65, { scale: 0.85 });
       }
     }
     // A hand on the stick, the throttle or the boost takes it back (once
@@ -346,6 +346,18 @@ export class Game {
     const o = this.driver.outputs;
     this.jets.eye = helmet ? this.rig.camera.position : null;
     this.jets.update(dt, this.suit, { bootL: o.bootL, bootR: o.bootR, palmL: o.palmL, palmR: o.palmR, palmBoost: o.palmBoost }, this.ground, this.particles, this.model.vel);
+    // Strafe dash: the pushing palm's exhaust blows out of that palm, along
+    // its jet (right dash → the left hand firing off to the left)
+    if (this.model.strafeDashActive > 0 && this.model.strafeDashDir !== 0) {
+      const i = this.model.strafeDashDir > 0 ? 0 : 1;
+      const k = i === 0 ? o.palmL : o.palmR;
+      if (k > 0.35) {
+        const n = this.jets.palmNozzle(i);
+        const v = this._dashV.copy(n.dir).multiplyScalar(22 * k).add(this.model.vel);
+        for (let j = 0; j < 2; j++) this.particles.emit('plasma', n.pos, v, { scale: 0.7, life: 0.45 });
+        this.particles.burst('vapor', n.pos, 1, 9 * k, n.dir, 0.35, { scale: 0.9, life: 0.5 });
+      }
+    }
     this.water.update(dt, this.model, this.particles);
     this.particles.update(dt, this.rig.camera);
     this.sonic.update(dt, this.model.pos, this.model.vel, this.model.speed / SPEED_OF_SOUND, this.cleanFlow);

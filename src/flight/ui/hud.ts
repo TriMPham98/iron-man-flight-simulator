@@ -2302,6 +2302,24 @@ export class Hud {
    * A panel's glass: a fill darkening toward the foot, a hairline edge with
    * one corner chamfered (the outer top one), and bright ticks on the rest.
    */
+  /** Runs non-text card/radar geometry with shadowBlur disabled so dark halos don't outline bars or blips. */
+  private crisp(g: CanvasRenderingContext2D, fn: () => void): void {
+    const blur = g.shadowBlur;
+    if (blur !== 0) g.shadowBlur = 0;
+    fn();
+    if (blur !== 0) g.shadowBlur = blur;
+  }
+
+  /** Draws a sharp track + fill meter bar without dark shadow blur. */
+  private meterBar(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, frac: number, color: string, track = CYAN_FAINT): void {
+    this.crisp(g, () => {
+      g.fillStyle = track;
+      g.fillRect(x, y, w, h);
+      g.fillStyle = color;
+      g.fillRect(x, y, w * frac, h);
+    });
+  }
+
   private glass(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, s: number, right = false): void {
     g.save();
     g.shadowBlur = 0;
@@ -2332,9 +2350,6 @@ export class Hud {
       g.fillStyle = `rgba(2, 12, 20, ${0.45 * gl})`;
       g.fill();
     }
-    g.strokeStyle = CYAN_FAINT;
-    g.lineWidth = 1;
-    g.stroke();
     g.strokeStyle = CYAN_DIM;
     g.lineWidth = 1.5;
     const k = 7 * s;
@@ -2375,64 +2390,70 @@ export class Hud {
     const ay = y + r;
     const A0 = Math.PI * 0.75;
     const SPAN = Math.PI * 1.5;
-    g.lineWidth = 1;
-    g.strokeStyle = CYAN_DIM;
-    for (let i = 0; i <= 10; i++) {
-      const a = A0 + (SPAN * i) / 10;
-      const r0 = r + 5 * s;
-      const r1 = r + (i % 5 === 0 ? 10 : 7.5) * s;
+    this.crisp(g, () => {
+      g.lineWidth = 1;
+      g.strokeStyle = CYAN_DIM;
+      for (let i = 0; i <= 10; i++) {
+        const a = A0 + (SPAN * i) / 10;
+        const r0 = r + 5 * s;
+        const r1 = r + (i % 5 === 0 ? 10 : 7.5) * s;
+        g.beginPath();
+        g.moveTo(ax + Math.cos(a) * r0, ay + Math.sin(a) * r0);
+        g.lineTo(ax + Math.cos(a) * r1, ay + Math.sin(a) * r1);
+        g.stroke();
+      }
+      g.lineWidth = 4 * s;
+      g.strokeStyle = CYAN_FAINT;
       g.beginPath();
-      g.moveTo(ax + Math.cos(a) * r0, ay + Math.sin(a) * r0);
-      g.lineTo(ax + Math.cos(a) * r1, ay + Math.sin(a) * r1);
+      g.arc(ax, ay, r, A0, A0 + SPAN);
       g.stroke();
-    }
-    g.lineWidth = 4 * s;
-    g.strokeStyle = CYAN_FAINT;
-    g.beginPath();
-    g.arc(ax, ay, r, A0, A0 + SPAN);
-    g.stroke();
+      const armor = c.armor;
+      if (this.armorGhost > armor + 0.002) {
+        g.strokeStyle = `rgba(255, 255, 255, ${0.55 + 0.4 * this.armorFlash})`;
+        g.beginPath();
+        g.arc(ax, ay, r, A0 + SPAN * armor, A0 + SPAN * this.armorGhost);
+        g.stroke();
+      }
+      const low = armor < 0.3;
+      const armorColor = low ? RED : armor < 0.6 ? AMBER : CYAN;
+      g.strokeStyle = this.armorFlash > 0.5 ? WHITE : armorColor;
+      g.beginPath();
+      g.arc(ax, ay, r, A0, A0 + SPAN * armor);
+      g.stroke();
+      // A bright cap on the arc's end
+      const ea = A0 + SPAN * armor;
+      g.fillStyle = WHITE;
+      g.beginPath();
+      g.arc(ax + Math.cos(ea) * r, ay + Math.sin(ea) * r, 2.6 * s, 0, Math.PI * 2);
+      g.fill();
+    });
     const armor = c.armor;
-    if (this.armorGhost > armor + 0.002) {
-      g.strokeStyle = `rgba(255, 255, 255, ${0.55 + 0.4 * this.armorFlash})`;
-      g.beginPath();
-      g.arc(ax, ay, r, A0 + SPAN * armor, A0 + SPAN * this.armorGhost);
-      g.stroke();
-    }
     const low = armor < 0.3;
-    const armorColor = low ? RED : armor < 0.6 ? AMBER : CYAN;
-    g.strokeStyle = this.armorFlash > 0.5 ? WHITE : armorColor;
-    g.beginPath();
-    g.arc(ax, ay, r, A0, A0 + SPAN * armor);
-    g.stroke();
-    // A bright cap on the arc's end
-    const ea = A0 + SPAN * armor;
-    g.fillStyle = WHITE;
-    g.beginPath();
-    g.arc(ax + Math.cos(ea) * r, ay + Math.sin(ea) * r, 2.6 * s, 0, Math.PI * 2);
-    g.fill();
     const numColor = this.armorFlash > 0 ? RED : low && Math.sin(this.time * 8) > 0 ? RED : WHITE;
     this.text(g, `${Math.round(armor * 100)}`, ax, ay - 2 * s, 20 * s, numColor, 'center');
     this.text(g, 'ARMOR', ax, ay + 16 * s, 7.5 * s, CYAN_LABEL, 'center', JARVIS);
     // Reserves: a diamond per reboot left, in the arc's open foot
-    for (let i = 0; i < RESERVES; i++) {
-      const px = ax + (i - (RESERVES - 1) / 2) * 11 * s;
-      const py = ay + 28 * s;
-      const d = 3.5 * s;
-      g.beginPath();
-      g.moveTo(px, py - d);
-      g.lineTo(px + d, py);
-      g.lineTo(px, py + d);
-      g.lineTo(px - d, py);
-      g.closePath();
-      if (i < c.reserves) {
-        g.fillStyle = c.reserves === 1 ? AMBER : CYAN;
-        g.fill();
-      } else {
-        g.strokeStyle = CYAN_FAINT;
-        g.lineWidth = 1.2 * s;
-        g.stroke();
+    this.crisp(g, () => {
+      for (let i = 0; i < RESERVES; i++) {
+        const px = ax + (i - (RESERVES - 1) / 2) * 11 * s;
+        const py = ay + 28 * s;
+        const d = 3.5 * s;
+        g.beginPath();
+        g.moveTo(px, py - d);
+        g.lineTo(px + d, py);
+        g.lineTo(px, py + d);
+        g.lineTo(px - d, py);
+        g.closePath();
+        if (i < c.reserves) {
+          g.fillStyle = c.reserves === 1 ? AMBER : CYAN;
+          g.fill();
+        } else {
+          g.strokeStyle = CYAN_FAINT;
+          g.lineWidth = 1.2 * s;
+          g.stroke();
+        }
       }
-    }
+    });
     // Thrust: segments filling (eased) to the throttle, the leading one lit;
     // on boost they shimmer amber
     const bx = x + r * 2 + 24 * s;
@@ -2440,17 +2461,19 @@ export class Hud {
     this.text(g, `${Math.round(this.thrustShown * 100)}%`, bx + 118 * s, y - 6 * s, 9 * s, CYAN, 'right');
     const N = 20;
     const lit = this.thrustShown * N;
-    for (let i = 0; i < N; i++) {
-      const on = i < lit;
-      const lead = on && i + 1 >= lit;
-      const hi = i > 13;
-      let col = on ? (hi ? AMBER : CYAN) : CYAN_FAINT;
-      if (on && m.boosting && Math.sin(this.time * 18 - i * 0.7) > 0.3) col = WHITE;
-      if (lead) col = WHITE;
-      g.fillStyle = col;
-      const sh = (8 + (i / N) * 6) * s;
-      g.fillRect(bx + i * 6 * s, y + 20 * s - sh, 4 * s, sh);
-    }
+    this.crisp(g, () => {
+      for (let i = 0; i < N; i++) {
+        const on = i < lit;
+        const lead = on && i + 1 >= lit;
+        const hi = i > 13;
+        let col = on ? (hi ? AMBER : CYAN) : CYAN_FAINT;
+        if (on && m.boosting && Math.sin(this.time * 18 - i * 0.7) > 0.3) col = WHITE;
+        if (lead) col = WHITE;
+        g.fillStyle = col;
+        const sh = (8 + (i / N) * 6) * s;
+        g.fillRect(bx + i * 6 * s, y + 20 * s - sh, 4 * s, sh);
+      }
+    });
     const cmd = m.boosting ? 'BOOST' : m.grounded ? 'GROUND' : m.flightness < 0.5 ? 'HOVER' : `CRUISE ${Math.round((m.speedCmd / CRUISE_MAX) * 100)}%`;
     this.text(g, cmd, bx, y + 36 * s, 12 * s, m.boosting ? AMBER : WHITE);
     this.text(g, `REACTOR ${c.lost ? 'OFFLINE' : c.down > 0 ? 'REBOOT' : c.reactor.overchargeActive ? '400%' : c.reactor.displayCode}`, bx, y + 54 * s, 9 * s, c.down > 0 ? RED : c.reactor.overchargeActive ? WHITE : CYAN_LABEL);
@@ -2513,10 +2536,7 @@ export class Hud {
     axes.forEach((ax, i) => {
       const ay = y0 + (28 + i * 14) * s;
       this.text(g, `${ax.key} ${ax.label}`, px, ay, 8 * s, ax.active ? ax.color : CYAN_DIM, 'left');
-      g.fillStyle = CYAN_FAINT;
-      g.fillRect(barX, ay - 2.5 * s, barW, 5 * s);
-      g.fillStyle = ax.active ? ax.color : ax.level < 0.5 ? CYAN_DIM : CYAN;
-      g.fillRect(barX, ay - 2.5 * s, barW * ax.level, 5 * s);
+      this.meterBar(g, barX, ay - 2.5 * s, barW, 5 * s, ax.level, ax.active ? ax.color : ax.level < 0.5 ? CYAN_DIM : CYAN);
     });
 
     // Wrist laser cutter / War Machine dual-gauntlet flak sweep readiness ([C])
@@ -2538,10 +2558,7 @@ export class Hud {
     const ocLabel = oc ? `400%  ${R.overchargeRemaining.toFixed(1)}s` : `${Math.round(R.overcharge * 100)}%`;
     this.text(g, 'OVERCHARGE', px, oy, 7 * s, oc ? WHITE : CYAN_LABEL, 'left', JARVIS);
     this.text(g, ocLabel, rx, oy, 8.5 * s, oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN, 'right');
-    g.fillStyle = CYAN_FAINT;
-    g.fillRect(px, oy + 9 * s, panelW - 20 * s, 4 * s);
-    g.fillStyle = oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN;
-    g.fillRect(px, oy + 9 * s, (panelW - 20 * s) * THREE.MathUtils.clamp(R.overcharge, 0, 1), 4 * s);
+    this.meterBar(g, px, oy + 9 * s, panelW - 20 * s, 4 * s, THREE.MathUtils.clamp(R.overcharge, 0, 1), oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN);
   }
 
   private drawWeapons(g: CanvasRenderingContext2D, c: Combat, s: number): void {
@@ -2569,7 +2586,7 @@ export class Hud {
       }
       this.text(g, label, x - 150 * s, y, 8 * s, CYAN_LABEL, 'left', JARVIS);
       this.text(g, value, x, y, 11 * s, color, 'right');
-      extra?.(x - 150 * s, y + 9 * s);
+      if (extra) this.crisp(g, () => extra(x - 150 * s, y + 9 * s));
       y += 26 * s;
     };
     const isWM = W.variant === 'warmachine';
@@ -2609,10 +2626,7 @@ export class Hud {
       const gunColor = over ? (blink ? RED : AMBER) : W.minigunFiring ? WHITE : W.minigunTarget ? AMBER : CYAN;
       const gunKey = over ? 'over' : W.minigunFiring ? 'fire' : W.minigunSpool > 0.05 ? 'spool' : heat > 0.02 ? 'cool' : W.minigunTarget ? 'lock' : 'ready';
       row('VULCAN M134', gunText, gunColor, (bx, by) => {
-        g.fillStyle = CYAN_FAINT;
-        g.fillRect(bx, by, 150 * s, 3 * s);
-        g.fillStyle = over ? RED : heat > 0.8 ? RED : heat > 0.5 ? AMBER : W.minigunFiring ? WHITE : AMBER;
-        g.fillRect(bx, by, 150 * s * heat, 3 * s);
+        this.meterBar(g, bx, by, 150 * s, 3 * s, heat, over ? RED : heat > 0.8 ? RED : heat > 0.5 ? AMBER : W.minigunFiring ? WHITE : AMBER);
         g.fillStyle = CYAN_DIM;
         g.fillRect(bx + 150 * s * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
       }, gunKey);
@@ -2621,10 +2635,7 @@ export class Hud {
       const ubColor = over ? (blink ? RED : AMBER) : W.unibeamOn ? WHITE : CYAN;
       const ubKey = over ? 'over' : W.unibeamOn ? 'on' : W.unibeamCharge > 0 ? 'charge' : heat > 0.02 ? 'cool' : 'ready';
       row('UNIBEAM', ubText, ubColor, (bx, by) => {
-        g.fillStyle = CYAN_FAINT;
-        g.fillRect(bx, by, 150 * s, 3 * s);
-        g.fillStyle = over ? RED : heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.unibeamOn ? WHITE : CYAN;
-        g.fillRect(bx, by, 150 * s * heat, 3 * s);
+        this.meterBar(g, bx, by, 150 * s, 3 * s, heat, over ? RED : heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.unibeamOn ? WHITE : CYAN);
         // Where the lockout releases
         g.fillStyle = CYAN_DIM;
         g.fillRect(bx + 150 * s * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
@@ -2669,115 +2680,117 @@ export class Hud {
     g.arc(x, y, R + 6 * s, 0, Math.PI * 2);
     g.fill();
     g.restore();
-    g.strokeStyle = CYAN_FAINT;
-    g.lineWidth = 1;
-    for (const k of [1, 0.66, 0.33]) {
-      g.beginPath();
-      g.arc(x, y, R * k, 0, Math.PI * 2);
-      g.stroke();
-    }
-    g.beginPath();
-    g.moveTo(x - R, y);
-    g.lineTo(x + R, y);
-    g.moveTo(x, y - R);
-    g.lineTo(x, y + R);
-    g.stroke();
-    g.strokeStyle = CYAN_DIM;
-    for (let i = 0; i < 36; i++) {
-      const a = (i * Math.PI) / 18;
-      const r1 = R + (i % 9 === 0 ? 7 : 4) * s;
-      g.beginPath();
-      g.moveTo(x + Math.cos(a) * (R + 2 * s), y + Math.sin(a) * (R + 2 * s));
-      g.lineTo(x + Math.cos(a) * r1, y + Math.sin(a) * r1);
-      g.stroke();
-    }
-    // Sweep: a fading wedge behind a bright leading edge
-    const SWEEP = 1.4;
-    const sw = (this.time * SWEEP) % (Math.PI * 2);
-    const grad = g.createConicGradient?.(sw - 0.9, x, y);
-    if (grad) {
-      grad.addColorStop(0, 'rgba(126,232,255,0)');
-      grad.addColorStop(0.142, 'rgba(126,232,255,0.22)');
-      grad.addColorStop(0.144, 'rgba(126,232,255,0)');
-      g.fillStyle = grad;
-      g.beginPath();
-      g.arc(x, y, R, 0, Math.PI * 2);
-      g.fill();
-    }
-    g.strokeStyle = CYAN;
-    g.lineWidth = 1;
-    g.beginPath();
-    g.moveTo(x, y);
-    g.lineTo(x + Math.cos(sw) * R, y + Math.sin(sw) * R);
-    g.stroke();
-    // How long since the sweep last passed a point (s): blips flare, then fade
-    const swept = (px: number, py: number) => {
-      const a = Math.atan2(py - y, px - x);
-      return ((((sw - a) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / SWEEP;
-    };
-    const f = cam.getWorldDirection(this._v);
-    const hdg = Math.atan2(f.x, -f.z);
-    const place = (p: THREE.Vector3) => {
-      const dx = p.x - m.pos.x;
-      const dz = p.z - m.pos.z;
-      // Heading-up: rotate world into the camera's heading
-      const rx = dx * Math.cos(hdg) + dz * Math.sin(hdg);
-      const ry = dx * Math.sin(hdg) - dz * Math.cos(hdg);
-      const d = Math.hypot(rx, ry);
-      const k = Math.min(1, d / range);
-      return { px: x + (rx / Math.max(d, 1)) * k * R, py: y - (ry / Math.max(d, 1)) * k * R };
-    };
-    const plot = (p: THREE.Vector3, color: string, size: number, tri = false) => {
-      const { px, py } = place(p);
-      const since = swept(px, py);
-      g.save();
-      g.globalAlpha *= 0.35 + 0.65 * Math.exp(-since * 1.4);
-      if (since < 0.5) {
-        // (a ping ring thrown off as the sweep crosses it)
-        g.save();
-        g.globalAlpha *= 1 - since / 0.5;
-        g.strokeStyle = color;
-        g.lineWidth = 1;
+    this.crisp(g, () => {
+      g.strokeStyle = CYAN_FAINT;
+      g.lineWidth = 1;
+      for (const k of [1, 0.66, 0.33]) {
         g.beginPath();
-        g.arc(px, py, size + since * 16 * s, 0, Math.PI * 2);
+        g.arc(x, y, R * k, 0, Math.PI * 2);
         g.stroke();
-        g.restore();
       }
-      g.fillStyle = color;
-      if (tri) {
-        g.beginPath();
-        g.moveTo(px, py - size);
-        g.lineTo(px - size, py + size);
-        g.lineTo(px + size, py + size);
-        g.fill();
-      } else g.fillRect(px - size / 2, py - size / 2, size, size);
-      g.restore();
-    };
-    // The pad: the same open diamond as its marker in the world, pinned to the rim when out of range
-    if (this.pad) {
-      const { px, py } = place(this.pad);
-      const k = 4.5 * s;
-      g.strokeStyle = CYAN;
-      g.lineWidth = 1.2;
       g.beginPath();
-      g.moveTo(px, py - k);
-      g.lineTo(px + k, py);
-      g.lineTo(px, py + k);
-      g.lineTo(px - k, py);
-      g.closePath();
+      g.moveTo(x - R, y);
+      g.lineTo(x + R, y);
+      g.moveTo(x, y - R);
+      g.lineTo(x, y + R);
       g.stroke();
-    }
-    for (const h of c.hostiles) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
-    for (const w of c.houseParty.wingmen) if (!w.done) plot(w.pos, CYAN, 4.5 * s);
-    if (c.houseParty.hotSwapActive) plot(c.houseParty.podPos, WHITE, 5 * s);
-    for (const ms of c.missiles.threats()) plot(ms.pos, WHITE, 3 * s);
-    for (const ms of c.missiles.strikes()) plot(ms.pos, AMBER, 2.5 * s);
-    g.fillStyle = WHITE;
-    g.beginPath();
-    g.moveTo(x, y - 6 * s);
-    g.lineTo(x - 4 * s, y + 4 * s);
-    g.lineTo(x + 4 * s, y + 4 * s);
-    g.fill();
+      g.strokeStyle = CYAN_DIM;
+      for (let i = 0; i < 36; i++) {
+        const a = (i * Math.PI) / 18;
+        const r1 = R + (i % 9 === 0 ? 7 : 4) * s;
+        g.beginPath();
+        g.moveTo(x + Math.cos(a) * (R + 2 * s), y + Math.sin(a) * (R + 2 * s));
+        g.lineTo(x + Math.cos(a) * r1, y + Math.sin(a) * r1);
+        g.stroke();
+      }
+      // Sweep: a fading wedge behind a bright leading edge
+      const SWEEP = 1.4;
+      const sw = (this.time * SWEEP) % (Math.PI * 2);
+      const grad = g.createConicGradient?.(sw - 0.9, x, y);
+      if (grad) {
+        grad.addColorStop(0, 'rgba(126,232,255,0)');
+        grad.addColorStop(0.142, 'rgba(126,232,255,0.22)');
+        grad.addColorStop(0.144, 'rgba(126,232,255,0)');
+        g.fillStyle = grad;
+        g.beginPath();
+        g.arc(x, y, R, 0, Math.PI * 2);
+        g.fill();
+      }
+      g.strokeStyle = CYAN;
+      g.lineWidth = 1;
+      g.beginPath();
+      g.moveTo(x, y);
+      g.lineTo(x + Math.cos(sw) * R, y + Math.sin(sw) * R);
+      g.stroke();
+      // How long since the sweep last passed a point (s): blips flare, then fade
+      const swept = (px: number, py: number) => {
+        const a = Math.atan2(py - y, px - x);
+        return ((((sw - a) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / SWEEP;
+      };
+      const f = cam.getWorldDirection(this._v);
+      const hdg = Math.atan2(f.x, -f.z);
+      const place = (p: THREE.Vector3) => {
+        const dx = p.x - m.pos.x;
+        const dz = p.z - m.pos.z;
+        // Heading-up: rotate world into the camera's heading
+        const rx = dx * Math.cos(hdg) + dz * Math.sin(hdg);
+        const ry = dx * Math.sin(hdg) - dz * Math.cos(hdg);
+        const d = Math.hypot(rx, ry);
+        const k = Math.min(1, d / range);
+        return { px: x + (rx / Math.max(d, 1)) * k * R, py: y - (ry / Math.max(d, 1)) * k * R };
+      };
+      const plot = (p: THREE.Vector3, color: string, size: number, tri = false) => {
+        const { px, py } = place(p);
+        const since = swept(px, py);
+        g.save();
+        g.globalAlpha *= 0.35 + 0.65 * Math.exp(-since * 1.4);
+        if (since < 0.5) {
+          // (a ping ring thrown off as the sweep crosses it)
+          g.save();
+          g.globalAlpha *= 1 - since / 0.5;
+          g.strokeStyle = color;
+          g.lineWidth = 1;
+          g.beginPath();
+          g.arc(px, py, size + since * 16 * s, 0, Math.PI * 2);
+          g.stroke();
+          g.restore();
+        }
+        g.fillStyle = color;
+        if (tri) {
+          g.beginPath();
+          g.moveTo(px, py - size);
+          g.lineTo(px - size, py + size);
+          g.lineTo(px + size, py + size);
+          g.fill();
+        } else g.fillRect(px - size / 2, py - size / 2, size, size);
+        g.restore();
+      };
+      // The pad: the same open diamond as its marker in the world, pinned to the rim when out of range
+      if (this.pad) {
+        const { px, py } = place(this.pad);
+        const k = 4.5 * s;
+        g.strokeStyle = CYAN;
+        g.lineWidth = 1.2;
+        g.beginPath();
+        g.moveTo(px, py - k);
+        g.lineTo(px + k, py);
+        g.lineTo(px, py + k);
+        g.lineTo(px - k, py);
+        g.closePath();
+        g.stroke();
+      }
+      for (const h of c.hostiles) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
+      for (const w of c.houseParty.wingmen) if (!w.done) plot(w.pos, CYAN, 4.5 * s);
+      if (c.houseParty.hotSwapActive) plot(c.houseParty.podPos, WHITE, 5 * s);
+      for (const ms of c.missiles.threats()) plot(ms.pos, WHITE, 3 * s);
+      for (const ms of c.missiles.strikes()) plot(ms.pos, AMBER, 2.5 * s);
+      g.fillStyle = WHITE;
+      g.beginPath();
+      g.moveTo(x, y - 6 * s);
+      g.lineTo(x - 4 * s, y + 4 * s);
+      g.lineTo(x + 4 * s, y + 4 * s);
+      g.fill();
+    });
     // The tally on a plate of glass, readable over cloud
     g.save();
     g.shadowBlur = 0;
@@ -2795,10 +2808,7 @@ export class Hud {
       const hot = hp < 0.3 && Math.sin(this.time * 8) > 0;
       this.text(g, 'HOUSE', x - R + 4 * s, by, 8 * s, hot ? RED : CYAN_LABEL, 'left', JARVIS);
       this.text(g, `${Math.ceil(hp * 100)}%`, x + R - 4 * s, by, 9 * s, col, 'right');
-      g.fillStyle = CYAN_FAINT;
-      g.fillRect(x - R + 4 * s, by + 8 * s, 2 * R - 8 * s, 2.5 * s);
-      g.fillStyle = col;
-      g.fillRect(x - R + 4 * s, by + 8 * s, (2 * R - 8 * s) * hp, 2.5 * s);
+      this.meterBar(g, x - R + 4 * s, by + 8 * s, 2 * R - 8 * s, 2.5 * s, hp, col);
     }
     this.text(g, c.wave >= 0 ? `WAVE ${c.wave + 1}` : 'FREE FLIGHT', x, y + R + 14 * s, 8 * s, CYAN_LABEL, 'center', JARVIS);
     // The tally pops on a kill
