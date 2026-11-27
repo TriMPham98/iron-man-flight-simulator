@@ -459,8 +459,8 @@ export class Combat {
     }
   }
 
-  /** What this pilot's weapons fire at: the enemies, and in a duel the other pilot. */
-  private targets(): readonly Hostile[] {
+  /** What this pilot's weapons and HUD target: the enemies, and in a duel the other pilot. */
+  targets(): readonly Hostile[] {
     if (!this.duelFoes.length) return this.hostiles;
     const t = this._targets;
     t.length = 0;
@@ -583,6 +583,7 @@ export class Combat {
     const jammed = this.drones.some((d) => d.alive && d.type === 'jammer' && d.pos.distanceToSquared(this.model.pos) < JAM_RANGE * JAM_RANGE);
     this.jam += ((jammed ? 1 - this.spec.jamResist : 0) - this.jam) * Math.min(1, dt * 3);
     this.weapons.jam = this.jam;
+    this.weapons.duelTargets = this.duelFoes;
     this.weapons.update(dt, c, aim, eye, this.targets(), this.down <= 0);
     if (this.down <= 0 && !this.lost) {
       if (c.grapple || c.pressed.has(ACTION_KEYS.GRAPPLE)) {

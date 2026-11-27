@@ -14,7 +14,13 @@ import { REACTOR_KEYS } from '../sim/reactorPower';
 import type { Heightfield } from '../world/heightfield';
 import { Combat } from './combat';
 import type { SurfaceQuery } from './explosions';
-import { BUSTER_DAMAGE, CANNON_INTERVAL } from './playerWeapons';
+import {
+  BUSTER_DAMAGE,
+  CANNON_INTERVAL,
+  DUEL_MINIGUN_DMG_SCALE,
+  DUEL_UNIBEAM_DPS_SCALE,
+  MINIGUN_DAMAGE,
+} from './playerWeapons';
 import type { Hostile } from './types';
 
 const ctx2d = new Proxy({}, { get: () => () => ({ addColorStop() {} }) });
@@ -456,5 +462,83 @@ describe('War Machine Unique Weapons, Animations & Soundscape', () => {
     sounds.on({ kind: 'laserCutterFire', at: new THREE.Vector3(), t: 5 }, model);
     expect(played.some((p) => p.url === SFX.gun)).toBe(true);
     expect(played.some((p) => energy.includes(p.url))).toBe(false);
+  });
+
+  describe('1v1 duel balance, lock-ons, and manual repulsor lead', () => {
+    it('repulsor & cannons compute a reasonable lead reticle without aim-assisting off-center shots', () => {
+      const h = makeHarness();
+      h.combat.weapons.setVariant('ironman');
+      // Target 3° off boresight (inside HUD reticle tracking cone, NOT on the crosshair!)
+      const offCenter = makeHostile(501, new THREE.Vector3(21, 200, 400), 200);
+      offCenter.vel.set(40, 0, 0);
+      h.combat.hostiles.push(offCenter);
+
+      fly(h, 0.7, { fire: true });
+      // HUD lead reticle tracks the target and produces a finite lead ahead along vel
+      expect(h.combat.weapons.assist).toBe(offCenter);
+      const lead = h.combat.weapons.leadPoint(offCenter, new THREE.Vector3(), false);
+      expect(lead.x).toBeGreaterThan(offCenter.pos.x);
+      // Repulsor bolts fire strictly along crosshair (no aim-assist bend onto the 3° target)
+      expect(offCenter.hp).toBe(200);
+      expect(h.log.some((e) => e.kind === 'repulsorFire')).toBe(true);
+    });
+
+    it('missiles and wrist launchers lock onto 1v1 duelFoes and expose them in Combat.targets()', () => {
+      const h = makeHarness();
+      h.combat.weapons.setVariant('ironman');
+      const duelFoe = makeHostile(502, new THREE.Vector3(0, 200, 450), 500);
+      h.combat.duelFoes.push(duelFoe);
+      expect(h.combat.targets()).toContain(duelFoe);
+
+      // Hold RMB -> locks onto duelFoe cleanly and launches homing missile
+      let t = fly(h, 0.35, { missile: true });
+      expect(h.combat.weapons.locks).toContain(duelFoe);
+      t = fly(h, 0.2, { missile: false }, t);
+      expect(h.combat.missiles.live.some((m) => m.target === duelFoe)).toBe(true);
+
+      // Hold G -> wrist launcher locks onto duelFoe and fires a homing heavy launcher round
+      h.combat.missiles.clear();
+      t = fly(h, 0.45, { launcher: true }, t);
+      expect(h.combat.weapons.launcherLocks).toContain(duelFoe);
+      fly(h, 0.3, { launcher: false }, t);
+      expect(h.combat.missiles.live.some((m) => m.heavy && m.target === duelFoe)).toBe(true);
+    });
+
+    it('nerfs Unibeam and M134 in 1v1 duel (tighter M134 cone, no Unibeam auto-snap, lower duel DPS)', () => {
+      // 1. M134 drops lock on a 25° off-boresight target in 1v1 (locks in PVE, too wide in 1v1)
+      const wm = makeHarness();
+      const wideFoe = makeHostile(503, new THREE.Vector3(140, 200, 300), 500);
+      wm.combat.duelFoes.push(wideFoe);
+      let t = fly(wm, 0.4, { unibeam: true });
+      expect(wm.combat.weapons.minigunTarget).toBeNull();
+      expect(wideFoe.hp).toBe(500);
+
+      // Inside 1v1 15° cone, M134 locks but deals nerfed DUEL_MINIGUN_DMG_SCALE damage per tracer
+      const closeFoe = makeHostile(504, new THREE.Vector3(0, 200, 300), 1000);
+      wm.combat.duelFoes[0] = closeFoe;
+      t = fly(wm, 0.5, { unibeam: true }, t);
+      const dmgTaken = 1000 - closeFoe.hp;
+      expect(dmgTaken).toBeGreaterThan(0);
+      const hits = wm.log.filter((e) => e.kind === 'minigunHit' && e.value === 1).length;
+      expect(dmgTaken).toBeCloseTo(hits * MINIGUN_DAMAGE * DUEL_MINIGUN_DMG_SCALE, 1);
+
+      // 2. Iron Man Unibeam in 1v1 does not auto-snap onto an off-center duel foe and deals nerfed DPS on direct hit
+      const im = makeHarness();
+      im.combat.weapons.setVariant('ironman');
+      const offFoe = makeHostile(505, new THREE.Vector3(14, 200, 400), 1000);
+      im.combat.duelFoes.push(offFoe);
+      fly(im, 1.4, { unibeam: true });
+      expect(offFoe.hp).toBe(1000); // no auto-snap onto 2° off-axis duel opponent
+
+      const imDirect = makeHarness();
+      imDirect.combat.weapons.setVariant('ironman');
+      const onFoe = makeHostile(506, new THREE.Vector3(0, 200, 400), 1000);
+      imDirect.combat.duelFoes.push(onFoe);
+      fly(imDirect, 1.5, { unibeam: true });
+      const beamDmg = 1000 - onFoe.hp;
+      expect(beamDmg).toBeGreaterThan(20);
+      // Full un-nerfed 160 DPS over ~0.65s burn would be ~104; nerfed at 0.45× is ~45
+      expect(beamDmg).toBeLessThan(100 * DUEL_UNIBEAM_DPS_SCALE + 20);
+    });
   });
 });

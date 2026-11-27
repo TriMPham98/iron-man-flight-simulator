@@ -198,13 +198,13 @@
   font-family: Michroma, sans-serif; font-size: 10.5px; letter-spacing: 0.22em; color: rgba(232,246,255,0.78);
   border: 1px solid transparent; transition: color 0.18s, background-color 0.18s, border-color 0.18s, box-shadow 0.18s;
 }
-#flight-ui .fp-btn::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; background: var(--fc); box-shadow: 0 0 10px var(--fc); transform: scaleY(0); transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1); }
+#flight-ui .fp-btn::before { content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 2px; border-radius: 1px; background: var(--fc); opacity: 0; transition: opacity 0.16s ease; }
 #flight-ui .fp-btn small { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 0.08em; color: rgba(232,246,255,0.45); text-transform: lowercase; white-space: nowrap; }
 #flight-ui .fp-btn .val { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.14em; color: var(--fc); }
 #flight-ui .fp-btn kbd { font-family: 'JetBrains Mono', monospace; font-size: 9px; letter-spacing: 0.1em; color: rgba(var(--fc-rgb),0.7); border: 1px solid rgba(var(--fc-rgb),0.3); padding: 1px 5px; }
 #flight-ui .fp-btn:hover { color: #fff; background: rgba(var(--fc-rgb),0.06); }
 #flight-ui .fp-btn:focus-visible, #flight-ui .fp-btn.pad-focus { outline: none; color: #fff; background: rgba(var(--fc-rgb),0.1); border-color: rgba(var(--fc-rgb),0.5); box-shadow: 0 0 18px rgba(var(--fc-rgb),0.18), inset 0 0 14px rgba(var(--fc-rgb),0.08); }
-#flight-ui .fp-btn:hover::before, #flight-ui .fp-btn:focus-visible::before, #flight-ui .fp-btn.pad-focus::before, #flight-ui .fp-btn[aria-selected='true']::before { transform: scaleY(1); }
+#flight-ui .fp-btn:focus-visible::before, #flight-ui .fp-btn.pad-focus::before, #flight-ui .fp-btn[aria-selected='true']::before { opacity: 1; }
 #flight-ui .fp-btn[aria-selected='true'] { color: #fff; }
 #flight-ui .fp-btn[aria-selected='true']::after { content: '›'; font-family: 'JetBrains Mono', monospace; color: var(--fc); font-size: 14px; }
 #flight-ui .fp-btn.primary { color: #fff; border-color: rgba(var(--fc-rgb),0.35); background: linear-gradient(90deg, rgba(var(--fc-rgb),0.16), rgba(var(--fc-rgb),0.03)); }

@@ -2468,7 +2468,7 @@ export class Hud {
     const cy = this.h / 2;
     // Locks let go: they snap in again next time
     for (const id of this.lockedAt.keys()) if (!locked.has(id)) this.lockedAt.delete(id);
-    for (const h of c.hostiles) {
+    for (const h of c.targets()) {
       if (!h.alive) {
         this.seenAt.delete(h.id);
         this.zoneAt.delete(h.id);
@@ -2643,8 +2643,8 @@ export class Hud {
             const dx = lead.x - x;
             const dy = lead.y - y;
             const dl = Math.hypot(dx, dy);
-            g.strokeStyle = on ? WHITE : CYAN;
-            g.lineWidth = on ? 1.8 : 1.1;
+            g.strokeStyle = on || zt !== undefined ? WHITE : CYAN;
+            g.lineWidth = on || zt !== undefined ? 1.8 : 1.25;
             if (dl > r + 2 * s) {
               g.setLineDash([3 * s, 3 * s]);
               g.beginPath();
@@ -2656,12 +2656,10 @@ export class Hud {
             g.beginPath();
             g.arc(lead.x, lead.y, r, 0, Math.PI * 2);
             g.stroke();
-            if (on) {
-              g.fillStyle = WHITE;
-              g.beginPath();
-              g.arc(lead.x, lead.y, 1.6 * s, 0, Math.PI * 2);
-              g.fill();
-            }
+            g.fillStyle = on || zt !== undefined ? WHITE : CYAN;
+            g.beginPath();
+            g.arc(lead.x, lead.y, (on || zt !== undefined ? 1.7 : 1.1) * s, 0, Math.PI * 2);
+            g.fill();
           });
         }
       }
@@ -2708,9 +2706,9 @@ export class Hud {
         this.text(g, hot ? 'VULCAN TRACK' : 'VULCAN LOCK', x, y - r - 8 * s, 7.5 * s, hot ? WHITE : AMBER, 'center', JARVIS);
       }
     }
-    // Launcher paint: a tight amber cone
+    // Launcher paint: an amber cone matching LAUNCHER_CONE (15°)
     if (W.launcherLockProgress > 0) {
-      const r = Math.tan(THREE.MathUtils.degToRad(10)) * (this.h / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
+      const r = Math.tan(THREE.MathUtils.degToRad(15)) * (this.h / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
       this.crisp(g, () => {
         g.strokeStyle = 'rgba(255, 184, 77, 0.35)';
         g.lineWidth = 1;
@@ -3331,7 +3329,7 @@ export class Hud {
         g.closePath();
         g.stroke();
       }
-      for (const h of c.hostiles) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
+      for (const h of c.targets()) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
       for (const w of c.houseParty.wingmen) if (!w.done) plot(w.pos, CYAN, 4.5 * s);
       if (c.houseParty.hotSwapActive) plot(c.houseParty.podPos, WHITE, 5 * s);
       for (const ms of c.missiles.threats()) plot(ms.pos, WHITE, 3 * s);

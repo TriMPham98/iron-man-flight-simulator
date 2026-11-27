@@ -118,6 +118,16 @@ export const MINIGUN_LOCK_RANGE = 2200;
 export const MINIGUN_LOCK_CONE = Math.cos(THREE.MathUtils.degToRad(45));
 const MINIGUN_HEAT_TIME = 4.6;
 const MINIGUN_SPREAD = 0.0055;
+/** 1v1 duel balance overrides for auto-locking M134 & Unibeam (solo PVE unchanged). */
+export const DUEL_MINIGUN_DMG_SCALE = 0.42;
+export const DUEL_MINIGUN_HEAT_SCALE = 1.4;
+export const DUEL_MINIGUN_SPREAD_SCALE = 1.65;
+export const DUEL_MINIGUN_LOCK_RANGE = 950;
+export const DUEL_MINIGUN_LOCK_CONE = Math.cos(THREE.MathUtils.degToRad(15));
+const DUEL_MINIGUN_KEEP_CONE = Math.cos(THREE.MathUtils.degToRad(19));
+export const DUEL_UNIBEAM_DPS_SCALE = 0.45;
+export const DUEL_UNIBEAM_HEAT_SCALE = 1.5;
+export const DUEL_UNIBEAM_REACH = 950;
 /** Drawn length of one M134 tracer (m): about one round's spacing at full cadence. */
 const TRACER_REACH = MINIGUN_SPEED * MINIGUN_INTERVAL * 0.9;
 const MINIGUN_RECOIL = 0.14;
@@ -171,7 +181,7 @@ const MUZZLE_LIGHT = 40;
 const IMPACT_LIGHT = 900;
 const MISSILE_CONE = Math.cos(THREE.MathUtils.degToRad(19));
 const MISSILE_RANGE = 3200;
-const LOCK_TIME = 0.24;
+const LOCK_TIME = 0.18;
 /** Rockets per pod (one per tube; {@link MINI_ROCKETS} in all). */
 export const POD_ROUNDS = ROCKETS_PER_POD;
 const SALVO_INTERVAL = 0.1;
@@ -180,8 +190,8 @@ const ROCKET_KICK = 28;
 const ROCKET_COAST = 0.16;
 /** Forearm launchers: rounds per arm, the paint, the pace of the sequence. */
 export const LAUNCHER_PER_ARM = 2;
-const LAUNCHER_LOCK_TIME = 0.4;
-const LAUNCHER_CONE = Math.cos(THREE.MathUtils.degToRad(10));
+const LAUNCHER_LOCK_TIME = 0.22;
+const LAUNCHER_CONE = Math.cos(THREE.MathUtils.degToRad(15));
 const LAUNCHER_RANGE = 4500;
 const LAUNCHER_INTERVAL = 0.55;
 const LAUNCHER_KICK = 45;
@@ -286,9 +296,11 @@ export class PlayerWeapons {
   launcherQueue: Array<Hostile | null> = [];
   /** Arm (0 = L) the next round leaves from. */
   nextLauncher: 0 | 1 = 0;
-  /** Where the pilot's aim meets the world (m) and the assisted target. */
+  /** Where the pilot's aim meets the world (m) and the HUD-tracked target under the reticle. */
   readonly aimPoint = new THREE.Vector3();
   assist: Hostile | null = null;
+  /** Active 1v1 duel opponents (empty outside multiplayer duel). */
+  duelTargets: readonly Hostile[] = [];
   /** The suit's upgrades (shared with the combat; stock until the app hands over the live one). */
   spec: SuitSpec = STOCK_SPEC();
   /** Live Arc Reactor power manager (shared with Combat; null falls back to stock multipliers). */
@@ -396,6 +408,14 @@ export class PlayerWeapons {
         this.suit.triggerShieldFlash?.(1);
       }
     });
+  }
+
+  private get inDuel(): boolean {
+    return this.duelTargets.length > 0;
+  }
+
+  private isDuelTarget(h: Hostile | null | undefined): boolean {
+    return !!h && this.duelTargets.includes(h);
   }
 
   /** How hard a jammer has the seekers (0–1, set by the fight): painting a target takes up to four times as long. */
@@ -600,13 +620,13 @@ export class PlayerWeapons {
     if (wantMissile && !this.missileHeld) {
       this.missileHeld = true;
       this.locks = [];
-      this.lockT = 0;
+      this.lockT = LOCK_TIME * this.spec.missileLock * this.jamSlow * 0.5;
       if (this.siloOpen < 0.1) this.events.emit('siloOpen');
     }
     if (this.missileHeld) {
       this.siloHold = 0.8;
       const cap = Math.min(this.rocketCapacity, this.rockets);
-      if (this.siloOpen > 0.95) {
+      if (this.siloOpen > 0.3) {
         this.lockT += dt;
         const lockTime = LOCK_TIME * this.spec.missileLock * this.jamSlow;
         this.lockProgress = this.locks.length >= cap ? 1 : Math.min(1, this.lockT / lockTime);
@@ -704,7 +724,8 @@ export class PlayerWeapons {
         }
         if (this.minigunT <= 0) this.minigunT = interval;
         if (!overcharged) {
-          this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (MINIGUN_HEAT_TIME * this.spec.unibeamTime));
+          const heatScale = this.inDuel ? DUEL_MINIGUN_HEAT_SCALE : 1;
+          this.unibeamHeat = Math.min(1, this.unibeamHeat + (dt * heatScale) / (MINIGUN_HEAT_TIME * this.spec.unibeamTime));
           if (this.unibeamHeat >= 1) {
             this.unibeamOverheat = true;
             this.minigunFiring = false;
@@ -742,7 +763,8 @@ export class PlayerWeapons {
       this.unibeamOn = beamNow;
       if (this.unibeamOn) {
         if (!overcharged) {
-          this.unibeamHeat = Math.min(1, this.unibeamHeat + dt / (UNIBEAM_MAX * this.spec.unibeamTime));
+          const heatScale = this.inDuel ? DUEL_UNIBEAM_HEAT_SCALE : 1;
+          this.unibeamHeat = Math.min(1, this.unibeamHeat + (dt * heatScale) / (UNIBEAM_MAX * this.spec.unibeamTime));
           if (this.unibeamHeat >= 1) {
             // Overheat: the beam cuts, the chest vents, locked out until it cools
             this.unibeamOverheat = true;
@@ -921,12 +943,12 @@ export class PlayerWeapons {
       if (!this.launcherHeld) {
         this.launcherHeld = true;
         this.launcherLocks = [];
-        this.launcherLockT = 0;
+        this.launcherLockT = LAUNCHER_LOCK_TIME * this.spec.launcherLock * this.jamSlow * 0.5;
         if (this.launcherOut < 0.1) this.events.emit('weaponDeploy');
       }
       this.launcherHold = 0.6;
       const cap = this.launcherAmmo;
-      if (this.launcherOut > 0.95) {
+      if (this.launcherOut > 0.3) {
         // The next arm up rides the aim line while the lasers range
         this.launchHold[this.nextReady()] = 0.3;
         this.launcherLockT += dt;
@@ -1122,31 +1144,31 @@ export class PlayerWeapons {
   leadPoint(h: Hostile, out: THREE.Vector3, beam = this.unibeamHold > 0 || this.unibeamOn, projSpeed = this.primarySpeed): THREE.Vector3 {
     if (beam) return out.copy(h.pos).addScaledVector(h.vel, BEAM_LAG);
     const rel = this._l.copy(h.vel).sub(this.model.vel);
-    // Two rounds settle the flight time onto the moving point
+    // Settle flight time onto the moving point, capped at projectile lifetime so receding pips stay reasonable
     out.copy(h.pos);
-    for (let i = 0; i < 2; i++) {
-      const t = out.distanceTo(this.model.pos) / projSpeed;
+    for (let i = 0; i < 4; i++) {
+      const t = Math.min(2.2, out.distanceTo(this.model.pos) / projSpeed);
       out.copy(h.pos).addScaledVector(rel, t);
     }
     return out;
   }
 
   /**
-   * Aim point: the first thing along the pilot's line of sight; snaps to a
-   * target near it — near the target itself *or* its lead point, so aiming
-   * ahead of a crossing drone (what the pip asks for) keeps it — and holds
-   * on to the one it has through a wider cone.
-   * For War Machine, also continuously auto-locks the best hostile inside the
-   * M134 shoulder turret's 45° forward engagement cone.
+   * Aim point along the pilot's exact crosshair ray (zeroed in depth to a
+   * nearby reticle target so shoulder-cam parallax never pulls shots off-axis,
+   * with NO angular aim assist). Also identifies the highlighted lead-reticle
+   * target and, for War Machine, the M134 shoulder turret's auto-lock target.
    */
   private findAim(aim: THREE.Vector3, eye: THREE.Vector3, hostiles: readonly Hostile[]): void {
     let best: Hostile | null = null;
     let bestDot = Math.cos(THREE.MathUtils.degToRad(ASSIST_CONE * this.spec.assistCone));
     const keep = Math.cos(THREE.MathUtils.degToRad(ASSIST_KEEP));
 
+    const duel = this.inDuel;
     let wmBest: Hostile | null = null;
-    let wmBestScore = MINIGUN_LOCK_CONE;
-    const wmKeep = Math.cos(THREE.MathUtils.degToRad(52));
+    let wmBestScore = duel ? DUEL_MINIGUN_LOCK_CONE : MINIGUN_LOCK_CONE;
+    const wmKeep = duel ? DUEL_MINIGUN_KEEP_CONE : Math.cos(THREE.MathUtils.degToRad(52));
+    const wmRange = (duel ? DUEL_MINIGUN_LOCK_RANGE : MINIGUN_LOCK_RANGE) * this.spec.assistRange;
     const isWM = this.variant === 'warmachine';
 
     for (const h of hostiles) {
@@ -1163,12 +1185,12 @@ export class PlayerWeapons {
           best = h;
         }
       }
-      if (isWM && dist <= MINIGUN_LOCK_RANGE * this.spec.assistRange) {
+      if (isWM && dist <= wmRange) {
         const dot = d.dot(aim) / Math.max(1e-6, dist);
         if (dot > wmKeep) {
           // Prefer current lock slightly for stability, otherwise tightest angle & closer threat
           const sticky = h === this.minigunTarget ? 0.045 : 0;
-          const rangeBias = 0.03 * (1 - dist / (MINIGUN_LOCK_RANGE * this.spec.assistRange));
+          const rangeBias = 0.03 * (1 - dist / wmRange);
           const score = dot + sticky + rangeBias;
           if (score > wmBestScore) {
             wmBestScore = score;
@@ -1178,9 +1200,10 @@ export class PlayerWeapons {
       }
     }
     this.assist = best;
-    this.minigunTarget = isWM ? (best && best.alive ? best : wmBest) : null;
+    this.minigunTarget = isWM ? (wmBest ?? (best && best.alive && best.pos.distanceTo(eye) <= wmRange ? best : null)) : null;
     const hit = this.field.raycast(eye, aim, 3000);
-    this.aimPoint.copy(eye).addScaledVector(aim, hit > 0 ? hit : 1500);
+    const zeroDist = best ? THREE.MathUtils.clamp(eye.distanceTo(this.leadPoint(best, this._w)), 40, 1500) : 1500;
+    this.aimPoint.copy(eye).addScaledVector(aim, hit > 0 ? Math.min(hit, zeroDist) : zeroDist);
   }
 
   private palmWorld(side: 'L' | 'R', out: THREE.Vector3): THREE.Vector3 {
@@ -1198,10 +1221,8 @@ export class PlayerWeapons {
 
   private fireBolt(side: 'L' | 'R', aim: THREE.Vector3): void {
     const from = this.palmMuzzle(side, new THREE.Vector3());
-    let target = this.aimPoint;
-    // Lead the target (the pip on the HUD is this same point)
-    if (this.assist) target = this.leadPoint(this.assist, this._w, false);
-    const dir = target.clone().sub(from).normalize();
+    // Pure manual aim: bolts fly along the player's crosshair (no aim assist)
+    const dir = this.aimPoint.clone().sub(from).normalize();
     // Never fire backward through the suit
     if (dir.dot(aim) < 0.5) dir.copy(aim);
     const P = this.particles;
@@ -1262,9 +1283,10 @@ export class PlayerWeapons {
     if (u.lengthSq() < 1e-4) u.set(1, 0, 0);
     u.normalize();
     const w = this._l.crossVectors(dir, u);
+    const spread = MINIGUN_SPREAD * (this.inDuel ? DUEL_MINIGUN_SPREAD_SCALE : 1);
     dir
-      .addScaledVector(u, (Math.random() - 0.5) * 2 * MINIGUN_SPREAD)
-      .addScaledVector(w, (Math.random() - 0.5) * 2 * MINIGUN_SPREAD)
+      .addScaledVector(u, (Math.random() - 0.5) * 2 * spread)
+      .addScaledVector(w, (Math.random() - 0.5) * 2 * spread)
       .normalize();
 
     const P = this.particles;
@@ -1308,8 +1330,8 @@ export class PlayerWeapons {
     else this.palmWorld(side, from);
     this.cannonBarrel[i] = barrel === 0 ? 1 : 0;
 
-    const target = this.assist ? this.leadPoint(this.assist, this._w, false) : this.aimPoint;
-    const dir = target.clone().sub(from).normalize();
+    // Pure manual aim along crosshair (no aim assist on primary gauntlet cannons)
+    const dir = this.aimPoint.clone().sub(from).normalize();
     if (dir.dot(aim) < 0.5) dir.copy(aim);
     dir
       .add(this._w.set(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(2 * CANNON_SPREAD))
@@ -1396,7 +1418,7 @@ export class PlayerWeapons {
           const base = isBuster
             ? BUSTER_DAMAGE
             : isTracer
-              ? MINIGUN_DAMAGE * this.spec.repulsorDamage * this.reactorMods.unibeamDps
+              ? MINIGUN_DAMAGE * this.spec.repulsorDamage * this.reactorMods.unibeamDps * (this.isDuelTarget(h) ? DUEL_MINIGUN_DMG_SCALE : 1)
               : (isRepulsor ? REPULSOR_DAMAGE : CANNON_DAMAGE) * this.spec.repulsorDamage * this.reactorMods.repulsorDamage;
           const killed = h.damage(base * sensorBonus, hit, isRepulsor ? 'repulsor' : 'bullet');
           if (isBuster) {
@@ -1577,8 +1599,7 @@ export class PlayerWeapons {
     const pod = this.wristPod(side);
     if (pod) pod.muzzleWorld(from, this._b);
     else this.palmWorld(SIDES[side], from);
-    const mark = target ?? this.assist;
-    const goal = mark ? this.leadPoint(mark, this._w, false, BUSTER_SPEED) : this.aimPoint;
+    const goal = target ? this.leadPoint(target, this._w, false, BUSTER_SPEED) : this.aimPoint;
     const dir = goal.clone().sub(from).normalize();
     // A painted target the suit has since turned away from is out of the arm's reach
     if (dir.dot(this.aimDir) < 0.25) dir.copy(this.aimDir);
@@ -1666,13 +1687,13 @@ export class PlayerWeapons {
     const from = this.suit.boneWorldPoint('chest', REACTOR, this.beamFrom);
     const power = this.unibeamPower;
     if (power > 0) {
-      // Aim: the assisted target, else the point under the sight; the beam
-      // sweeps onto it (heavy, never twitchy)
-      const goal = (this.assist ? this.leadPoint(this.assist, this._a, true) : this._a.copy(this.aimPoint)).sub(from).normalize();
+      // Aim: the assisted target in solo, or manual aim in 1v1 duel
+      const snapTarget = this.assist && !this.isDuelTarget(this.assist) ? this.assist : null;
+      const goal = (snapTarget ? this.leadPoint(snapTarget, this._a, true) : this._a.copy(this.aimPoint)).sub(from).normalize();
       if (goal.dot(this.aimDir) < 0.6) goal.copy(this.aimDir);
       this.beamDir.lerp(goal, 1 - Math.exp(-dt / 0.07)).normalize();
       const dir = this.beamDir;
-      let reach = UNIBEAM_REACH;
+      let reach = this.inDuel ? DUEL_UNIBEAM_REACH : UNIBEAM_REACH;
       const ground = this.field.raycast(from, dir, reach);
       this.beamHitGround = ground > 0;
       if (ground > 0) reach = ground;
@@ -1683,10 +1704,13 @@ export class PlayerWeapons {
         if (!h.alive) continue;
         const d2 = segmentToCore(h, from, this.beamEnd, this._v, this._n);
         const t = this._v.distanceTo(from);
-        if (d2 < (h.radius + 1.2 + t * 0.002) ** 2) {
+        const duelFoe = this.isDuelTarget(h);
+        const hitR = duelFoe ? h.radius + 0.35 : h.radius + 1.2 + t * 0.002;
+        if (d2 < hitR * hitR) {
           const at = this._w.copy(from).addScaledVector(dir, Math.max(0, t - h.radius * 0.6));
           const sensorMult = this.sensorCritMultiplier(h);
-          if (h.damage(UNIBEAM_DPS * this.reactorMods.unibeamDps * sensorMult * dt * power, at, 'unibeam')) {
+          const duelScale = duelFoe ? DUEL_UNIBEAM_DPS_SCALE : 1;
+          if (h.damage(UNIBEAM_DPS * duelScale * this.reactorMods.unibeamDps * sensorMult * dt * power, at, 'unibeam')) {
             this.onKill(h);
             this.reactor?.feedOvercharge(0.22, 'unibeamKill', h.pos);
           }
