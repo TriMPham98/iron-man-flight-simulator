@@ -1,14 +1,14 @@
 import * as THREE from 'three';
 import type { MultiplayerSession, MultiplayerSnapshot } from '../net/multiplayer';
 import { sanitizeRoomCode } from '../net/protocol';
+import { ensureTacticalDock } from './tacticalDock';
 
 /**
  * Self-contained JARVIS Multiplayer Lobby Drawer, Top-Left Uplink Chip, and
  * Live 3D Projected Wingman / Opponent Marker Overlay.
  *
- * Follows the exact same self-contained DOM + injected CSS architecture as
- * `missionHud.ts` so it integrates cleanly with `FlightApp` without bloating
- * `hud.ts` or `screens.css`.
+ * Mounts its uplink pill and live peer chip into the shared top-left tactical
+ * dock (`tacticalDock.ts`) and matches the chamfered holographic drawer style.
  */
 
 const STYLE_ID = 'jarvis-mp-hud-styles';
@@ -31,49 +31,7 @@ const STYLES = /* css */ `
   -webkit-user-select: none;
 }
 
-.mp-top {
-  position: absolute;
-  top: 20px;
-  left: 168px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  transition: opacity 0.25s ease;
-}
-.mp-top.off { opacity: 0; pointer-events: none; }
-
-.mp-pill {
-  pointer-events: auto;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: rgba(4, 14, 24, 0.52);
-  border: 1px solid rgba(var(--mp-cyan-rgb), 0.34);
-  color: rgba(232, 246, 255, 0.88);
-  font-family: Michroma, sans-serif;
-  font-size: 9px;
-  letter-spacing: 0.24em;
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
-  transition: border-color 0.18s, background-color 0.18s, color 0.18s;
-}
-.mp-pill:hover {
-  border-color: var(--mp-cyan);
-  background: rgba(var(--mp-cyan-rgb), 0.14);
-  color: #fff;
-}
-.mp-pill kbd {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--mp-cyan);
-  border: 1px solid rgba(var(--mp-cyan-rgb), 0.4);
-  padding: 1px 5px;
-  letter-spacing: 0.04em;
-}
+/* ── Top-left Uplink Pill State & Sub-chip ── */
 .mp-dot {
   width: 6px;
   height: 6px;
@@ -87,15 +45,18 @@ const STYLES = /* css */ `
 .mp-chip-sub {
   font-size: 9px;
   letter-spacing: 0.08em;
-  padding: 4px 10px;
-  background: rgba(4, 14, 24, 0.58);
+  padding: 5px 10px;
+  background: rgba(4, 14, 24, 0.62);
   border: 1px solid rgba(var(--mp-cyan-rgb), 0.25);
   border-left: 2px solid var(--mp-green);
-  color: rgba(232, 246, 255, 0.85);
+  color: rgba(232, 246, 255, 0.88);
   backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+  transition: opacity 0.2s ease;
 }
 .mp-chip-sub.duel { border-left-color: var(--mp-red); }
 .mp-chip-sub.hidden { display: none; }
+.mp-chip-sub.off { opacity: 0; pointer-events: none; }
 
 /* ── 3D Projected Wingman / Opponent Marker ── */
 .mp-marker {
@@ -159,70 +120,121 @@ const STYLES = /* css */ `
   opacity: 1;
   transition: opacity 0.2s ease;
 }
-html.tc-touch .mp-pill,
 html.tc-touch .mp-chip-sub,
 html.tc-touch .mp-drawer {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-html.tc-touch .mp-pill { background: rgba(4, 14, 24, 0.84); }
 html.tc-touch .mp-chip-sub { background: rgba(4, 14, 24, 0.86); }
 html.tc-touch .mp-drawer { background: rgba(2, 8, 16, 0.86); }
 .mp-drawer.hidden {
   opacity: 0;
   pointer-events: none;
   visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0s linear 0.2s;
 }
 
 .mp-panel {
-  width: min(620px, 92vw);
-  max-height: 88vh;
-  overflow-y: auto;
-  background: linear-gradient(155deg, rgba(6, 20, 34, 0.94), rgba(4, 11, 20, 0.94));
-  border: 1px solid rgba(var(--mp-cyan-rgb), 0.36);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65), inset 0 0 36px rgba(var(--mp-cyan-rgb), 0.06);
-  padding: 20px 22px 18px;
+  position: relative;
+  box-sizing: border-box;
+  width: min(720px, 94vw);
+  max-height: calc(100dvh - 36px);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(var(--mp-cyan-rgb), 0.08) 0%, rgba(5, 14, 24, 0.88) 28%);
+  border: 1px solid rgba(var(--mp-cyan-rgb), 0.34);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 28px 80px rgba(0, 0, 0, 0.65), 0 0 50px rgba(var(--mp-cyan-rgb), 0.1);
+  clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 22px 100%, 0 calc(100% - 22px));
+  overflow: hidden;
 }
+.mp-corner {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 0 solid var(--mp-cyan);
+  opacity: 0.8;
+  pointer-events: none;
+}
+.mp-corner.tl { top: 6px; left: 6px; border-top-width: 1px; border-left-width: 1px; }
+.mp-corner.br { bottom: 6px; right: 6px; border-bottom-width: 1px; border-right-width: 1px; }
 
 .mp-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(var(--mp-cyan-rgb), 0.2);
+  gap: 14px;
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid rgba(var(--mp-cyan-rgb), 0.16);
+  flex: none;
+}
+.mp-body {
+  padding: 16px 24px 18px;
+  overflow-y: auto;
+  min-height: 0;
 }
 .mp-eyebrow {
   font-family: Michroma, sans-serif;
   font-size: 8.5px;
-  letter-spacing: 0.3em;
-  color: rgba(var(--mp-cyan-rgb), 0.8);
+  letter-spacing: 0.36em;
+  color: rgba(var(--mp-cyan-rgb), 0.78);
 }
 .mp-title {
   margin: 4px 0 0;
   font-family: Michroma, sans-serif;
-  font-size: 16px;
-  letter-spacing: 0.18em;
+  font-weight: 400;
+  font-size: 18px;
+  letter-spacing: 0.26em;
   color: #fff;
+  text-shadow: 0 0 18px rgba(var(--mp-cyan-rgb), 0.4);
 }
 .mp-close {
+  all: unset;
+  box-sizing: border-box;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   background: rgba(var(--mp-cyan-rgb), 0.1);
-  border: 1px solid rgba(var(--mp-cyan-rgb), 0.38);
-  color: var(--mp-cyan);
+  border: 1px solid rgba(var(--mp-cyan-rgb), 0.42);
+  color: #e8fcff;
   font-family: Michroma, sans-serif;
-  font-size: 9px;
-  letter-spacing: 0.2em;
-  padding: 6px 11px;
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  padding: 8px 14px;
+  transition: background-color 0.16s, border-color 0.16s, color 0.16s;
 }
-.mp-close:hover { background: rgba(var(--mp-cyan-rgb), 0.22); color: #fff; }
+.mp-close:hover,
+.mp-close:focus-visible {
+  outline: none;
+  background: rgba(var(--mp-cyan-rgb), 0.24);
+  border-color: var(--mp-cyan);
+  color: #fff;
+}
+.mp-close kbd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(var(--mp-cyan-rgb), 0.75);
+  border: 1px solid rgba(var(--mp-cyan-rgb), 0.35);
+  padding: 1px 5px;
+}
 
-.mp-section { margin-top: 16px; }
+.mp-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 16px;
+}
+@media (max-width: 640px) {
+  .mp-cols { grid-template-columns: 1fr; }
+  .mp-grid2 { grid-template-columns: 1fr; }
+}
+.mp-section { margin-top: 14px; }
+.mp-section:first-child { margin-top: 0; }
 .mp-label {
   font-family: Michroma, sans-serif;
   font-size: 8.5px;
-  letter-spacing: 0.24em;
-  color: rgba(var(--mp-cyan-rgb), 0.72);
+  letter-spacing: 0.28em;
+  color: rgba(var(--mp-cyan-rgb), 0.75);
   margin-bottom: 8px;
 }
 
@@ -368,7 +380,6 @@ function formatDist(m: number): string {
 
 export class MultiplayerHud {
   private readonly root: HTMLElement;
-  private readonly topEl: HTMLElement;
   private readonly pillEl: HTMLButtonElement;
   private readonly chipSubEl: HTMLElement;
   private readonly markerEl: HTMLElement;
@@ -395,13 +406,12 @@ export class MultiplayerHud {
       document.head.appendChild(style);
     }
 
+    const parent = document.getElementById('flight-ui') ?? document.body;
+    const dock = ensureTacticalDock(parent);
+
     this.root = document.createElement('div');
     this.root.className = 'mp-root';
     this.root.innerHTML = `
-      <div class="mp-top off">
-        <button type="button" class="mp-pill"><i class="mp-dot"></i><span class="mp-pill-txt">MULTIPLAYER</span><kbd>M</kbd></button>
-        <div class="mp-chip-sub hidden"></div>
-      </div>
       <div class="mp-marker hidden">
         <i class="mp-diamond"></i>
         <i class="mp-arrow"></i>
@@ -410,12 +420,13 @@ export class MultiplayerHud {
       </div>
       <div class="mp-drawer hidden" role="dialog" aria-modal="true" aria-label="Multiplayer Uplink">
         <div class="mp-panel">
+          <i class="mp-corner tl" aria-hidden="true"></i><i class="mp-corner br" aria-hidden="true"></i>
           <div class="mp-head">
             <div>
               <div class="mp-eyebrow">J.A.R.V.I.S. · TACTICAL UPLINK</div>
               <h2 class="mp-title">IRON MAN + WAR MACHINE</h2>
             </div>
-            <button type="button" class="mp-close" data-act="close">CLOSE [ESC]</button>
+            <button type="button" class="mp-close" data-act="close">CLOSE <kbd>ESC</kbd></button>
           </div>
           <div class="mp-body"></div>
         </div>
@@ -423,11 +434,18 @@ export class MultiplayerHud {
     `;
     // Inside the flight UI layer (as the missions HUD is): on the workshop
     // handoff, everything else on <body> is faded out and sits under the sim.
-    (document.getElementById('flight-ui') ?? document.body).appendChild(this.root);
+    parent.appendChild(this.root);
 
-    this.topEl = this.root.querySelector('.mp-top')!;
-    this.pillEl = this.root.querySelector('.mp-pill')!;
-    this.chipSubEl = this.root.querySelector('.mp-chip-sub')!;
+    this.pillEl = document.createElement('button');
+    this.pillEl.type = 'button';
+    this.pillEl.className = 'ftd-pill mp-pill off';
+    this.pillEl.innerHTML = `<i class="mp-dot" aria-hidden="true"></i><span class="mp-pill-txt">MULTIPLAYER</span><kbd>M</kbd>`;
+    dock.pills.appendChild(this.pillEl);
+
+    this.chipSubEl = document.createElement('div');
+    this.chipSubEl.className = 'mp-chip-sub hidden';
+    dock.stack.appendChild(this.chipSubEl);
+
     this.markerEl = this.root.querySelector('.mp-marker')!;
     this.arrowEl = this.root.querySelector('.mp-arrow')!;
     this.mLabelEl = this.root.querySelector('.mp-m-lbl')!;
@@ -577,49 +595,50 @@ export class MultiplayerHud {
 
     this.bodyEl.innerHTML = `
       <div class="mp-section">
-        <div class="mp-label">1 · SELECT ARMOUR CHASSIS (LIVE SWAP)</div>
+        <div class="mp-label">ARMOUR CHASSIS (LIVE SWAP)</div>
         <div class="mp-grid2">
           <button type="button" class="mp-choice${s.suit === 'ironman' ? ' on' : ''}" data-act="suit" data-val="ironman">
             <div class="mp-choice-title">IRON MAN · MK III</div>
-            <div class="mp-choice-sub">Gold-titanium alloy · cyan arc reactor · agile Mach 1.5 interceptor</div>
+            <div class="mp-choice-sub">Repulsors, chest unibeam, micro-missiles, agile interceptor</div>
           </button>
           <button type="button" class="mp-choice wm${s.suit === 'warmachine' ? ' on' : ''}" data-act="suit" data-val="warmachine">
             <div class="mp-choice-title">WAR MACHINE · MK II</div>
-            <div class="mp-choice-sub">Twin 20 mm gauntlet cannons · Auto-lock M134 Vulcan (Space) · Bunker-Buster AP rounds (G) · 6-tube missile pod · Flak sweep</div>
+            <div class="mp-choice-sub">Twin 20 mm cannons, M134 Vulcan, 6-tube pod, bunker-busters</div>
           </button>
         </div>
       </div>
 
-      <div class="mp-section">
-        <div class="mp-label">2 · SORTIE PROTOCOL</div>
-        <div class="mp-grid2">
-          <button type="button" class="mp-choice${s.mode === 'coop' ? ' on' : ''}" data-act="mode" data-val="coop">
-            <div class="mp-choice-title">CO-OP WINGMAN</div>
-            <div class="mp-choice-sub">Fly formation over Malibu with friendly HUD lock &amp; shared airspace</div>
-          </button>
-          <button type="button" class="mp-choice duel${s.mode === 'duel' ? ' on' : ''}" data-act="mode" data-val="duel">
-            <div class="mp-choice-title">1v1 DOGFIGHT</div>
-            <div class="mp-choice-sub">Iron Man vs. War Machine head-to-head airspace (hostile IFF markers)</div>
-          </button>
+      <div class="mp-section mp-cols">
+        <div>
+          <div class="mp-label">SORTIE PROTOCOL</div>
+          <div class="mp-grid2">
+            <button type="button" class="mp-choice${s.mode === 'coop' ? ' on' : ''}" data-act="mode" data-val="coop">
+              <div class="mp-choice-title">CO-OP</div>
+              <div class="mp-choice-sub">Friendly formation &amp; shared airspace</div>
+            </button>
+            <button type="button" class="mp-choice duel${s.mode === 'duel' ? ' on' : ''}" data-act="mode" data-val="duel">
+              <div class="mp-choice-title">1V1 DUEL</div>
+              <div class="mp-choice-sub">Head-to-head combat with hostile IFF</div>
+            </button>
+          </div>
+        </div>
+        <div>
+          <div class="mp-label">NETWORK LINK</div>
+          <div class="mp-grid2">
+            <button type="button" class="mp-choice${s.backend === 'websocket' ? ' on' : ''}" data-act="backend" data-val="websocket">
+              <div class="mp-choice-title">ONLINE (WS)</div>
+              <div class="mp-choice-sub">Relay server or <code>npm run mp:dev</code></div>
+            </button>
+            <button type="button" class="mp-choice${s.backend === 'local' ? ' on' : ''}" data-act="backend" data-val="local">
+              <div class="mp-choice-title">LOCAL 2-TAB</div>
+              <div class="mp-choice-sub">Same-browser BroadcastChannel test</div>
+            </button>
+          </div>
         </div>
       </div>
 
       <div class="mp-section">
-        <div class="mp-label">3 · NETWORK LINK</div>
-        <div class="mp-grid2">
-          <button type="button" class="mp-choice${s.backend === 'websocket' ? ' on' : ''}" data-act="backend" data-val="websocket">
-            <div class="mp-choice-title">ONLINE SERVER (WS)</div>
-            <div class="mp-choice-sub">Cloudflare Durable Object or local relay (<code>npm run mp:dev</code>)</div>
-          </button>
-          <button type="button" class="mp-choice${s.backend === 'local' ? ' on' : ''}" data-act="backend" data-val="local">
-            <div class="mp-choice-title">LOCAL 2-TAB TEST</div>
-            <div class="mp-choice-sub">Zero-server same-browser test via BroadcastChannel — works anywhere</div>
-          </button>
-        </div>
-      </div>
-
-      <div class="mp-section">
-        <div class="mp-label">4 · ROOM UPLINK</div>
+        <div class="mp-label">ROOM UPLINK</div>
         ${
           s.connected || s.status === 'connecting'
             ? `<div class="mp-row">
@@ -645,15 +664,16 @@ export class MultiplayerHud {
       </div>
 
       <div class="mp-note">
-        Sim stays live while connected. Press <strong>ESC</strong> or <strong>M</strong> to return to the stick.
-        Tip: Click <strong>HOST NEW ROOM</strong> then <strong>OPEN 2ND TAB</strong> to immediately fly Iron Man &amp; War Machine side-by-side.
+        Sim stays live while connected. Press <strong>ESC</strong> or <strong>M</strong> to return to flight, or click <strong>HOST NEW ROOM</strong> then <strong>OPEN 2ND TAB</strong> to test solo.
       </div>
     `;
   }
 
   /** Update top-left chip visibility and projected 3D marker for the remote pilot. */
   update(camera: THREE.PerspectiveCamera, localPos: THREE.Vector3, visible: boolean): void {
-    this.topEl.classList.toggle('off', !visible || this._open);
+    const show = visible && !this._open;
+    this.pillEl.classList.toggle('off', !show);
+    this.chipSubEl.classList.toggle('off', !show);
 
     const peer = this.session.peer;
     if (!visible || this._open || !peer || !peer.mesh.visible) {
@@ -706,6 +726,8 @@ export class MultiplayerHud {
     this.unsub();
     if (this.copiedTimer) clearTimeout(this.copiedTimer);
     window.removeEventListener('keydown', this.onKeyDown, true);
+    this.pillEl.remove();
+    this.chipSubEl.remove();
     this.root.remove();
   }
 }

@@ -625,22 +625,25 @@ export class Hud {
    * mean frame time and the window's worst frame. Bands go amber and red.
    */
   private drawFps(g: CanvasRenderingContext2D, s: number): void {
-    const w = 104 * s;
-    const h = 54 * s;
-    const x = this.w - 40 * s - 124 * s - 18 * s - w;
-    // (clear of the heading tape on a narrow view: tuck under it)
-    const y = this.w / 2 + 180 * s > x ? 80 * s : 22 * s;
+    const w = 98 * s;
+    const h = 46 * s;
+    const radarLeft = this.w - 40 * s - 124 * s;
+    const rightBound = radarLeft - 14 * s;
+    // Tuck below the radar tally on narrow screens so it never crowds the heading or altitude tapes
+    const narrow = this.w / 2 + 195 * s > rightBound - w;
+    const x = narrow ? this.w - 22 * s - w : rightBound - w;
+    const y = narrow ? 256 * s : 24 * s;
     this.glass(g, x, y, w, h, s, true);
-    const pad = 9 * s;
+    const pad = 8 * s;
     const fps = this.fpsShown;
     const col = fps > 0 ? fpsColor(fps) : CYAN_DIM;
-    this.text(g, 'FPS', x + pad, y + 12 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
-    this.text(g, fps > 0 ? `${Math.round(fps)}` : '--', x + w - pad - 10 * s, y + 13 * s, 15 * s, fps > 0 && fps < 30 && Math.sin(this.time * 8) > 0 ? WHITE : col, 'right');
+    this.text(g, 'FPS', x + pad, y + 11 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+    this.text(g, fps > 0 ? `${Math.round(fps)}` : '--', x + w - pad, y + 11.5 * s, 13 * s, fps > 0 && fps < 30 && Math.sin(this.time * 8) > 0 ? WHITE : col, 'right');
     // Sparkline: oldest on the left, a bar per frame, taller is slower
     const gx = x + pad;
     const gw = w - 2 * pad;
-    const gy = y + 36 * s;
-    const gh = 12 * s;
+    const gy = y + 31 * s;
+    const gh = 10 * s;
     const bw = gw / FPS_BARS;
     this.crisp(g, () => {
       g.fillStyle = CYAN_FAINT;
@@ -666,8 +669,8 @@ export class Hud {
       g.setLineDash([]);
     });
     const ms = this.msShown > 0 ? this.msShown.toFixed(1) : '--';
-    this.text(g, `${ms} MS`, gx, y + h - 8 * s, 7.5 * s, CYAN_LABEL, 'left');
-    this.text(g, `LOW ${this.lowShown > 0 ? Math.round(this.lowShown) : '--'}`, gx + gw, y + h - 8 * s, 7.5 * s, this.lowShown > 0 ? fpsColor(this.lowShown) : CYAN_DIM, 'right');
+    this.text(g, `${ms}ms`, gx, y + h - 7 * s, 7 * s, CYAN_LABEL, 'left');
+    this.text(g, `MIN ${this.lowShown > 0 ? Math.round(this.lowShown) : '--'}`, gx + gw, y + h - 7 * s, 7 * s, this.lowShown > 0 ? fpsColor(this.lowShown) : CYAN_DIM, 'right');
   }
 
   /** Runs a panel's drawing as it boots: flickering on and settling in from (dx, dy). */
@@ -792,7 +795,7 @@ export class Hud {
     const prompt = swap.inCatchRange
       ? `PRESS [P] OR [SPACE] TO HOT-SWAP · ${Math.round(swap.distance)} M`
       : `EMERGENCY CHASSIS INBOUND · ${Math.round(swap.distance)} M · ${swap.timeLeft.toFixed(1)} S`;
-    this.text(g, prompt, this.w / 2, this.h * 0.64, 11 * s, swap.inCatchRange ? WHITE : AMBER, 'center', JARVIS);
+    this.text(g, prompt, this.w / 2, this.h / 2 + 134 * s, 10.5 * s, swap.inCatchRange ? WHITE : AMBER, 'center', JARVIS);
   }
 
   /** Close-Quarters target bracket & contextual prompts (GRAPPLE / THROW / THRUSTER PUNCH). */
@@ -943,12 +946,12 @@ export class Hud {
     g.restore();
   }
 
-  /** R&D awards, stacked under the sight: each rises in, holds, and fades. */
+  /** R&D awards, stacked neatly above the arsenal panel: each rises in, holds, and fades. */
   private drawAwards(g: CanvasRenderingContext2D, s: number): void {
     const LIFE = 2.2;
     while (this.awards.length && this.time - this.awards[0].t > LIFE) this.awards.shift();
-    const x = this.w / 2;
-    let y = this.h * 0.64;
+    const x = this.w - 22 * s;
+    let y = this.h - 216 * s - this.bottomInset;
     for (let i = this.awards.length - 1; i >= 0; i--) {
       const a = this.awards[i];
       const age = this.time - a.t;
@@ -956,10 +959,11 @@ export class Hud {
       const out = age > LIFE - 0.5 ? (age - (LIFE - 0.5)) / 0.5 : 0;
       g.save();
       g.globalAlpha *= k * (1 - out);
-      this.text(g, `+${a.pts} R&D`, x - 6 * s, y + (1 - k) * 8 * s, 11 * s, AMBER, 'right');
-      this.text(g, a.why, x + 6 * s, y + (1 - k) * 8 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+      const dy = (1 - k) * 6 * s;
+      this.text(g, `+${a.pts} R&D`, x, y + dy, 10.5 * s, AMBER, 'right');
+      if (a.why) this.text(g, a.why, x - 68 * s, y + dy, 7.5 * s, CYAN_LABEL, 'right', JARVIS);
       g.restore();
-      y += 16 * s;
+      y -= 17 * s;
     }
   }
 
@@ -1393,11 +1397,12 @@ export class Hud {
   private drawSuitDiagram(g: CanvasRenderingContext2D, m: FlightModel, c: Combat, s: number): void {
     const wf = this.wireframe;
     if (!wf) return;
-    const H = 150 * s;
+    const H = 144 * s;
     const k = H / wf.height;
     const W = wf.width * k;
     const cx = 74 * s;
-    const top = this.h - 345 * s - this.bottomInset;
+    const statusTop = this.h - 142 * s - this.bottomInset;
+    const top = Math.max(150 * s, statusTop - H - 36 * s);
     const left = cx - W / 2;
     const armor = c.armor;
     const rgb = armor < 0.3 ? '255, 70, 60' : armor < 0.6 ? '255, 184, 77' : '126, 232, 255';
@@ -2007,7 +2012,7 @@ export class Hud {
     const active = this.promptState === 'active';
     const pad = this.pad;
     const cx = this.w / 2;
-    const cy = this.h / 2 + 192 * s;
+    const cy = Math.min(this.h - 92 * s - this.bottomInset, this.h / 2 + 186 * s);
     // Pops in with a little overshoot
     const pop = 1 + 0.18 * Math.exp(-this.promptT * 10) * Math.cos(this.promptT * 26);
     const padConnected = [...(navigator.getGamepads?.() ?? [])].some((p) => p && p.connected);
@@ -2083,7 +2088,7 @@ export class Hud {
     const padConnected = [...(navigator.getGamepads?.() ?? [])].some((p) => p && p.connected);
     const key = padConnected ? 'E · Ⓐ' : 'E';
     g.save();
-    g.translate(this.w / 2, this.h / 2 + 192 * s);
+    g.translate(this.w / 2, Math.min(this.h - 92 * s - this.bottomInset, this.h / 2 + 186 * s));
     g.globalAlpha = this.alpha * this.takeoffAlpha;
     g.shadowBlur = 0;
     g.font = `500 ${10 * s}px ${MONO}`;
@@ -2118,7 +2123,8 @@ export class Hud {
     g.save();
     g.globalAlpha = this.alpha * this.refitAlpha;
     g.shadowBlur = 0;
-    this.text(g, this.refitText, this.w / 2, this.h / 2 + 222 * s, 7.5 * s, AMBER, 'center', JARVIS);
+    const y = Math.min(this.h - 62 * s - this.bottomInset, this.h / 2 + 216 * s);
+    this.text(g, this.refitText, this.w / 2, y, 7.5 * s, AMBER, 'center', JARVIS);
     g.restore();
     g.globalAlpha = this.alpha;
   }
@@ -2741,9 +2747,12 @@ export class Hud {
   }
 
   private drawStatus(g: CanvasRenderingContext2D, m: FlightModel, c: Combat, s: number): void {
+    const bottomY = this.h - 28 * s - this.bottomInset;
+    const panelH = 114 * s;
+    const panelY = bottomY - panelH;
     const x = 40 * s;
-    const y = this.h - 120 * s - this.bottomInset;
-    this.glass(g, x - 18 * s, y - 22 * s, 256 * s, 112 * s, s);
+    const y = panelY + 22 * s;
+    this.glass(g, 22 * s, panelY, 248 * s, panelH, s);
     // Armour arc: a tick per tenth, what's left, and what a hit took (a
     // white ghost that hangs a beat, then drains)
     const r = 34 * s;
@@ -2870,9 +2879,14 @@ export class Hud {
       }
     });
     const cmd = m.boosting ? 'BOOST' : m.grounded ? 'GROUND' : m.flightness < 0.5 ? 'HOVER' : `CRUISE ${Math.round((m.speedCmd / CRUISE_MAX) * 100)}%`;
-    this.text(g, cmd, bx, y + 36 * s, 12 * s, m.boosting ? AMBER : WHITE);
-    this.text(g, `REACTOR ${c.lost ? 'OFFLINE' : c.down > 0 ? 'REBOOT' : c.reactor.overchargeActive ? '400%' : c.reactor.displayCode}`, bx, y + 54 * s, 9 * s, c.down > 0 ? RED : c.reactor.overchargeActive ? WHITE : CYAN_LABEL);
-    if (m.icing > 0.01) this.text(g, `ICING ${Math.round(m.icing * 100)}%`, bx, y + 70 * s, 9 * s, AMBER);
+    this.text(g, cmd, bx, y + 38 * s, 12 * s, m.boosting ? AMBER : WHITE);
+    if (c.lost || c.down > 0) {
+      this.text(g, c.lost ? 'SUIT OFFLINE' : 'POWER REBOOT', bx, y + 58 * s, 9 * s, RED);
+    } else if (m.icing > 0.01) {
+      this.text(g, `ICING ${Math.round(m.icing * 100)}%`, bx, y + 58 * s, 9 * s, AMBER);
+    } else {
+      this.text(g, m.grounded ? 'STANDING BY' : `MACH ${m.mach.toFixed(2)}`, bx, y + 58 * s, 9 * s, CYAN_LABEL);
+    }
   }
 
   /**
@@ -2883,10 +2897,10 @@ export class Hud {
   private drawReactor(g: CanvasRenderingContext2D, c: Combat, s: number): void {
     const R = c.reactor;
     const W = c.weapons;
-    const x0 = 286 * s;
-    const y0 = this.h - 142 * s - this.bottomInset;
-    const panelW = 176 * s;
-    const panelH = 112 * s;
+    const x0 = 280 * s;
+    const panelW = 178 * s;
+    const panelH = 114 * s;
+    const y0 = this.h - 28 * s - this.bottomInset - panelH;
     this.glass(g, x0, y0, panelW, panelH, s);
 
     const oc = R.overchargeActive;
@@ -2913,10 +2927,10 @@ export class Hud {
 
     const px = x0 + 10 * s;
     const rx = x0 + panelW - 10 * s;
-    this.text(g, 'POWER  [4] BAL', px, y0 + 12 * s, 7 * s, CYAN_LABEL, 'left', JARVIS);
+    this.text(g, 'REACTOR', px, y0 + 12 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
     g.save();
     g.globalAlpha *= pulse;
-    this.text(g, R.displayCode, rx, y0 + 12 * s, 10 * s, modeCol, 'right', JARVIS);
+    this.text(g, `${R.displayCode} · [4]`, rx, y0 + 12 * s, 9.5 * s, modeCol, 'right', JARVIS);
     g.restore();
 
     // 3-way live power allocation bars
@@ -2958,11 +2972,18 @@ export class Hud {
 
   private drawWeapons(g: CanvasRenderingContext2D, c: Combat, s: number): void {
     const W = c.weapons;
-    const x = this.w - 40 * s;
-    let y = this.h - 158 * s - this.bottomInset;
-    this.glass(g, x - 166 * s, y - 20 * s, 184 * s, 172 * s, s, true);
+    const panelW = 200 * s;
+    const panelH = 172 * s;
+    const bottomY = this.h - 28 * s - this.bottomInset;
+    const x0 = this.w - 22 * s - panelW;
+    const y0 = bottomY - panelH;
+    const x = this.w - 36 * s;
+    const rowLeft = x0 + 14 * s;
+    const rowW = x - rowLeft;
+    let y = y0 + 20 * s;
+    this.glass(g, x0, y0, panelW, panelH, s, true);
     // A row lights up as its state changes (`key`: what counts as a change; defaults to the value)
-    const row = (label: string, value: string, color: string, extra?: (bx: number, by: number) => void, key = value) => {
+    const row = (label: string, value: string, color: string, extra?: (bx: number, by: number, bw: number) => void, key = value) => {
       let st = this.rowState.get(label);
       if (!st) this.rowState.set(label, (st = { key, t: -99 }));
       else if (st.key !== key) {
@@ -2974,32 +2995,37 @@ export class Hud {
         g.save();
         g.shadowBlur = 0;
         g.fillStyle = `rgba(126, 232, 255, ${0.2 * flash})`;
-        g.fillRect(x - 158 * s, y - 9 * s, 166 * s, 21 * s);
+        g.fillRect(rowLeft - 6 * s, y - 9 * s, rowW + 12 * s, 21 * s);
         g.fillStyle = `rgba(235, 250, 255, ${flash})`;
-        g.fillRect(x - 158 * s, y - 9 * s, 2 * s, 21 * s);
+        g.fillRect(rowLeft - 6 * s, y - 9 * s, 2 * s, 21 * s);
         g.restore();
       }
-      this.text(g, label, x - 150 * s, y, 8 * s, CYAN_LABEL, 'left', JARVIS);
-      this.text(g, value, x, y, 11 * s, color, 'right');
-      if (extra) this.crisp(g, () => extra(x - 150 * s, y + 9 * s));
+      this.text(g, label, rowLeft, y, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+      this.text(g, value, x, y, 10.5 * s, color, 'right');
+      if (extra) this.crisp(g, () => extra(rowLeft, y + 9 * s, rowW));
       y += 26 * s;
     };
     const isWM = W.variant === 'warmachine';
     const primaryOn = isWM ? W.cannonsFiring : W.repulsorBusy;
     row(isWM ? '20MM CANNONS' : 'REPULSORS', primaryOn ? 'FIRING' : 'READY', primaryOn ? WHITE : isWM ? AMBER : CYAN);
     // Pods: Mk III 4+4 internal traps vs War Machine 6-tube left-shoulder box pod
-    row(isWM ? 'SHOULDER POD' : 'MICRO-MISSILES', `${W.rockets}/${W.rocketCapacity}`, W.rockets ? (isWM ? AMBER : CYAN) : RED, (bx, by) => {
+    row(isWM ? 'SHOULDER POD' : 'MISSILES', `${W.rockets}/${W.rocketCapacity}`, W.rockets ? (isWM ? AMBER : CYAN) : RED, (bx, by, bw) => {
       if (isWM) {
         const cap = W.rocketCapacity;
+        const step = bw / cap;
         for (let i = 0; i < cap; i++) {
           g.fillStyle = i < W.rockets ? AMBER : CYAN_FAINT;
-          g.fillRect(bx + i * 25 * s, by, 19 * s, 3 * s);
+          g.fillRect(bx + i * step, by, Math.max(4 * s, step - 6 * s), 3 * s);
         }
       } else {
+        const perPod = MINI_ROCKETS / 2;
+        const podGap = 12 * s;
+        const podW = (bw - podGap) / 2;
+        const step = podW / perPod;
         for (let p = 0; p < 2; p++) {
-          for (let i = 0; i < MINI_ROCKETS / 2; i++) {
+          for (let i = 0; i < perPod; i++) {
             g.fillStyle = i < W.pods[p] ? CYAN : CYAN_FAINT;
-            g.fillRect(bx + p * 78 * s + i * 16 * s, by, 12 * s, 3 * s);
+            g.fillRect(bx + p * (podW + podGap) + i * step, by, Math.max(4 * s, step - 4 * s), 3 * s);
           }
         }
       }
@@ -3020,29 +3046,32 @@ export class Hud {
               : W.minigunTarget ? 'LOCKED' : 'READY';
       const gunColor = over ? (blink ? RED : AMBER) : W.minigunFiring ? WHITE : W.minigunTarget ? AMBER : CYAN;
       const gunKey = over ? 'over' : W.minigunFiring ? 'fire' : W.minigunSpool > 0.05 ? 'spool' : heat > 0.02 ? 'cool' : W.minigunTarget ? 'lock' : 'ready';
-      row('VULCAN M134', gunText, gunColor, (bx, by) => {
-        this.meterBar(g, bx, by, 150 * s, 3 * s, heat, over ? RED : heat > 0.8 ? RED : heat > 0.5 ? AMBER : W.minigunFiring ? WHITE : AMBER);
+      row('VULCAN M134', gunText, gunColor, (bx, by, bw) => {
+        this.meterBar(g, bx, by, bw, 3 * s, heat, over ? RED : heat > 0.8 ? RED : heat > 0.5 ? AMBER : W.minigunFiring ? WHITE : AMBER);
         g.fillStyle = CYAN_DIM;
-        g.fillRect(bx + 150 * s * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
+        g.fillRect(bx + bw * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
       }, gunKey);
     } else {
-      const ubText = over ? 'OVERHEAT' : W.unibeamOn ? 'DISCHARGE' : W.unibeamCharge > 0 ? `CHARGING ${Math.round(W.unibeamCharge * 100)}%` : heat > 0.02 ? `COOLING ${Math.round(heat * 100)}°` : 'READY';
+      const ubText = over ? 'OVERHEAT' : W.unibeamOn ? 'DISCHARGE' : W.unibeamCharge > 0 ? `CHARGE ${Math.round(W.unibeamCharge * 100)}%` : heat > 0.02 ? `COOL ${Math.round(heat * 100)}°` : 'READY';
       const ubColor = over ? (blink ? RED : AMBER) : W.unibeamOn ? WHITE : CYAN;
       const ubKey = over ? 'over' : W.unibeamOn ? 'on' : W.unibeamCharge > 0 ? 'charge' : heat > 0.02 ? 'cool' : 'ready';
-      row('UNIBEAM', ubText, ubColor, (bx, by) => {
-        this.meterBar(g, bx, by, 150 * s, 3 * s, heat, over ? RED : heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.unibeamOn ? WHITE : CYAN);
+      row('UNIBEAM', ubText, ubColor, (bx, by, bw) => {
+        this.meterBar(g, bx, by, bw, 3 * s, heat, over ? RED : heat > 0.8 ? RED : heat > 0.55 ? AMBER : W.unibeamOn ? WHITE : CYAN);
         // Where the lockout releases
         g.fillStyle = CYAN_DIM;
-        g.fillRect(bx + 150 * s * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
+        g.fillRect(bx + bw * 0.35 - 0.5 * s, by - 2 * s, 1 * s, 7 * s);
       }, ubKey);
     }
-    row(isWM ? 'CHAFF / FLARES' : 'FLARES', `${W.flares}`, W.flareCooldown > 0 ? CYAN_DIM : CYAN);
+    row(isWM ? 'CHAFF' : 'FLARES', `${W.flares}`, W.flareCooldown > 0 ? CYAN_DIM : CYAN);
     const atBusy = W.launcherQueue.length > 0;
-    row(isWM ? 'BUNKER BUSTER' : 'AT LAUNCHERS', atBusy ? `FIRING ${W.launcherQueue.length}` : W.launcherAmmo ? `${W.launcherAmmo} RDS` : 'RELOAD', atBusy ? WHITE : W.launcherAmmo ? (isWM ? AMBER : CYAN) : RED, (bx, by) => {
+    row(isWM ? 'BUNKER BUST' : 'AT PODS', atBusy ? `FIRING ${W.launcherQueue.length}` : W.launcherAmmo ? `${W.launcherAmmo} RDS` : 'RELOAD', atBusy ? WHITE : W.launcherAmmo ? (isWM ? AMBER : CYAN) : RED, (bx, by, bw) => {
+      const podGap = 12 * s;
+      const podW = (bw - podGap) / 2;
+      const step = podW / LAUNCHER_PER_ARM;
       for (let p = 0; p < 2; p++) {
         for (let i = 0; i < LAUNCHER_PER_ARM; i++) {
           g.fillStyle = i < W.launcherRounds[p] ? AMBER : CYAN_FAINT;
-          g.fillRect(bx + p * 78 * s + i * 14 * s, by, 11 * s, 3 * s);
+          g.fillRect(bx + p * (podW + podGap) + i * step, by, Math.max(4 * s, step - 3 * s), 3 * s);
         }
       }
     });
@@ -3319,17 +3348,24 @@ export class Hud {
   }
 
   private drawLines(g: CanvasRenderingContext2D, s: number): void {
-    const x = this.w / 2;
-    // The bottom band taken (touch controls): JARVIS speaks under the heading tape instead
     const top = this.bottomInset > 0;
     const size = 12 * s;
     const lh = 17 * s;
     const gap = 9 * s;
-    // Wrapped to the gap between the status and weapons panels, so a long line
-    // neither runs under them nor off the screen
-    const maxW = Math.max(160 * s, Math.min(620 * s, this.w - 2 * 300 * s));
+    // Keep JARVIS subtitles inside the open center channel between Reactor (left) and Weapons (right),
+    // or lift cleanly above them when the viewport is too narrow.
+    const leftBound = 474 * s;
+    const rightBound = this.w - 238 * s;
+    const openChannel = rightBound - leftBound;
+    const narrowDesktop = !top && openChannel < 260 * s;
+    const x = top || narrowDesktop ? this.w / 2 : (leftBound + rightBound) / 2;
+    const maxW = top
+      ? Math.max(180 * s, Math.min(520 * s, this.w - 300 * s))
+      : narrowDesktop
+        ? Math.max(180 * s, Math.min(520 * s, this.w - 88 * s))
+        : Math.min(580 * s, openChannel - 28 * s);
     g.font = `500 ${size}px ${MONO}`;
-    let y = top ? 80 * s + 24 : this.h - 70 * s;
+    let y = top ? 104 * s : narrowDesktop ? this.h - 216 * s : this.h - 46 * s;
     let rowsLeft = 6;
     for (let i = this.lines.length - 1; i >= 0 && rowsLeft > 0; i--) {
       const l = this.lines[i];

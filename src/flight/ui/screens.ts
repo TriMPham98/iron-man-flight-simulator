@@ -22,7 +22,7 @@ type Row = [key: string, action: string];
  * The controls reference. GROUND = on foot (the movement keys walk; E
  * takes off and they fly), FLIGHT = in the air, ANY TIME = both.
  */
-export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
+export const CONTROLS: { ground: Row[]; flight: Row[]; combat: Row[]; always: Row[] } = {
   ground: [
     ['MOUSE', 'look · turn'],
     ['W A S D', 'walk · sidestep'],
@@ -37,14 +37,16 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; always: Row[] } = {
     ['SHIFT', 'boost'],
     ['X', 'brake (palm jets)'],
     ['2× A / D', 'lateral strafe burst'],
+  ],
+  combat: [
+    ['LMB', 'repulsors / cannons'],
+    ['RMB', 'paint · fire rockets'],
+    ['SPACE', 'unibeam / Vulcan'],
+    ['C', 'wrist laser / flak sweep'],
+    ['F', 'flares / chaff'],
+    ['G', 'forearm launchers'],
     ['T', 'grapple / throw'],
     ['H', 'thruster punch'],
-    ['LMB', 'repulsors'],
-    ['RMB', 'paint · fire rockets'],
-    ['SPACE', 'unibeam'],
-    ['C', 'wrist laser / flak sweep'],
-    ['F', 'flares'],
-    ['G', 'forearm launchers'],
     ['1–4 / B', 'reactor power / overcharge'],
   ],
   always: [
@@ -211,9 +213,10 @@ export class Screens {
                 <div class="fp-field toggle"><span class="lbl" id="fp-lh-l">LEFT-HANDED</span>
                   <button class="fp-switch" role="switch" aria-labelledby="fp-lh-l" data-k="leftHanded"></button></div>`;
     const keyRef = `
-                  <section><div class="fp-h">GROUND</div><div class="fp-rows" data-rows="ground">${rows(CONTROLS.ground)}</div></section>
-                  <section><div class="fp-h">FLIGHT</div><div class="fp-rows" data-rows="flight">${rows(CONTROLS.flight)}</div></section>
-                  <section class="wide"><div class="fp-h">ANY TIME</div><div class="fp-rows" data-rows="always">${rows(CONTROLS.always)}</div></section>`;
+                  <section><div class="fp-h">GROUND</div><div class="fp-rows" data-rows="ground">${rows(CONTROLS.ground)}</div>
+                    <div class="fp-h" style="margin-top:4px">SYSTEMS</div><div class="fp-rows" data-rows="always">${rows(CONTROLS.always)}</div></section>
+                  <section><div class="fp-h">FLIGHT</div><div class="fp-rows" data-rows="flight">${rows(CONTROLS.flight)}</div>
+                    <div class="fp-h" style="margin-top:4px">COMBAT &amp; REACTOR</div><div class="fp-rows" data-rows="combat">${rows(CONTROLS.combat)}</div></section>`;
     const touchRef = `
                   <section class="wide"><div class="fp-h">TOUCH</div><div class="fp-rows" data-rows="touch">${rows(TOUCH_ROWS)}</div></section>`;
     // The title carries only what gets the suit off the pad; the full

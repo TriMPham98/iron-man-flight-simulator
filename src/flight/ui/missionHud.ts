@@ -1,17 +1,14 @@
 import * as THREE from 'three';
 import type { MissionManager } from '../missions/missionManager';
 import type { MissionDefinition, MissionId, MissionTelemetry, MissionTone, WaypointMarker } from '../missions/types';
+import { ensureTacticalDock } from './tacticalDock';
 
 /**
  * JARVIS Mission Selector Drawer, Live Objective HUD & Projected 3D Waypoints.
  *
- * Completely self-contained (DOM + injected CSS) so it integrates with
- * FlightApp with zero edits to hud.ts or screens.css.
- *  - Toggle the Mission Selector drawer with `KeyJ` or the on-screen button /
- *    pause-menu MISSIONS entry.
- *  - While a mission is active, renders an unobtrusive top-left JARVIS card
- *    (objective, progress, timer, stealth / grapple meter, warnings) plus
- *    screen-projected 3D waypoint markers and off-screen edge arrows.
+ * Mounts its launcher pill and live objective card into the shared top-left
+ * tactical dock (`tacticalDock.ts`) so it never overlaps multiplayer or touch
+ * controls, while keeping waypoints and the selector drawer self-contained.
  */
 
 const STYLE_ID = 'jarvis-mission-hud-styles';
@@ -35,51 +32,7 @@ const STYLES = /* css */ `
 }
 .mh-root.mh-hidden { opacity: 0; visibility: hidden; transition: opacity 0.28s ease; }
 
-/* ── Top-left Objective HUD & Launcher Chip ── */
-.mh-hud {
-  position: absolute;
-  top: 20px;
-  left: 22px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  max-width: min(340px, 44vw);
-  transition: opacity 0.25s ease;
-}
-.mh-hud.off { opacity: 0; pointer-events: none; }
-
-.mh-pill {
-  pointer-events: auto;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  background: rgba(4, 14, 24, 0.52);
-  border: 1px solid rgba(var(--mh-cyan-rgb), 0.34);
-  color: rgba(232, 246, 255, 0.88);
-  font-family: Michroma, sans-serif;
-  font-size: 9px;
-  letter-spacing: 0.26em;
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
-  transition: border-color 0.18s, background-color 0.18s, color 0.18s;
-}
-.mh-pill:hover {
-  border-color: var(--mh-cyan);
-  background: rgba(var(--mh-cyan-rgb), 0.14);
-  color: #fff;
-}
-.mh-pill kbd {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--mh-cyan);
-  border: 1px solid rgba(var(--mh-cyan-rgb), 0.4);
-  padding: 1px 5px;
-  letter-spacing: 0.04em;
-}
+/* ── Top-left Objective Card & Pill State ── */
 .mh-pill-dot {
   width: 6px;
   height: 6px;
@@ -90,16 +43,18 @@ const STYLES = /* css */ `
 .mh-pill.active .mh-pill-dot { background: var(--mh-amber); box-shadow: 0 0 8px var(--mh-amber); }
 
 .mh-card {
-  width: 100%;
+  width: min(330px, 44vw);
   padding: 11px 14px 12px;
-  background: linear-gradient(135deg, rgba(4, 16, 28, 0.72), rgba(4, 12, 22, 0.56));
+  background: linear-gradient(135deg, rgba(4, 16, 28, 0.74), rgba(4, 12, 22, 0.58));
   border: 1px solid rgba(var(--mh-cyan-rgb), 0.34);
   border-left: 2px solid var(--mh-cyan);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 0 24px rgba(var(--mh-cyan-rgb), 0.06);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  transition: opacity 0.2s ease;
 }
 .mh-card.hidden { display: none; }
+.mh-card.off { opacity: 0; pointer-events: none; }
 .mh-card.victory { border-left-color: var(--mh-green); border-color: rgba(100, 245, 168, 0.45); }
 .mh-card.failed { border-left-color: var(--mh-red); border-color: rgba(255, 98, 86, 0.48); }
 
@@ -289,13 +244,11 @@ const STYLES = /* css */ `
   -webkit-backdrop-filter: blur(7px);
   cursor: pointer;
 }
-html.tc-touch .mh-pill,
 html.tc-touch .mh-card,
 html.tc-touch .mh-scrim {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
-html.tc-touch .mh-pill { background: rgba(4, 14, 24, 0.84); }
 html.tc-touch .mh-card { background: linear-gradient(135deg, rgba(4, 16, 28, 0.88), rgba(4, 12, 22, 0.82)); }
 html.tc-touch .mh-scrim { background: radial-gradient(ellipse at 50% 45%, rgba(4, 14, 24, 0.72), rgba(2, 6, 12, 0.92)); }
 .mh-drawer {
@@ -304,11 +257,29 @@ html.tc-touch .mh-scrim { background: radial-gradient(ellipse at 50% 45%, rgba(4
   max-height: calc(100dvh - 36px);
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, rgba(var(--mh-cyan-rgb), 0.08) 0%, rgba(5, 14, 24, 0.88) 28%);
-  border: 1px solid rgba(var(--mh-cyan-rgb), 0.34);
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.65), 0 0 50px rgba(var(--mh-cyan-rgb), 0.1);
-  clip-path: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 20px 100%, 0 calc(100% - 20px));
+  background: linear-gradient(180deg, rgba(var(--mh-cyan-rgb), 0.08) 0%, rgba(5, 14, 24, 0.86) 28%);
+  border: 1px solid rgba(var(--mh-cyan-rgb), 0.32);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 28px 80px rgba(0, 0, 0, 0.65), 0 0 50px rgba(var(--mh-cyan-rgb), 0.1);
+  clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 22px 100%, 0 calc(100% - 22px));
   overflow: hidden;
+}
+.mh-corner {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 0 solid var(--mh-cyan);
+  opacity: 0.8;
+  pointer-events: none;
+}
+.mh-corner.tl { top: 6px; left: 6px; border-top-width: 1px; border-left-width: 1px; }
+.mh-corner.br { bottom: 6px; right: 6px; border-bottom-width: 1px; border-right-width: 1px; }
+.mh-btn kbd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(var(--mh-cyan-rgb), 0.75);
+  border: 1px solid rgba(var(--mh-cyan-rgb), 0.35);
+  padding: 1px 5px;
 }
 .mh-d-head {
   display: flex;
@@ -502,7 +473,6 @@ export interface MissionHudOptions {
 
 export class MissionHud {
   readonly root: HTMLElement;
-  private readonly hudEl: HTMLElement;
   private readonly pillEl: HTMLButtonElement;
   private readonly cardEl: HTMLElement;
   private readonly waypointsEl: HTMLElement;
@@ -522,21 +492,15 @@ export class MissionHud {
   ) {
     injectStyles();
     const parent = opts.parent ?? document.getElementById('flight-ui') ?? document.body;
+    const dock = ensureTacticalDock(parent);
     this.root = document.createElement('div');
     this.root.className = 'mh-root';
     this.root.innerHTML = `
       <div class="mh-waypoints" aria-hidden="true"></div>
-      <div class="mh-hud off">
-        <button type="button" class="mh-pill" data-open-missions>
-          <i class="mh-pill-dot" aria-hidden="true"></i>
-          <span>MISSIONS</span>
-          <kbd>J</kbd>
-        </button>
-        <div class="mh-card hidden" role="status" aria-live="polite"></div>
-      </div>
       <div class="mh-drawer-wrap hidden" role="dialog" aria-modal="true" aria-label="J.A.R.V.I.S. Mission Selector">
         <div class="mh-scrim" data-close-drawer></div>
         <div class="mh-drawer">
+          <i class="mh-corner tl" aria-hidden="true"></i><i class="mh-corner br" aria-hidden="true"></i>
           <header class="mh-d-head">
             <div>
               <div class="mh-d-eyebrow">J.A.R.V.I.S. · TACTICAL OPERATIONS</div>
@@ -558,10 +522,20 @@ export class MissionHud {
     `;
     parent.appendChild(this.root);
 
+    this.pillEl = document.createElement('button');
+    this.pillEl.type = 'button';
+    this.pillEl.className = 'ftd-pill mh-pill off';
+    this.pillEl.setAttribute('data-open-missions', '');
+    this.pillEl.innerHTML = `<i class="mh-pill-dot" aria-hidden="true"></i><span>MISSIONS</span><kbd>J</kbd>`;
+    dock.pills.appendChild(this.pillEl);
+
+    this.cardEl = document.createElement('div');
+    this.cardEl.className = 'mh-card hidden';
+    this.cardEl.setAttribute('role', 'status');
+    this.cardEl.setAttribute('aria-live', 'polite');
+    dock.stack.appendChild(this.cardEl);
+
     this.waypointsEl = this.root.querySelector('.mh-waypoints')!;
-    this.hudEl = this.root.querySelector('.mh-hud')!;
-    this.pillEl = this.root.querySelector('[data-open-missions]')!;
-    this.cardEl = this.root.querySelector('.mh-card')!;
     this.drawerWrap = this.root.querySelector('.mh-drawer-wrap')!;
     this.listEl = this.root.querySelector('.mh-d-list')!;
     this.abortBtn = this.root.querySelector('[data-abort-mission]')!;
@@ -612,9 +586,11 @@ export class MissionHud {
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
       this.selectedIndex = (this.selectedIndex + 1) % defs.length;
       this.renderDrawer();
+      this.listEl.querySelector('.mh-item.selected')?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
       this.selectedIndex = (this.selectedIndex - 1 + defs.length) % defs.length;
       this.renderDrawer();
+      this.listEl.querySelector('.mh-item.selected')?.scrollIntoView({ block: 'nearest' });
     } else if (e.key === 'Enter' || e.key === ' ') {
       const def = defs[this.selectedIndex];
       if (def) this.opts.onLaunch(def.id);
@@ -667,8 +643,10 @@ export class MissionHud {
     telemetry: MissionTelemetry | null,
     visible: boolean,
   ): void {
-    this.hudEl.classList.toggle('off', !visible || this._open);
+    const show = visible && !this._open;
+    this.pillEl.classList.toggle('off', !show);
     this.pillEl.classList.toggle('active', this.manager.activeId !== null);
+    this.cardEl.classList.toggle('off', !show);
 
     if (!visible || !telemetry) {
       this.cardEl.classList.add('hidden');
@@ -807,6 +785,8 @@ export class MissionHud {
 
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown, true);
+    this.pillEl.remove();
+    this.cardEl.remove();
     this.root.remove();
   }
 }
