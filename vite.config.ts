@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   server: {
     port: 5173,
+    host: true, // expose on the LAN so a second player can join the local relay
     open: false,
   },
   build: {

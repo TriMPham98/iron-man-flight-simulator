@@ -56,6 +56,10 @@ export function resolveServerBaseUrl(override?: string): string | null {
     if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
       return 'ws://localhost:8787';
     }
+    // Page served over the LAN (e.g. a friend opening http://10.0.0.x:5173): the dev relay runs on the same machine.
+    if (/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || host.endsWith('.local')) {
+      return `ws://${host}:8787`;
+    }
   }
   return null;
 }
@@ -140,7 +144,9 @@ export class WebSocketTransport implements NetTransport {
       if (this.ws !== ws) return;
       this.stopPing();
       this.ws = null;
-      if (this.status !== 'disconnected') {
+      // Keep the actionable 'error' detail (e.g. "RUN npm run mp:dev") instead of
+      // overwriting it with a generic LINK LOST (1006) when the failed socket closes.
+      if (this.status !== 'disconnected' && this.status !== 'error') {
         const reason = ev.code === 1000 ? 'DISCONNECTED' : `LINK LOST (${ev.code})`;
         this.setStatus('disconnected', reason);
       }
