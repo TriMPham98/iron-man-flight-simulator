@@ -13,6 +13,7 @@ import {
   type ServerControlMessage,
   type SuitNetState,
 } from './protocol';
+import { RemotePilot } from './remotePilot';
 import { RemoteSuit } from './remoteSuit';
 import { buildWarMachinePack } from './suitVisuals';
 import { MultiplayerSession } from './multiplayer';
@@ -408,5 +409,52 @@ describe('MultiplayerSession 2-Player End-to-End Sync', () => {
     expect((hostGame.combat as unknown as { wavesEnabled: boolean }).wavesEnabled).toBe(true);
     host.dispose();
     guest.dispose();
+  });
+  it("warns of the other pilot's missile lock and seekers in a duel, and flares pull them off", () => {
+    const game = makeStubGame(new THREE.Vector3(0, 120, 0));
+    const events = game.events as EventBus;
+    const decoyed = vi.fn();
+    events.on((e) => e.kind === 'missileDecoyed' && decoyed());
+    const c = game.combat as unknown as Record<string, unknown> & { weapons: { onFlare: ((f: unknown) => void) | null } };
+    Object.assign(c, { netThreats: [], netTrackers: [], missiles: { offerHostileDecoy: vi.fn() } });
+    c.weapons.onFlare = null;
+    const session = new MultiplayerSession(game, {}, () => new MemoryRelay().createTransport());
+    const S = session as unknown as { duelSelf: { pos: THREE.Vector3 }; inDuel: boolean; updateDuelWarnings(): void };
+    const peer = Object.create(RemotePilot.prototype) as RemotePilot;
+    const live: { target: unknown; decoyed: boolean; pos: THREE.Vector3 }[] = [];
+    const W = { locks: [] as unknown[], launcherLocks: [], launcherQueue: [], onFlare: null, duelTargets: [] };
+    Object.assign(peer, { weapons: W, missiles: { live } });
+    Object.defineProperty(peer, 'pos', { value: new THREE.Vector3(0, 120, 800) });
+    session.peer = peer;
+
+    // Co-op: nothing warns, nothing is hooked
+    S.updateDuelWarnings();
+    expect(c.netTrackers).toEqual([]);
+    expect(c.weapons.onFlare).toBeNull();
+
+    // Duel: their paint on this suit is a lock warning, their seeker a threat
+    S.inDuel = true;
+    W.locks.push(S.duelSelf);
+    S.updateDuelWarnings();
+    expect(c.netTrackers).toEqual([peer.pos]);
+    expect(W.duelTargets).toEqual([S.duelSelf]);
+    W.locks.length = 0;
+    const seeker = { target: S.duelSelf, decoyed: false, pos: new THREE.Vector3(0, 120, 300) };
+    live.push(seeker);
+    S.updateDuelWarnings();
+    expect(c.netTrackers).toEqual([]);
+    expect(c.netThreats).toEqual([seeker]);
+
+    // A flare here pulls their seeker off, and ours is offered to the seekers on them
+    const flare = { pos: new THREE.Vector3() };
+    c.weapons.onFlare!(flare);
+    expect(seeker.target).toBe(flare);
+    expect(decoyed).toHaveBeenCalledTimes(1);
+    S.updateDuelWarnings();
+    expect(c.netThreats).toEqual([]);
+    (W.onFlare as unknown as (f: unknown) => void)(flare);
+    expect((c.missiles as { offerHostileDecoy: ReturnType<typeof vi.fn> }).offerHostileDecoy).toHaveBeenCalledWith(flare, peer.pos, expect.anything(), 1);
+    session.peer = null;
+    session.dispose();
   });
 });

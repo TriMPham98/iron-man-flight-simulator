@@ -1781,6 +1781,7 @@ export class PlayerWeapons {
     const f: Flare = { pos: at, heat: 0, v, age: 0, life: 3.6 + Math.random(), sprite, laid: 0, puffT: 0, lit: false, glow: 0, sputter: 1, seed: Math.random() * 100 };
     this.flareList.push(f);
     this.missiles.offerDecoy(f, this.model.pos);
+    this.onFlare?.(f);
     // The charge that throws it: a spit of flame and a puff of gas out of the port
     const P = this.particles;
     const gas = this._n.copy(this.model.vel).addScaledVector(dir, 4);
@@ -2053,6 +2054,9 @@ export class PlayerWeapons {
       }
     }
   }
+
+  /** Each flare as it leaves the port (multiplayer duel: offered to the other pilot's seekers). */
+  onFlare: ((f: Decoy) => void) | null = null;
 
   /** Enemy-facing flares (for missiles to chase). */
   get decoys(): readonly Decoy[] {

@@ -1085,7 +1085,7 @@ export class Soundscape {
     // seeker is coming from, quickening as it closes — half a second apart
     // at five seconds out, six a second in the last one
     let tgo = Infinity;
-    for (const t of combat.missiles.threats()) {
+    for (const t of combat.threats()) {
       const r = this._r.copy(t.pos).sub(m.pos);
       const d = r.length();
       const closing = -r.dot(this._c.copy(t.vel).sub(m.vel)) / Math.max(d, 1e-3);

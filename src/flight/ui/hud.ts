@@ -3332,7 +3332,7 @@ export class Hud {
       for (const h of c.targets()) if (h.alive) plot(h.pos, isAircraft(h.kind) ? RED : AMBER, (h.kind === 'bomber' ? 6 : 4) * s, !isAircraft(h.kind));
       for (const w of c.houseParty.wingmen) if (!w.done) plot(w.pos, CYAN, 4.5 * s);
       if (c.houseParty.hotSwapActive) plot(c.houseParty.podPos, WHITE, 5 * s);
-      for (const ms of c.missiles.threats()) plot(ms.pos, WHITE, 3 * s);
+      for (const ms of c.threats()) plot(ms.pos, WHITE, 3 * s);
       for (const ms of c.missiles.strikes()) plot(ms.pos, AMBER, 2.5 * s);
       g.fillStyle = WHITE;
       g.beginPath();
@@ -3400,7 +3400,7 @@ export class Hud {
     const cy = this.h / 2;
     const blink = Math.sin(this.time * 14) > 0;
     // Incoming seekers: a chevron toward each and a flashing callout
-    const threats = c.missiles.threats();
+    const threats = c.threats();
     // The nearest seeker's time to impact: the ring round the sight closes with it
     let tti = Infinity;
     for (const t of threats) {
@@ -3461,6 +3461,8 @@ export class Hud {
       g.restore();
     }
     if (!threats.length && this.decoyFlash <= 0) this.threatR = 0;
+    // The other pilot has this suit painted: nothing in the air yet
+    if (!threats.length && c.netTrackers.length && blink) this.text(g, 'MISSILE LOCK', cx, cy + 88 * s, 16 * s, RED, 'center', JARVIS);
     // The house being shelled: a callout and an amber caret toward each launcher doing it
     if (c.houseUnderFire) {
       if (blink) this.text(g, 'HOUSE UNDER FIRE', cx, cy - 88 * s, 13 * s, AMBER, 'center', JARVIS);

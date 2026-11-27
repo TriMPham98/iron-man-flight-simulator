@@ -140,6 +140,14 @@ export class Combat {
    */
   readonly duelFoes: Hostile[] = [];
   private readonly _targets: Hostile[] = [];
+  /**
+   * Multiplayer duel: the other pilot's seekers on this suit and where their
+   * fire control has it painted from (set each frame by the session), so the
+   * warnings read the same as an enemy's.
+   */
+  readonly netThreats: Missile[] = [];
+  readonly netTrackers: THREE.Vector3[] = [];
+  private readonly _threats: Missile[] = [];
   /** Armour 0–1. */
   armor = 1;
   /** Seconds since the last hit. */
@@ -457,6 +465,16 @@ export class Combat {
       this.events.emit('waveStart', { value: wave + 1 });
       this.events.emit('jarvis', { text: waveAt(wave).line });
     }
+  }
+
+  /** Seekers chasing this pilot: the enemies', and in a duel the other pilot's. */
+  threats(): readonly Missile[] {
+    const own = this.missiles.threats();
+    if (!this.netThreats.length) return own;
+    const t = this._threats;
+    t.length = 0;
+    t.push(...own, ...this.netThreats);
+    return t;
   }
 
   /** What this pilot's weapons and HUD target: the enemies, and in a duel the other pilot. */
@@ -782,7 +800,7 @@ export class Combat {
 
   /** Enemy seekers on the suit right now. */
   get incoming(): number {
-    return this.missiles.threats().length;
+    return this.threats().length;
   }
 
   /** Where whatever is going for the house is: launchers laid on it, bombers running in, the dreadnought's cannon. */
@@ -1029,5 +1047,6 @@ export class Combat {
     for (const f of this.ships) if (!f.sinking) yield* f.trackers();
     if (this.boss && !this.boss.falling) yield* this.boss.trackers();
     if (this.rival && this.rival.alive && (this.rival.chargingBeam || this.rival.firingBeam)) yield this.rival.pos;
+    yield* this.netTrackers;
   }
 }

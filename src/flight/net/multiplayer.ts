@@ -139,6 +139,9 @@ export class MultiplayerSession {
   private localPack: WarMachinePack | null = null;
   /** The wingman as this pilot's weapons see them in a duel (its hits go to them). */
   private readonly duelFoe: Hostile;
+  /** This pilot as the wingman's mirrored weapons see them in a duel: what their seekers paint and chase here. */
+  private readonly duelSelf: Hostile;
+  private readonly duelSelfList: Hostile[];
   /** Duel damage dealt since the last batch, and where the last of it landed. */
   private hitAmount = 0;
   private hitKind: DamageKind = 'repulsor';
@@ -212,6 +215,34 @@ export class MultiplayerSession {
         return false;
       },
     };
+    // Never scored here (their sim lands their hits), only painted and chased
+    this.duelSelf = {
+      id: -7002,
+      kind: 'rival',
+      get pos() {
+        return game.model.pos;
+      },
+      get vel() {
+        return game.model.vel;
+      },
+      radius: DUEL_RADIUS,
+      maxHp: 100,
+      get hp() {
+        return (game.combat?.armor ?? 1) * 100;
+      },
+      set hp(_v: number) {
+        /* ours to keep */
+      },
+      get alive() {
+        return !(game.combat?.down > 0);
+      },
+      set alive(_v: boolean) {
+        /* ours to keep */
+      },
+      threatened: 0,
+      damage: () => false,
+    };
+    this.duelSelfList = [this.duelSelf];
     this.makeTransport =
       transportFactory ?? ((b) => (b === 'local' ? new BroadcastChannelTransport() : new WebSocketTransport()));
     // Default to WebSocket if a server is configured (or localhost), otherwise local 2-tab preview
@@ -433,10 +464,42 @@ export class MultiplayerSession {
 
     // Fly the wingman (the full suit runs its weapons against this sim's enemies, for show)
     if (this.peer instanceof RemotePilot) {
-      this.peer.update(dt, this.game.combat.hostiles);
+      this.peer.update(dt, this.inDuel ? this.duelSelfList : this.game.combat.hostiles);
     } else if (this.peer) {
       this.peer.update(dt, this.game.ground, this.game.particles);
     }
+    this.updateDuelWarnings();
+  }
+
+  /**
+   * Duel: the wingman's mirrored weapons paint and chase this pilot here as
+   * they do in their own sim, so their locks and seekers warn as an enemy's
+   * would; flares go out to the seekers on both sides.
+   */
+  private updateDuelWarnings(): void {
+    const c = this.game.combat;
+    if (!c?.netThreats) return;
+    c.netThreats.length = 0;
+    c.netTrackers.length = 0;
+    const peer = this.peer instanceof RemotePilot ? this.peer : null;
+    const on = this.inDuel && !!peer;
+    // (their weapons run with the duel's tuning, as they do in their own sim)
+    if (peer) peer.weapons.duelTargets = on ? this.duelSelfList : [];
+    if (peer) peer.weapons.onFlare = on ? (f) => c.missiles.offerHostileDecoy(f, peer.pos, this.duelFoe, 1) : null;
+    c.weapons.onFlare = on
+      ? (f) => {
+          for (const m of peer!.missiles.live) {
+            if (m.target !== this.duelSelf || m.decoyed || m.pos.distanceTo(this.game.model.pos) > 1100) continue;
+            m.target = f;
+            m.decoyed = true;
+            this.game.events.emit('missileDecoyed', { at: m.pos });
+          }
+        }
+      : null;
+    if (!on || !this.duelSelf.alive) return;
+    for (const m of peer.missiles.live) if (m.target === this.duelSelf && !m.decoyed) c.netThreats.push(m);
+    const W = peer.weapons;
+    if (W.locks.includes(this.duelSelf) || W.launcherLocks.includes(this.duelSelf) || W.launcherQueue.includes(this.duelSelf)) c.netTrackers.push(peer.pos);
   }
 
   /** Duel: the other pilot in this pilot's sights, and the hits on them sent over in batches. */
