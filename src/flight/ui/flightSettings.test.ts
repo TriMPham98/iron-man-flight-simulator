@@ -49,6 +49,7 @@ describe('bindFlightSettings mobile/tablet & desktop behavior', () => {
       touchOpacity: 0.75,
       leftHanded: false,
       showFps: true,
+      uiScale: 1,
     };
     const calls = {
       detail: [] as Array<{ reach: number; aniso: number }>,

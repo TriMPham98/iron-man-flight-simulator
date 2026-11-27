@@ -3,6 +3,7 @@ import type { Suit } from '../../suit/Suit';
 import { Jets } from '../fx/jets';
 import type { Particles } from '../fx/particles';
 import { ReactorVentFx } from '../fx/reactorVent';
+import { SonicBoomFx } from '../fx/sonicBoom';
 import type { Streaks } from '../fx/streaks';
 import { patchLogDepth } from '../render/depth';
 import { hazeAll } from '../render/haze';
@@ -78,6 +79,8 @@ export class RemotePilot {
   flags = 0;
 
   private readonly vent = new ReactorVentFx();
+  /** Their vapour cone through the transonic band (the boom is the soundscape's, as the cone sweeps the ear). */
+  private readonly sonic: SonicBoomFx;
   private readonly ring: PilotNetState[] = [];
   /** Local clock minus sender clock, tracked at its floor (the least-delayed packet). */
   private offset = Infinity;
@@ -124,7 +127,8 @@ export class RemotePilot {
     this.model.reactor = this.reactor.modifiers;
 
     this.mesh.name = 'remote-pilot';
-    this.mesh.add(suit.group, this.jets.group, this.weapons.group, this.missiles.group);
+    this.sonic = new SonicBoomFx(deps.hazeUniforms);
+    this.mesh.add(suit.group, this.jets.group, this.weapons.group, this.missiles.group, this.sonic.group);
     patchLogDepth(suit.group);
     hazeAll(suit.group, deps.hazeUniforms);
     suit.forEachMesh((m) => {
@@ -300,6 +304,7 @@ export class RemotePilot {
       m.vel,
     );
     this.vent.update(dt, this.suit, this.deps.particles, m.vel);
+    this.sonic.update(dt, m.pos, m.vel, this.mach, m.grounded ? 0 : 1);
     cosmetic(() => this.missiles.update(dt, hostiles, NO_PLAYER));
   }
 

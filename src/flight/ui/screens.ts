@@ -32,8 +32,8 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; combat: Row[]; always: Ro
     ['MOUSE', 'aim / steer'],
     ['W / S', 'throttle'],
     ['A / D', 'roll · strafe'],
-    ['E', 'climb'],
-    ['Q', 'drop (free fall)'],
+    ['E / Q', 'climb · descend (faster with airspeed)'],
+    ['CTRL', 'drop (free fall)'],
     ['SHIFT', 'boost'],
     ['X', 'brake (palm jets)'],
     ['2× A / D', 'lateral strafe burst'],
@@ -52,7 +52,6 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; combat: Row[]; always: Ro
   always: [
     ['V', 'camera'],
     ['WHEEL', 'camera distance'],
-    ['R', 'reset to the house'],
     ['N', 'call a wave (sky clear)'],
     ['P', 'House Party / hot-swap'],
     ['J', 'missions'],
@@ -85,9 +84,11 @@ export interface Settings {
   leftHanded: boolean;
   /** The HUD's frame-rate readout (under the radar's left shoulder). */
   showFps: boolean;
+  /** Size of the HUD's and the menus' text (1 = as designed; 0.75–1.6). */
+  uiScale: number;
 }
 
-const DEFAULTS: Settings = { invertY: false, sensitivity: 1, volume: 0.9, sfx: 1, quality: 'ultra', touchOpacity: 0.75, leftHanded: false, showFps: true };
+const DEFAULTS: Settings = { invertY: false, sensitivity: 1, volume: 0.9, sfx: 1, quality: 'ultra', touchOpacity: 0.75, leftHanded: false, showFps: true, uiScale: 1 };
 
 /** First-run graphics preset: a phone's or tablet's GPU starts lower (the menu still goes up to ULTRA). */
 const TIER_QUALITY: Record<DeviceTier, Quality> = { phone: 'medium', tablet: 'high', desktop: 'ultra' };
@@ -205,6 +206,7 @@ export class Screens {
     const defaults: Settings = { ...DEFAULTS, quality: TIER_QUALITY[deviceProfile().tier] };
     this.settings = { ...defaults, ...(saved ?? {}) };
     if (!(this.settings.quality in QUALITY)) this.settings.quality = defaults.quality;
+    if (!(this.settings.uiScale >= 0.75 && this.settings.uiScale <= 1.6)) this.settings.uiScale = 1;
     this.root.classList.toggle('touch', this.touch);
     const touchFields = `
                 <div class="fp-h" style="margin-top:16px">TOUCH</div>
@@ -307,6 +309,9 @@ export class Screens {
                     .map((q) => `<button role="radio" data-q="${q}" aria-checked="false">${QUALITY[q].label}<small>${QUALITY[q].note}</small></button>`)
                     .join('')}
                 </div>
+                <div class="fp-h" style="margin-top:16px">DISPLAY</div>
+                <div class="fp-field"><label for="fp-ui">TEXT SIZE</label>
+                  <input class="fp-range" id="fp-ui" type="range" min="0.75" max="1.6" step="0.05" data-k="uiScale"><output for="fp-ui"></output></div>
                 <div class="fp-h" style="margin-top:16px">DIAGNOSTICS</div>
                 <div class="fp-field toggle"><span class="lbl" id="fp-fps-l">FRAME RATE</span>
                   <button class="fp-switch" role="switch" aria-labelledby="fp-fps-l" data-k="showFps"></button></div>
@@ -365,7 +370,7 @@ export class Screens {
   private syncInputs(): void {
     const s = this.settings;
     for (const input of this.pause.querySelectorAll<HTMLInputElement>('input.fp-range')) {
-      const k = input.dataset.k as 'volume' | 'sfx' | 'sensitivity' | 'touchOpacity';
+      const k = input.dataset.k as 'volume' | 'sfx' | 'sensitivity' | 'touchOpacity' | 'uiScale';
       input.value = String(s[k]);
       const p = (Number(input.value) - Number(input.min)) / (Number(input.max) - Number(input.min));
       input.style.setProperty('--v', `${(p * 100).toFixed(1)}%`);

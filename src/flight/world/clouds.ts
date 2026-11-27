@@ -6,7 +6,7 @@ import { ATMOSPHERE_GLSL } from './atmosphere';
 import { WORLD_SIZE } from './config';
 
 /**
- * Fair-weather cumulus drifting over the coast at 1.4–2.6 km: each cloud a
+ * Mixed cumulus drifting over the coast, 0.9–4.8 km up and 150 m–1.4 km across: each cloud a
  * cluster of soft puffs with a flat base, lit as rounded volumes — sunlit
  * tops, blue-grey undersides, a silver lining when the sun is behind them —
  * and fading into the haze. Sorted back to front and drawn in two instanced
@@ -44,11 +44,11 @@ varying vec3 vHazeCol;
 varying vec3 vCenterDir;
 varying float vSeed;
 varying float vBaseK;
-uniform float uBase;
 ${ATMOSPHERE_GLSL}
 void main() {
   vUv = uv;
-  vSeed = iSeed;
+  // (the seed carries the puff's height up its cloud in its whole part)
+  vSeed = fract(iSeed);
   vec3 c = iPuff.xyz;
   float r = iPuff.w;
   vec4 mv = viewMatrix * vec4(c, 1.0);
@@ -59,8 +59,8 @@ void main() {
   vHaze = hazeAmount(cameraPosition, c);
   vHazeCol = hazeColor(normalize(c - cameraPosition));
   vCenterDir = normalize(c - cameraPosition);
-  // How far down the cloud this puff sits (bases are darker)
-  vBaseK = clamp((c.y - uBase) / 700.0, 0.0, 1.0);
+  // How far down its cloud this puff sits (bases are darker)
+  vBaseK = floor(iSeed) / 63.0;
   gl_Position = projectionMatrix * mv;
 }
 `;
@@ -199,20 +199,45 @@ export class Clouds {
   constructor(atmosphere: Record<string, THREE.IUniform>) {
     let s = 4242;
     const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
-    const BASE = 1400;
-    for (let c = 0; c < 70; c++) {
+    // A sky of mixed cumulus rather than one stamp repeated: mostly small
+    // fair-weather humilis low down, a band of mediocris, a few towering
+    // congestus heaped up off one flat base, and the odd thin altocumulus
+    // patch far up. About the same puff budget as before (~1.6k), spent
+    // where the shapes need it: tall heaps get the most, flat scraps few.
+    const KINDS = [
+      // share, base (m) + spread, size (m) + spread, puffs + spread, how tall (× size), puff radius (× size), squash (z)
+      { share: 0.42, base: 900, baseVar: 500, size: 140, sizeVar: 260, n: 6, nVar: 7, tall: 0.35, rad: [0.3, 0.3], squash: 0.75 },
+      { share: 0.36, base: 1300, baseVar: 700, size: 380, sizeVar: 520, n: 14, nVar: 12, tall: 0.75, rad: [0.25, 0.35], squash: 0.7 },
+      { share: 0.1, base: 1250, baseVar: 400, size: 600, sizeVar: 450, n: 34, nVar: 14, tall: 2.1, rad: [0.22, 0.3], squash: 0.8 },
+      { share: 0.12, base: 3600, baseVar: 1200, size: 500, sizeVar: 700, n: 9, nVar: 6, tall: 0.12, rad: [0.18, 0.22], squash: 0.45 },
+    ];
+    const pick = () => {
+      let u = rnd();
+      for (const k of KINDS) if ((u -= k.share) <= 0) return k;
+      return KINDS[0];
+    };
+    for (let c = 0; c < 96; c++) {
+      const k = pick();
       const cx = (rnd() - 0.5) * WORLD_SIZE * 1.1;
       const cz = (rnd() - 0.5) * WORLD_SIZE * 1.1;
-      const base = BASE + rnd() * 600;
-      const size = 350 + rnd() * 700;
-      const n = 14 + Math.floor(rnd() * 18);
+      const base = k.base + rnd() * k.baseVar;
+      const size = k.size + rnd() * k.sizeVar;
+      const n = k.n + Math.floor(rnd() * k.nVar);
+      const height = size * k.tall * (0.6 + 0.8 * rnd());
       const cluster: Array<{ p: THREE.Vector3; r: number; seed: number }> = [];
       for (let i = 0; i < n; i++) {
         const a = rnd() * Math.PI * 2;
-        const r = Math.sqrt(rnd()) * size;
-        const up = rnd() * rnd() * size * 0.7;
-        const rad = (0.25 + rnd() * 0.35) * size * (1 - (r / size) * 0.4);
-        cluster.push({ p: new THREE.Vector3(cx + Math.cos(a) * r, base + up + rad * 0.35, cz + Math.sin(a) * r * 0.7), r: rad, seed: rnd() });
+        // (up a tower the heap narrows: the puffs crowd in round its core)
+        const up = rnd() * rnd() * height;
+        const taper = 1 - 0.55 * (height > 0 ? up / (height + size * 0.3) : 0);
+        const r = Math.sqrt(rnd()) * size * taper;
+        const rad = (k.rad[0] + rnd() * k.rad[1]) * size * (1 - (r / size) * 0.4) * (0.75 + 0.25 * taper);
+        // Base flat (the condensation level), every puff sitting on or above it
+        const y = base + up + rad * 0.35;
+        // How far up its own cloud the puff sits (its shading: a dark flat base, sunlit heaped tops)
+        const baseK = Math.min(1, (y - base) / Math.max(250, Math.min(700, height + rad)));
+        // (packed into the seed: whole part the height band, fraction the texture spin)
+        cluster.push({ p: new THREE.Vector3(cx + Math.cos(a) * r, y, cz + Math.sin(a) * r * k.squash), r: rad, seed: Math.round(baseK * 63) + rnd() * 0.999 });
       }
       cluster.sort((a, b) => b.r - a.r);
       for (let i = 0; i < cluster.length; i++) {
@@ -251,7 +276,6 @@ export class Clouds {
       uSunCol: { value: new THREE.Color(1.55, 1.2, 0.86) },
       uAmbTop: { value: new THREE.Color(0.42, 0.5, 0.64) },
       uAmbBottom: { value: new THREE.Color(0.2, 0.22, 0.3) },
-      uBase: { value: BASE },
     };
     const mat = withLogDepth(
       new THREE.ShaderMaterial({

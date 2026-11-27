@@ -53,6 +53,12 @@ export interface FlightInput {
   stance: boolean;
   /** Optional one-shot lateral strafe burst (−1 left, +1 right). */
   strafeDash?: -1 | 0 | 1;
+  /**
+   * In flight: climb (+1) / descend (−1) along the path, tilting it off the
+   * aim by up to {@link GLIDE_PITCH}, so the rate goes with the airspeed and
+   * the wing keeps flying (where {@link vertical} below −0.5 is a free fall).
+   */
+  glide?: number;
 }
 
 export const EMPTY_INPUT = (): FlightInput => ({
@@ -139,6 +145,8 @@ export const FALL_TERMINAL = 72;
 const FALL_DRAG = GRAVITY / (FALL_TERMINAL * FALL_TERMINAL);
 /** Down past this much stick is a fall (boots cut); less is a controlled descent. */
 const FALL_STICK = -0.5;
+/** Most the glide command tilts the flight path off the aim (rad): ~18°, a climb or sink of a third of the airspeed. */
+export const GLIDE_PITCH = 0.32;
 /** Palms and limbs steering a fall (m/s²). */
 const FALL_STEER = 4;
 /** Palm jets braking (X) against the travel (m/s²). */
@@ -681,6 +689,18 @@ export class FlightModel {
 
     // ── Attitude: mouse aim ──────────────────────────────────────────
     const aim = this._a.copy(input.aim).normalize();
+    // Climb / descend with the airspeed: the path tilts off the aim (the
+    // look stays where it was), so the faster it flies the faster it goes up
+    // or down, on the wing, not falling
+    const glide = input.glide ?? 0;
+    if (glide !== 0 && fl > 0) {
+      const h = Math.hypot(aim.x, aim.z);
+      if (h > 1e-4) {
+        const pitch = clamp(Math.atan2(aim.y, h) + clamp(glide, -1, 1) * GLIDE_PITCH * fl, -1.35, 1.35);
+        const k = Math.cos(pitch) / h;
+        aim.set(aim.x * k, Math.sin(pitch), aim.z * k);
+      }
+    }
     // Aim in the flight frame — in full flight, measured off the suit's long
     // axis (the line it flies along), not the frame's nose a few degrees
     // below it: the nose held on the aim left the path climbing off it

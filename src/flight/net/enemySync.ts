@@ -82,7 +82,17 @@ export class EnemySync {
   // Both: every hostile's own damage(), under the authority wrapper
   private readonly own = new WeakMap<Hostile, DamageFn>();
 
+  // Guest: a house repair sent to the host, held until its snapshots carry it
+  private houseHeld = 0;
+  private houseHeldUntil = 0;
+
   constructor(private readonly combat: Combat) {}
+
+  /** Guest: the house was repaired here (and the repair sent to the host): hold it at least this whole for a moment. */
+  holdHouse(hp: number): void {
+    this.houseHeld = hp;
+    this.houseHeldUntil = this.clock + 1.5;
+  }
 
   /** Re-seat for a new room / role: puppets dropped, ids fresh. */
   reset(role: PlayerRole): void {
@@ -227,8 +237,9 @@ export class EnemySync {
   onWorld(w: WorldNetState): void {
     if (this.role !== 'guest') return;
     const c = this.combat;
-    c.wave = w.wave;
-    c.houseHp = w.houseHp;
+    c.netWave(w.wave);
+    // (a repair sent to the host shows at once, not knocked back by the snapshots already on their way)
+    c.houseHp = this.clock < this.houseHeldUntil ? Math.max(w.houseHp, this.houseHeld) : w.houseHp;
     for (const b of w.bodies) {
       let p = this.puppets.get(b.id);
       // Our own copy went (a redeploy cleared the sky here, or it fell out of it)

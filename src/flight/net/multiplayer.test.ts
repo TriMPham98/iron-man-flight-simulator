@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { EventBus } from '../sim/events';
 import {
   decodeSuitState,
@@ -166,6 +166,8 @@ function makeStubGame(pos = new THREE.Vector3(10, 50, 20)) {
       reserves: 1,
       down: 0,
       weapons: { unibeamOn: false, arms: { flares: 0 } },
+      duelFoes: [] as unknown[],
+      playerTarget: { hit: vi.fn() },
     },
   } as unknown as ConstructorParameters<typeof MultiplayerSession>[0];
 }
@@ -356,6 +358,39 @@ describe('MultiplayerSession 2-Player End-to-End Sync', () => {
     host.leaveRoom();
     expect(guest.role).toBe('host');
     expect(guest.peer).toBeNull();
+    guest.dispose();
+  });
+
+  it('duels for real: a hit scored on the other pilot lands on their suit, scaled to armour', () => {
+    const relay = new MemoryRelay();
+    const hostGame = makeStubGame(new THREE.Vector3(0, 120, 0));
+    const guestGame = makeStubGame(new THREE.Vector3(45, 130, -20));
+    const host = new MultiplayerSession(hostGame, {}, () => relay.createTransport());
+    const guest = new MultiplayerSession(guestGame, {}, () => relay.createTransport());
+    host.setMode('duel');
+    guest.joinRoom(host.hostRoom('DUEL01'));
+    expect(guest.mode).toBe('duel');
+    host.update(0.05, false);
+    guest.update(0.05, false);
+
+    const foes = (hostGame.combat as unknown as { duelFoes: import('../combat/types').Hostile[] }).duelFoes;
+    expect(foes.length).toBe(1);
+    const foe = foes[0];
+    expect(foe.alive).toBe(true);
+    expect(foe.pos.distanceTo(new THREE.Vector3(45, 130, -20))).toBeLessThan(15);
+    // Scored here, never a kill here
+    expect(foe.damage(50, foe.pos, 'repulsor')).toBe(false);
+    host.update(0.06, false);
+    const hit = (guestGame.combat as unknown as { playerTarget: { hit: ReturnType<typeof vi.fn> } }).playerTarget.hit;
+    expect(hit).toHaveBeenCalledTimes(1);
+    expect(hit.mock.calls[0][0]).toBeCloseTo(4.5, 3);
+    expect(hit.mock.calls[0][2]).toBe('bullet');
+
+    // Back to co-op: out of the sights
+    host.setMode('coop');
+    host.update(0.05, false);
+    expect(foes.length).toBe(0);
+    host.dispose();
     guest.dispose();
   });
 });

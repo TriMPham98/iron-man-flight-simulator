@@ -557,7 +557,9 @@ export class FlightApp {
       this.hud.glow = s.quality !== 'low' && (!this.screens.touch || s.quality === 'ultra');
       this.hud.shadow = s.quality !== 'low' && !this.screens.touch;
       this.hud.showFps = s.showFps;
+      this.hud.textScale = s.uiScale;
     }
+    document.documentElement.style.setProperty('--fl-ui-scale', String(s.uiScale));
   }
 
   /** Hands off: what the sim reads while there are no controls yet. */
@@ -606,21 +608,18 @@ export class FlightApp {
     }
     for (const code of c.pressed) {
       if (code === 'KeyV') game.rig.cycle();
-      // Once the suit is lost, R or the wave key (N, WAVE, D-pad up) redeploys
+      // Once the suit is lost, the wave key (N, WAVE, D-pad up) redeploys
       if (game.combat.lost) {
-        if ((code === 'KeyR' || code === 'KeyN') && game.combat.redeployReady) game.redeploy();
+        if (code === 'KeyN' && game.combat.redeployReady) game.redeploy();
         if (code === 'KeyU') this.refitMenu();
         continue;
-      }
-      if (code === 'KeyR') {
-        this.missions.abortMission(true);
-        game.reset();
       }
       if (code === 'KeyN') game.combat.callWave();
       if (code === 'KeyU' && game.onPad) this.refitMenu();
       if (code === 'KeyJ' && !director && !this.autopilot) this.openMissionsMenu();
       if (code === 'KeyM' && !director && !this.autopilot) this.openMultiplayerMenu();
     }
+    game.pilotGlide = this.engaged && !director && !this.autopilot;
     game.applyControls(c);
     // In multiplayer, opening Esc or a drawer frees the mouse without freezing physics/network sync
     const simPaused = this.paused && !this.multiplayer?.active;
@@ -669,9 +668,13 @@ export class FlightApp {
         : null;
     hud.draw(dt, camera, game.model, game.combat, game.ground, game.rig.mode === 'helmet');
     this.missionHud.update(camera, game.model.pos, this.missions.telemetry, this.engaged && !director && !cinematic);
-    this.multiplayerHud?.update(camera, game.model.pos, this.engaged && !director && !cinematic);
+    // (the wingman's marker never sits over a menu: pause, refit, missions or the uplink drawer)
+    this.multiplayerHud?.update(camera, game.model.pos, this.engaged && !director && !cinematic, this.paused || this.opts.screens.paused);
     this.sounds.variant = game.suitVariant;
     this.sounds.update(dt, game.model, game.combat, camera, game.rig.mode === 'helmet', game.combat.weapons.unibeamOn);
+    // The wingman's sonic boom, as their Mach cone sweeps over the ear
+    const peer = this.multiplayer?.peer;
+    this.sounds.wingman(peer && peer.mesh.visible ? peer.pos : null, peer?.vel ?? game.model.vel, peer?.mach ?? 0);
     this.post.render(dt, this.lens);
   }
 
@@ -708,7 +711,7 @@ export class FlightApp {
       upgrades,
       gate: () => (combat.lost || game.onPad ? null : 'SET DOWN ON THE PAD TO REFIT'),
       // (a lost run's house comes back whole with the redeploy: nothing to buy)
-      house: { hp: () => (combat.lost || combat.wave < 0 ? null : combat.houseHp), repair: (share) => void combat.repairHouse(share) },
+      house: { hp: () => (combat.lost || combat.wave < 0 ? null : combat.houseHp), repair: (share) => void (this.multiplayer?.repairHouse(share) || combat.repairHouse(share)) },
     });
   }
 

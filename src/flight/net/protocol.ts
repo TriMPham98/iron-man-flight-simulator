@@ -65,7 +65,10 @@ export type NetEvent =
   | { kind: 'repulsor'; ox: number; oy: number; oz: number; dx: number; dy: number; dz: number; side: 'L' | 'R' }
   | { kind: 'flare'; ox: number; oy: number; oz: number; vx: number; vy: number; vz: number }
   | { kind: 'sonicBoom'; x: number; y: number; z: number }
-  | { kind: 'hit'; amount: number; x: number; y: number; z: number; weapon: 'repulsor' | 'missile' | 'unibeam' | 'minigun' }
+  /** Duel: the sender's shots on this pilot since the last batch (their damage scale, at the last hit; `weapon` is the damage kind). */
+  | { kind: 'hit'; amount: number; x: number; y: number; z: number; weapon: string }
+  /** Guest → host: the guest's R&D patched up this share (0–1) of the shared house. */
+  | { kind: 'repairHouse'; share: number }
   | { kind: 'reset'; mode: MatchMode }
   /** Guest → host: damage the guest's own shots dealt to enemy puppets, [netId, part (−1 = whole), amount, damage kind]. */
   | { kind: 'dmg'; hits: [number, number, number, string][] }

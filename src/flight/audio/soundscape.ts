@@ -227,6 +227,10 @@ export class Soundscape {
   /** Where the ears were last frame. */
   private readonly ear = new THREE.Vector3();
   private lastBoom = -99;
+  /** The wingman's Mach cone (multiplayer): armed while the ear is still ahead of it. */
+  private wingArmed = false;
+  private wingLastBoom = -99;
+  private readonly _wr = new THREE.Vector3();
   /** The helmet view is the pilot's own ears. */
   private helmet = false;
   /** The ground under the ears: open sea, breakers on the coast, wind in the trees. */
@@ -294,6 +298,35 @@ export class Soundscape {
     if (this.now - this.lastBoom < 1.5) return;
     this.lastBoom = this.now;
     A.play(SFX.sonicBoomFar, { at, ref: 60, propagate: false, gain: 1.4, echo: 0.4 });
+  }
+
+  /**
+   * The other pilot's sonic boom (multiplayer), heard the way a jet's is
+   * from the ground: nothing while the ear is ahead of their Mach cone, then
+   * the double crack the instant the cone sweeps over it — wherever this
+   * pilot is looking from, the helmet included (it's not their own noise).
+   * Called each frame with the wingman's state (null: none in the air).
+   */
+  wingman(pos: THREE.Vector3 | null, vel: THREE.Vector3, mach: number): void {
+    const A = this.audio;
+    if (!A.ready || !pos || mach <= 1 || vel.lengthSq() < 1) {
+      this.wingArmed = false;
+      return;
+    }
+    const r = this._wr.copy(this.ear).sub(pos);
+    const d = r.length();
+    const ahead = -r.dot(vel) / (d * vel.length() + 1e-6);
+    const inCone = ahead > Math.sqrt(1 - 1 / (mach * mach));
+    if (!inCone) this.wingArmed = true;
+    else if (this.wingArmed) {
+      this.wingArmed = false;
+      if (this.now - this.wingLastBoom > 1.5 && d < 9000) {
+        this.wingLastBoom = this.now;
+        // (a shock front arriving: no travel delay, and it carries a long way)
+        const near = d < 350;
+        A.play(near ? SFX.sonicBoomNear : SFX.sonicBoomFar, { at: pos, ref: near ? 120 : 900, propagate: false, gain: near ? 1.2 : 1.5, echo: 0.45 });
+      }
+    }
   }
 
   /** The sea: the slap, the body going in, spray coming down after. */

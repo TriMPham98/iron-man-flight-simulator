@@ -434,3 +434,17 @@ html.tc-touch #flight-ui .fp-scrim {
   -webkit-backdrop-filter: none;
   background: radial-gradient(ellipse at 50% 45%, rgba(4,12,22,0.72) 0%, rgba(2,6,12,0.92) 75%);
 }
+
+/* Settings › Display › Text size: the menus, drawers, dock and marker
+   labels scale together (the canvas HUD's text reads the same setting).
+   A zoomed panel keeps to the viewport: its height cap is divided back out. */
+#flight-ui .t-main,
+#flight-ui .fp-panel,
+#flight-ui .mp-panel,
+#flight-ui .mh-drawer,
+#flight-ui .ftd-dock,
+#flight-ui .mp-marker > span,
+#flight-ui .mh-wp > span { zoom: var(--fl-ui-scale, 1); }
+#flight-ui .fp-panel { max-height: calc((100vh - 32px) / var(--fl-ui-scale, 1)); width: min(940px, calc(100% / var(--fl-ui-scale, 1))); }
+#flight-ui .mp-panel { max-height: calc((100dvh - 36px) / var(--fl-ui-scale, 1)); width: min(720px, calc(94vw / var(--fl-ui-scale, 1))); }
+#flight-ui .mh-drawer { max-height: calc((100dvh - 36px) / var(--fl-ui-scale, 1)); width: min(820px, calc(100% / var(--fl-ui-scale, 1))); }

@@ -133,6 +133,13 @@ export class Combat {
    * its snapshots).
    */
   puppet = false;
+  /**
+   * Multiplayer duel: the other pilot, for this pilot's own weapons and
+   * seekers to lock and hit (its hits go to them over the network). Not an
+   * enemy of the waves: it never holds up a wave or counts as a kill here.
+   */
+  readonly duelFoes: Hostile[] = [];
+  private readonly _targets: Hostile[] = [];
   /** Armour 0–1. */
   armor = 1;
   /** Seconds since the last hit. */
@@ -436,6 +443,31 @@ export class Combat {
     return this.houseHp - before;
   }
 
+  /**
+   * Multiplayer guest: the host's wave number, as its snapshots bring it. A
+   * new one starts here as it did there (the banner, the tally, the clear's
+   * payout and record to come), since the guest never calls one of its own.
+   */
+  netWave(wave: number): void {
+    if (wave === this.wave) return;
+    const started = wave > this.wave && wave >= 0;
+    this.wave = wave;
+    this.waveT = 0;
+    if (started) {
+      this.events.emit('waveStart', { value: wave + 1 });
+      this.events.emit('jarvis', { text: waveAt(wave).line });
+    }
+  }
+
+  /** What this pilot's weapons fire at: the enemies, and in a duel the other pilot. */
+  private targets(): readonly Hostile[] {
+    if (!this.duelFoes.length) return this.hostiles;
+    const t = this._targets;
+    t.length = 0;
+    t.push(...this.hostiles, ...this.duelFoes);
+    return t;
+  }
+
   /** Start the next wave, if one is on offer. */
   callWave(): void {
     if (this.puppet || !this.waveReady) return;
@@ -551,7 +583,7 @@ export class Combat {
     const jammed = this.drones.some((d) => d.alive && d.type === 'jammer' && d.pos.distanceToSquared(this.model.pos) < JAM_RANGE * JAM_RANGE);
     this.jam += ((jammed ? 1 - this.spec.jamResist : 0) - this.jam) * Math.min(1, dt * 3);
     this.weapons.jam = this.jam;
-    this.weapons.update(dt, c, aim, eye, this.hostiles, this.down <= 0);
+    this.weapons.update(dt, c, aim, eye, this.targets(), this.down <= 0);
     if (this.down <= 0 && !this.lost) {
       if (c.grapple || c.pressed.has(ACTION_KEYS.GRAPPLE)) {
         const res = this.closeQuarters.tryMeleeAction(this.model, aim, this.hostiles, this.ground, this.explosions, this.particles, {
@@ -632,7 +664,7 @@ export class Combat {
     );
     this.intercept(dt);
     this.guns.update(dt, this.player, this.ground, this.particles, this.streaks, this.events);
-    this.missiles.update(dt, this.hostiles, this.player);
+    this.missiles.update(dt, this.targets(), this.player);
     // Kills: count, blow the SAMs (drones crash on their own)
     for (let i = this.hostiles.length - 1; i >= 0; i--) {
       const h = this.hostiles[i];

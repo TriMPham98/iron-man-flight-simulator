@@ -196,6 +196,33 @@ describe('FlightModel', () => {
     expect(m.mach).toBeGreaterThan(1);
   });
 
+  it('climbs and descends on the glide command at a rate that goes with the airspeed, on the wing', () => {
+    const sink = (speed: number, glide: number) => {
+      const m = new FlightModel(flat());
+      m.pos.set(0, 1500, 0);
+      m.vel.set(0, 0, speed);
+      m.grounded = false;
+      m.flightness = 1;
+      m.posture = 1.42;
+      m.speedCmd = speed;
+      let fell = 0;
+      run(m, 4, (i) => {
+        i.aim.set(0, 0, 1);
+        i.glide = glide;
+        fell = Math.max(fell, m.freefall);
+      });
+      expect(fell).toBe(0);
+      expect(m.flightness).toBeGreaterThan(0.9);
+      return m.vel.y;
+    };
+    const slow = sink(80, -1);
+    const fast = sink(220, -1);
+    expect(slow).toBeLessThan(-12);
+    expect(fast).toBeLessThan(slow * 2);
+    expect(sink(160, 1)).toBeGreaterThan(25);
+    expect(Math.abs(sink(160, 0))).toBeLessThan(4);
+  });
+
   it('tops out at MAX_MACH on boost up high, and the thick air holds it short low down', () => {
     const top = (alt: number) => {
       const m = new FlightModel(flat());

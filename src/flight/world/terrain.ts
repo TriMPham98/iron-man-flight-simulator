@@ -19,6 +19,17 @@ const LEAF = CELLS * TERRAIN_PITCH;
 const LEVELS = Math.round(Math.log2(WORLD_SIZE / LEAF)) + 1;
 /** LOD 0 reaches this far (m); each coarser level doubles it. */
 const RANGE0 = 270;
+/**
+ * The least LOD 0 range the LOD scale may set (m). A finer patch reaches
+ * past its level's range by up to its own diagonal, and the coarser patch it
+ * meets must not have started morphing there: with the morph band below that
+ * holds while the range is at least ~2× the leaf, and a shorter one opened
+ * cracks between the rings close in (the low presets and the adaptive guard).
+ */
+const MIN_RANGE0 = 280;
+/** Each level morphs onto the next coarser grid over this share of its range. */
+const MORPH_START = 0.86;
+const MORPH_END = 0.98;
 const MAX_PATCHES = 2048;
 
 interface Node {
@@ -28,8 +39,6 @@ interface Node {
   level: number;
   minY: number;
   maxY: number;
-  /** True when the node straddles the shoreline or steep relief that needs finer triangles. */
-  refine: boolean;
   children: Node[] | null;
 }
 
@@ -90,7 +99,7 @@ const VERT_BODY = /* glsl */ `
   float h0 = terrainHeight(world);
   float range = uRange0 * exp2(aPatch.w);
   float dist = distance(vec3(world.x, h0, world.y), uEye);
-  float morph = aPatch.w >= ${LEVELS - 1}.0 ? 0.0 : clamp((dist - range * 0.72) / (range * 0.26), 0.0, 1.0);
+  float morph = aPatch.w >= ${LEVELS - 1}.0 ? 0.0 : clamp((dist - range * ${MORPH_START}) / (range * ${(MORPH_END - MORPH_START).toFixed(3)}), 0.0, 1.0);
   // Odd vertices slide onto their even neighbour: the coarser grid.
   // Ring 3 performs a two-stage 4x morph so its 32 m grid meets ring 4's 128 m grid seamlessly.
   vec2 odd = fract(grid * 0.5) * 2.0;
@@ -335,7 +344,7 @@ export class Terrain {
     /** The raw heightfield texels (node bounds). */
     private readonly texels: Float32Array,
   ) {
-    for (let l = 0; l < LEVELS; l++) this.ranges.push(RANGE0 * 2 ** l);
+    for (let l = 0; l < LEVELS; l++) this.ranges.push(Math.max(MIN_RANGE0, RANGE0) * 2 ** l);
     this.root = this.buildTree();
     this.full = patchGeometry(CELLS);
     this.halfNear = patchGeometry(CELLS / 2);
@@ -345,7 +354,7 @@ export class Terrain {
       ...field.uniforms,
       ...atmosphere,
       uEye: { value: new THREE.Vector3() },
-      uRange0: { value: RANGE0 },
+      uRange0: { value: Math.max(MIN_RANGE0, RANGE0) },
       uTexel: { value: TEXEL },
       uTime: { value: 0 },
       uDetailReach: { value: 1 },
@@ -409,7 +418,7 @@ export class Terrain {
   /** Quadtree with per-node height bounds from the heightfield. */
   private buildTree(): Node {
     const make = (x: number, z: number, size: number, level: number): Node => {
-      const node: Node = { x, z, size, level, minY: 0, maxY: 0, refine: false, children: null };
+      const node: Node = { x, z, size, level, minY: 0, maxY: 0, children: null };
       if (level > 0) {
         const h = size / 2;
         node.children = [
@@ -420,7 +429,6 @@ export class Terrain {
         ];
         node.minY = Math.min(...node.children.map((c) => c.minY));
         node.maxY = Math.max(...node.children.map((c) => c.maxY));
-        node.refine = node.children.some((c) => c.refine);
       } else {
         // Bounds of the texels under the leaf (plus a texel either side for the spline)
         let lo = Infinity;
@@ -439,7 +447,6 @@ export class Terrain {
         // Margin for close-up crags and spline relief so steep ridges never frustum-cull early
         node.minY = lo - 16;
         node.maxY = hi + 16;
-        node.refine = (lo <= 6 && hi >= -6) || hi - lo > size * 0.35;
       }
       return node;
     };
@@ -478,18 +485,13 @@ export class Terrain {
     }
   }
 
-  private rangeFor(n: Node, lod: number): number {
-    // 1.4x stays below the 0.72 * 2 = 1.44 morph-start of the parent LOD, keeping transitions crack-free
-    return n.refine && lod <= 4 ? this.ranges[lod] * 1.4 : this.ranges[lod];
-  }
-
   private select(n: Node, eye: THREE.Vector3): boolean {
     const lod = n.level;
     const d2 = this.boxDist2(n, eye);
-    if (d2 > this.rangeFor(n, lod) ** 2) return false;
+    if (d2 > this.ranges[lod] ** 2) return false;
     // Deep ocean floor is completely opaque under water shading: skip emitting patches for it
     if (n.maxY < -8 || !this.inFrustum(n)) return true;
-    if (lod === 0 || d2 > this.rangeFor(n, lod - 1) ** 2) {
+    if (lod === 0 || d2 > this.ranges[lod - 1] ** 2) {
       this.add(n, lod, false);
       return true;
     }
@@ -547,7 +549,7 @@ export class Terrain {
     const s = Math.max(0.35, Math.min(2.0, scale));
     if (s === this.lodScale) return;
     this.lodScale = s;
-    const r0 = RANGE0 * s;
+    const r0 = Math.max(MIN_RANGE0, RANGE0 * s);
     this.uniforms.uRange0.value = r0;
     for (let l = 0; l < LEVELS; l++) {
       const r = r0 * 2 ** l;

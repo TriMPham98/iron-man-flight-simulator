@@ -71,6 +71,8 @@ export class Game {
   private readonly eyeClip = createEyeClip();
   private readonly _aim = new THREE.Vector3();
   private controls: Controls | null = null;
+  /** The pilot has the stick (set by the app each frame): E / Q in flight glide along the path rather than climb / fall. */
+  pilotGlide = false;
   private wasGrounded = true;
   /** Vapour cone and shock ring at Mach 1 (and when, with hysteresis). */
   readonly sonic: SonicBoomFx;
@@ -220,13 +222,21 @@ export class Game {
     i.aim.copy(this.rig.aim(this._aim));
     i.lateral = c.lateral;
     i.vertical = c.vertical;
+    i.glide = 0;
+    // The pilot's E / Q in flight climb and descend along the path, at a rate
+    // that goes with the airspeed; Ctrl still drops it into a free fall
+    // (scripted reels keep the raw climb / fall command)
+    if (this.pilotGlide && !c.freefall && m.flightness > 0.5 && !m.grounded) {
+      i.glide = c.vertical;
+      i.vertical = 0;
+    }
     i.throttle = c.throttle;
     i.boost = c.boost;
     i.brake = c.brake;
     i.stance = this.combat.weapons.stance;
     // Rebooting: the stick is dead
     if (this.combat.down > 0) {
-      i.vertical = i.lateral = i.throttle = 0;
+      i.vertical = i.lateral = i.throttle = i.glide = 0;
       i.boost = i.brake = false;
     }
     // Backing up in a hover: S with the throttle already closed

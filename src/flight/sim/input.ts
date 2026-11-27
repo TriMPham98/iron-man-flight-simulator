@@ -47,6 +47,8 @@ export interface Controls {
   grapple?: boolean;
   /** One-shot Thruster Punch trigger (KeyH). */
   punch?: boolean;
+  /** Held free-fall key (Ctrl): in flight, E / Q glide along the path; this drops it. */
+  freefall?: boolean;
 }
 
 /** Maximum interval (ms) between taps on A/D to trigger a lateral strafe burst. */
@@ -186,6 +188,7 @@ export class Input {
       strafeDash,
       grapple: this.pressedQueue.has(ACTION_KEYS.GRAPPLE),
       punch: this.pressedQueue.has(ACTION_KEYS.PUNCH),
+      freefall: this.key('ControlLeft'),
     };
     // Right button is the missile lock (hold, release to fire)
     c.missile = c.missile || (this.buttons & 2) !== 0;

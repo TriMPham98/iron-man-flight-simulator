@@ -696,13 +696,13 @@ export class MultiplayerHud {
   }
 
   /** Update top-left chip visibility and projected 3D marker for the remote pilot. */
-  update(camera: THREE.PerspectiveCamera, localPos: THREE.Vector3, visible: boolean): void {
+  update(camera: THREE.PerspectiveCamera, localPos: THREE.Vector3, visible: boolean, menuOpen = false): void {
     const show = visible && !this._open;
     this.pillEl.classList.toggle('off', !show);
     this.chipSubEl.classList.toggle('off', !show);
 
     const peer = this.session.peer;
-    if (!visible || this._open || !peer || !peer.mesh.visible) {
+    if (!visible || menuOpen || this._open || !peer || !peer.mesh.visible) {
       this.markerEl.classList.add('hidden');
       return;
     }
@@ -742,7 +742,7 @@ export class MultiplayerHud {
     this.markerEl.style.top = `${sy.toFixed(1)}px`;
 
     const suitTag = peer.variant === 'warmachine' ? 'WAR MACHINE' : 'IRON MAN';
-    this.mLabelEl.textContent = isDuel ? `${suitTag} [1v1]` : `${suitTag} · ${peer.callsign}`;
+    this.mLabelEl.textContent = `${suitTag} · ${peer.callsign}`;
     const mach = peer.mach;
     this.mDistEl.textContent =
       mach >= 0.4 ? `${formatDist(dist)} · M${mach.toFixed(1)}` : formatDist(dist);

@@ -287,6 +287,8 @@ export class Hud {
   shadow = true;
   /** The frame-rate readout under the radar's shoulder (a graphics setting). */
   showFps = true;
+  /** Settings › Display › Text size: every HUD label and readout drawn this much larger (0.75–1.6). */
+  textScale = 1;
   /** Wall-clock frame times (ms, a ring), the window being averaged, and what the readout shows. */
   private readonly frameMs = new Float32Array(FPS_BARS);
   private frameHead = 0;
@@ -1055,12 +1057,13 @@ export class Hud {
     this.text(g, `WAVE ${Math.max(1, c.wave + 1)}  ·  KILLS ${c.kills}`, cx, cy - 38 * s, 13 * s, WHITE, 'center');
     if (c.redeployReady) {
       g.globalAlpha *= 0.55 + 0.45 * Math.sin(this.time * 3);
-      this.text(g, `${this.waveKey === 'N' ? 'R / N' : this.waveKey} — REDEPLOY`, cx, cy + 46 * s, 11 * s, AMBER, 'center', JARVIS);
+      this.text(g, `${this.waveKey} — REDEPLOY`, cx, cy + 46 * s, 11 * s, AMBER, 'center', JARVIS);
     }
     g.restore();
   }
 
   private text(g: CanvasRenderingContext2D, str: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left', font = MONO): void {
+    size *= this.textScale;
     g.font = `${font === JARVIS ? 400 : 500} ${size}px ${font}`;
     g.fillStyle = color;
     g.textAlign = align;
@@ -3349,9 +3352,9 @@ export class Hud {
 
   private drawLines(g: CanvasRenderingContext2D, s: number): void {
     const top = this.bottomInset > 0;
-    const size = 12 * s;
-    const lh = 17 * s;
-    const gap = 9 * s;
+    const size = 12 * s * this.textScale;
+    const lh = 17 * s * this.textScale;
+    const gap = 9 * s * this.textScale;
     // Keep JARVIS subtitles inside the open center channel between Reactor (left) and Weapons (right),
     // or lift cleanly above them when the viewport is too narrow.
     const leftBound = 474 * s;

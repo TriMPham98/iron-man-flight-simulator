@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import type { Suit } from '../../suit/Suit';
-import type { PlayerTarget } from '../combat/types';
+import type { DamageKind, Hostile, PlayerTarget } from '../combat/types';
 import type { Game } from '../sim/game';
 import { REACTOR_KEYS } from '../sim/reactorPower';
 import { PAD } from '../world/house';
 import { EnemySync } from './enemySync';
+import { inCosmeticScope } from './netDamage';
 import {
   decodePilotState,
   decodeWorldState,
@@ -42,6 +43,17 @@ import {
 const SEND_HZ = 25;
 const SEND_INTERVAL = 1 / SEND_HZ;
 const ZERO = new THREE.Vector3();
+/** Duel hit batches out (Hz). */
+const HIT_HZ = 20;
+/**
+ * A duel hit, from the damage the shooter's weapons deal an enemy to the
+ * armour points it takes off the other pilot (their suit is 100 points; the
+ * rival ace this sim's weapons are tuned against has 1200): a repulsor bolt
+ * ≈ 4.5, a seeker ≈ 11, a second of unibeam ≈ 14.
+ */
+export const DUEL_DAMAGE = 0.09;
+/** The other pilot as a duel target: their suit's hit sphere (m). */
+const DUEL_RADIUS = 1.6;
 
 /** The local pilot's triggers this frame (what the wingman's copy of the weapons fires on). */
 export interface PilotTriggers {
@@ -125,6 +137,14 @@ export class MultiplayerSession {
   private readonly listeners = new Set<() => void>();
   private sendAcc = 0;
   private localPack: WarMachinePack | null = null;
+  /** The wingman as this pilot's weapons see them in a duel (its hits go to them). */
+  private readonly duelFoe: Hostile;
+  /** Duel damage dealt since the last batch, and where the last of it landed. */
+  private hitAmount = 0;
+  private hitKind: DamageKind = 'repulsor';
+  private readonly hitAt = new THREE.Vector3();
+  private hitAcc = 0;
+  private peerWasDown = false;
   private readonly _aim = new THREE.Vector3();
   private readonly _invQ = new THREE.Quaternion();
   private clockT = 0;
@@ -150,6 +170,43 @@ export class MultiplayerSession {
       },
       // (the wingman's sim takes its own hits)
       hit: () => {},
+    };
+    const hidden = new THREE.Vector3(0, -1e6, 0);
+    this.duelFoe = {
+      id: -7001,
+      kind: 'rival',
+      get label() {
+        return self.peer?.callsign ?? 'PILOT';
+      },
+      get pos() {
+        return self.peer?.pos ?? hidden;
+      },
+      get vel() {
+        return self.peer?.vel ?? ZERO;
+      },
+      radius: DUEL_RADIUS,
+      maxHp: 100,
+      get hp() {
+        return (self.peer?.armor ?? 1) * 100;
+      },
+      set hp(_v: number) {
+        /* theirs to keep */
+      },
+      get alive() {
+        return !!self.peer && !self.peer.down;
+      },
+      set alive(_v: boolean) {
+        /* theirs to keep */
+      },
+      threatened: 0,
+      // Scored here, landed there: the hit goes over to the other pilot's sim
+      damage: (amount, at, kind) => {
+        if (inCosmeticScope() || !(amount > 0) || !this.duelFoe.alive) return false;
+        this.hitAmount += amount;
+        this.hitKind = kind;
+        this.hitAt.copy(at);
+        return false;
+      },
     };
     this.makeTransport =
       transportFactory ?? ((b) => (b === 'local' ? new BroadcastChannelTransport() : new WebSocketTransport()));
@@ -368,12 +425,60 @@ export class MultiplayerSession {
       if (out.damage) this.transport.sendControl({ type: 'event', event: out.damage });
     }
 
+    this.updateDuel(dt, connected);
+
     // Fly the wingman (the full suit runs its weapons against this sim's enemies, for show)
     if (this.peer instanceof RemotePilot) {
       this.peer.update(dt, this.game.combat.hostiles);
     } else if (this.peer) {
       this.peer.update(dt, this.game.ground, this.game.particles);
     }
+  }
+
+  /** Duel: the other pilot in this pilot's sights, and the hits on them sent over in batches. */
+  private updateDuel(dt: number, connected: boolean): void {
+    const foes = this.game.combat?.duelFoes;
+    if (!foes) return;
+    const want = connected && this.mode === 'duel' && !!this.peer;
+    const i = foes.indexOf(this.duelFoe);
+    if (want && i < 0) foes.push(this.duelFoe);
+    else if (!want && i >= 0) foes.splice(i, 1);
+    if (!want) {
+      this.hitAmount = 0;
+      this.peerWasDown = false;
+      return;
+    }
+    this.hitAcc += dt;
+    if (this.hitAcc >= 1 / HIT_HZ) {
+      this.hitAcc %= 1 / HIT_HZ;
+      if (this.hitAmount > 0) {
+        const a = this.hitAt;
+        this.transport.sendControl({
+          type: 'event',
+          event: { kind: 'hit', amount: this.hitAmount * DUEL_DAMAGE, x: a.x, y: a.y, z: a.z, weapon: this.hitKind },
+        });
+        this.hitAmount = 0;
+      }
+    }
+    const down = !!this.peer?.down;
+    if (down && !this.peerWasDown) {
+      this.game.events.emit('jarvis', { text: `${this.peer?.callsign ?? 'They'} is down, sir. Splash one.` });
+    }
+    this.peerWasDown = down;
+  }
+
+  /**
+   * The house's R&D repair, shared in a room: a guest's goes to the host
+   * (whose sim keeps the house) and shows here at once. Returns false when
+   * there's no shared fight to send it to (solo, or this is the host).
+   */
+  repairHouse(share: number): boolean {
+    if (this.status !== 'connected' || this.role !== 'guest' || !this.peer || !this.enemies) return false;
+    const c = this.game.combat;
+    c.repairHouse(share);
+    this.enemies.holdHouse(c.houseHp);
+    this.transport.sendControl({ type: 'event', event: { kind: 'repairHouse', share } });
+    return true;
   }
 
   /** Reposition local suit on the pad with a wingman offset so both suits stand side-by-side. */
@@ -546,6 +651,17 @@ export class MultiplayerSession {
         } else if (e.kind === 'callWave' && this.role === 'host') {
           const c = this.game.combat;
           if (c.waveReady) c.callWave();
+        } else if (e.kind === 'repairHouse' && this.role === 'host') {
+          const c = this.game.combat;
+          if (Number.isFinite(e.share) && !c.lost) c.repairHouse(Math.min(0.25, Math.max(0, e.share)));
+        } else if (e.kind === 'hit' && this.mode === 'duel') {
+          // The other pilot's shots on this suit (they scored them in their sim)
+          const amount = Math.min(60, Number(e.amount));
+          if (!(amount > 0)) break;
+          const at = new THREE.Vector3(e.x, e.y, e.z);
+          if (![at.x, at.y, at.z].every(Number.isFinite)) at.copy(this.game.model.pos);
+          const kind = e.weapon === 'unibeam' ? 'beam' : e.weapon === 'missile' || e.weapon === 'launcher' ? 'missile' : 'bullet';
+          this.game.combat.playerTarget?.hit(amount, at, kind);
         }
         break;
       }

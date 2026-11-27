@@ -40,7 +40,7 @@ const idle = (): Controls => ({
   zoom: 0,
 });
 
-function makeCombat(): Combat {
+function makeCombat(events = new EventBus()): Combat {
   const ground: SurfaceQuery = { surface: () => 0, isWater: () => false };
   const field = {
     heightAt: () => 0,
@@ -62,7 +62,7 @@ function makeCombat(): Combat {
     weaponHardware: { fx: { setLoadout: vi.fn() }, muzzle: () => model.pos.clone() },
   } as unknown as Suit;
   const particles = { emit: vi.fn(), burst: vi.fn() } as unknown as Particles;
-  return new Combat(field, ground, model, suit, particles, new EventBus(), () => {}, {});
+  return new Combat(field, ground, model, suit, particles, events, () => {}, {});
 }
 
 const step = (c: Combat, dt: number) => c.update(dt, 0, idle(), new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 600, 0));
@@ -164,6 +164,56 @@ describe('Shared fight: host enemies, guest puppets', () => {
     host.removeBody(rival);
     for (let i = 0; i < 30; i++) tick();
     expect(guest.rival).toBeNull();
+  });
+
+  it('starts and clears every host wave on the guest too (its banner, payout and wave record)', () => {
+    const bus = new EventBus();
+    const seen: string[] = [];
+    bus.on((e) => {
+      if (e.kind === 'waveStart' || e.kind === 'waveClear') seen.push(`${e.kind}:${e.value}`);
+    });
+    const host = makeCombat();
+    const guest = makeCombat(bus);
+    const hs = new EnemySync(host);
+    const gs = new EnemySync(guest);
+    hs.reset('host');
+    gs.reset('guest');
+    const tick = () => {
+      step(host, 1 / 30);
+      const out = hs.update(1 / 30, true);
+      step(guest, 1 / 30);
+      if (out.world) gs.onWorld(decodeWorldState(out.world)!);
+      gs.update(1 / 30, true);
+    };
+    for (let w = 0; w < 2; w++) {
+      host.callWave();
+      for (let i = 0; i < 10; i++) tick();
+      for (const h of [...host.hostiles]) h.damage(1e6, h.pos, 'missile');
+      for (let i = 0; i < 90; i++) tick();
+    }
+    expect(seen).toEqual(['waveStart:1', 'waveClear:1', 'waveStart:2', 'waveClear:2']);
+  });
+
+  it('a guest house repair lands on the host and is not knocked back by the snapshots in flight', () => {
+    const host = makeCombat();
+    const guest = makeCombat();
+    const hs = new EnemySync(host);
+    const gs = new EnemySync(guest);
+    hs.reset('host');
+    gs.reset('guest');
+    host.houseHp = 0.4;
+    const world = () => decodeWorldState(hs.update(1, true).world!)!;
+    gs.onWorld(world());
+    expect(guest.houseHp).toBeCloseTo(0.4, 5);
+    // Paid for on the guest: shown there at once, the stale snapshot doesn't undo it
+    guest.repairHouse(0.25);
+    gs.holdHouse(guest.houseHp);
+    gs.onWorld(world());
+    expect(guest.houseHp).toBeCloseTo(0.65, 5);
+    // The host gets it (sent as an event) and the snapshots carry it from then on
+    host.repairHouse(0.25);
+    gs.onWorld(world());
+    expect(guest.houseHp).toBeCloseTo(0.65, 5);
   });
 
   it('host enemies go after whichever pilot is nearer', () => {
