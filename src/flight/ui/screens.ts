@@ -7,7 +7,7 @@ import { deviceProfile, type DeviceTier } from '../../scene/deviceProfile';
  * Boot, title and pause screens over the sim: JARVIS-styled, quiet, and out
  * of the way the moment the suit is flying.
  *
- * The pause menu is a holographic panel: resume / restart / camera, the
+ * The pause menu is a holographic panel: resume / camera, the
  * controls reference (ground and flight), audio levels (master, effects,
  * JARVIS's voice) and a graphics preset. The same glass opens as the R&D
  * refit bay on the pad (or with the suit lost): the suit's upgrades,
@@ -32,8 +32,8 @@ export const CONTROLS: { ground: Row[]; flight: Row[]; combat: Row[]; always: Ro
     ['MOUSE', 'aim / steer'],
     ['W / S', 'throttle'],
     ['A / D', 'roll · strafe'],
-    ['E / Q', 'climb · descend (faster with airspeed)'],
-    ['CTRL', 'drop (free fall)'],
+    ['E / Q', 'ascend · descend (glide in flight)'],
+    ['2× Q', 'free fall (Q dive · E catch)'],
     ['SHIFT', 'boost'],
     ['X', 'brake (palm jets)'],
     ['2× A / D', 'lateral strafe burst'],
@@ -112,7 +112,6 @@ const STORE = 'mk3-flight-settings';
 
 /** What the pause menu's buttons do (wired by the app: src/flight/ui/flightSettings.ts). */
 export interface PauseActions {
-  restart?: () => void;
   /** Next camera; returns its name. */
   cycleCamera?: () => string;
   cameraName?: () => string;
@@ -261,7 +260,6 @@ export class Screens {
           <div class="fp-body">
             <nav class="fp-nav" aria-label="Pause menu">
               <button class="fp-btn primary" data-act="resume">RESUME <kbd>ESC</kbd></button>
-              <button class="fp-btn" data-act="restart">RESTART <small>at the house</small></button>
               <button class="fp-btn" data-act="camera">CAMERA <span class="val" data-cam-name></span></button>
               <button class="fp-btn" data-act="missions" hidden>MISSIONS <kbd>J</kbd></button>
               <button class="fp-btn" data-act="multiplayer" hidden>MULTIPLAYER <kbd>M</kbd></button>
@@ -303,13 +301,14 @@ export class Screens {
               </section>
               <section class="fp-pane" id="fp-graphics" role="tabpanel" data-pane="graphics">
                 <div class="fp-h">QUALITY PRESET</div>
-                <p class="fp-note">Resolution scale on top of the automatic frame-rate guard.</p>
                 <div class="fp-seg" role="radiogroup" aria-label="Graphics quality">
                   ${(Object.keys(QUALITY) as Quality[])
                     .map((q) => `<button role="radio" data-q="${q}" aria-checked="false">${QUALITY[q].label}<small>${QUALITY[q].note}</small></button>`)
                     .join('')}
                 </div>
                 <div class="fp-h" style="margin-top:16px">DISPLAY</div>
+                <div class="fp-field toggle"><span class="lbl" id="fp-fs-l">FULLSCREEN</span>
+                  <button class="fp-switch" role="switch" aria-labelledby="fp-fs-l" data-fs></button></div>
                 <div class="fp-field"><label for="fp-ui">TEXT SIZE</label>
                   <input class="fp-range" id="fp-ui" type="range" min="0.75" max="1.6" step="0.05" data-k="uiScale"><output for="fp-ui"></output></div>
                 <div class="fp-h" style="margin-top:16px">DIAGNOSTICS</div>
@@ -378,7 +377,7 @@ export class Screens {
       out.textContent = k === 'sensitivity' ? `${s[k].toFixed(2)}×` : `${Math.round(s[k] * 100)}%`;
       input.setAttribute('aria-valuetext', out.textContent);
     }
-    for (const sw of this.pause.querySelectorAll<HTMLElement>('.fp-switch')) {
+    for (const sw of this.pause.querySelectorAll<HTMLElement>('.fp-switch[data-k]')) {
       sw.setAttribute('aria-checked', String(s[sw.dataset.k as 'invertY' | 'leftHanded' | 'showFps']));
     }
     for (const b of this.pause.querySelectorAll<HTMLElement>('[data-q]')) {
@@ -393,7 +392,14 @@ export class Screens {
     for (const input of p.querySelectorAll<HTMLInputElement>('input.fp-range')) {
       input.addEventListener('input', () => this.set(input.dataset.k as 'volume', Number(input.value)));
     }
-    for (const sw of p.querySelectorAll<HTMLElement>('.fp-switch')) {
+    // Fullscreen: the page's, not a saved setting (the browser decides; Esc there leaves it)
+    const fs = p.querySelector<HTMLElement>('[data-fs]')!;
+    const fsSync = () => fs.setAttribute('aria-checked', String(!!document.fullscreenElement));
+    if (!document.fullscreenEnabled) fs.closest<HTMLElement>('.fp-field')!.hidden = true;
+    fs.addEventListener('click', () => this.setFullscreen(!document.fullscreenElement));
+    document.addEventListener('fullscreenchange', fsSync);
+    fsSync();
+    for (const sw of p.querySelectorAll<HTMLElement>('.fp-switch[data-k]')) {
       const k = sw.dataset.k as 'invertY' | 'leftHanded' | 'showFps';
       sw.addEventListener('click', () => this.set(k, !this.settings[k]));
     }
@@ -428,9 +434,6 @@ export class Screens {
       } else if (act === 'multiplayer') {
         this.setPaused(false, () => {});
         this.actions.openMultiplayer?.();
-      } else if (act === 'restart') {
-        this.actions.restart?.();
-        this.resume();
       } else if (act === 'camera') {
         this.actions.cycleCamera?.();
         this.showCamera();
@@ -602,6 +605,15 @@ export class Screens {
     for (const el of this.pause.querySelectorAll('[data-cam-name]')) el.textContent = name;
   }
 
+  /** Into or out of fullscreen (the whole page, so the menus and HUD come along). */
+  private setFullscreen(on: boolean): void {
+    const done = on ? document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }) : document.exitFullscreen?.();
+    void done?.catch(() => {});
+  }
+
+  /** When the menu last opened (ms, performance clock). */
+  private openedAt = -1e9;
+
   private resume(): void {
     if (!this.paused) return;
     this.onResume();
@@ -669,6 +681,12 @@ export class Screens {
       this.focus(this.pause.querySelector<HTMLElement>(`[data-q="${next}"]`)!, pad);
       return true;
     }
+    if (cur.hasAttribute('data-fs')) {
+      const on = !!document.fullscreenElement;
+      if (dir < 0 && !on) return this.toNav(pad);
+      if (dir > 0 !== on) this.setFullscreen(dir > 0);
+      return true;
+    }
     if (cur.classList.contains('fp-switch')) {
       const k = cur.dataset.k as 'invertY' | 'leftHanded' | 'showFps';
       if (dir < 0 && !this.settings[k]) return this.toNav(pad);
@@ -706,6 +724,10 @@ export class Screens {
   }
 
   private onKey(e: KeyboardEvent): void {
+    // The Esc that let go of the mouse (and so opened the menu) arrives just
+    // after it: it isn't a press to close it again (the menu used to flash
+    // shut and reopen as the re-lock was refused)
+    if (e.key === 'Escape' && (e.repeat || performance.now() - this.openedAt < 450)) return;
     this.pause.classList.remove('gamepad');
     for (const x of this.pause.querySelectorAll('.pad-focus')) x.classList.remove('pad-focus');
     const k = e.key;
@@ -855,6 +877,7 @@ export class Screens {
       this.refitMsg = '';
       this.renderRefit();
       if (!was) {
+        this.openedAt = performance.now();
         // Opens as the pause menu (the bay is asked for after)
         this.setMode('pause');
         this.padPrev = [];

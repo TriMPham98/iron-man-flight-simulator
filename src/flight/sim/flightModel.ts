@@ -29,10 +29,12 @@ import { STOCK_REACTOR_MODIFIERS, type ReactorModifiers } from './reactorPower';
  * after which every key has its flight meaning again. Coming down slow and
  * upright onto ground sets the boots down and it walks again.
  *
- * Full down (Q) cuts the boots: the suit drops feet first to its terminal
- * speed and stays there. Anything that hits the ground hard (a fall, a
- * dive) arrives in a hero landing — the pilot does the braking. The ground
- * never hurts the suit.
+ * E ascends (and catches a fall) and Q descends cleanly in a hover or glides
+ * along the path in flight. Double-tapping Q cuts the boots into a free fall:
+ * the suit drops feet first to terminal speed (hold Q to tuck and dive faster,
+ * press E to light the boots and catch yourself). Anything that hits the ground
+ * hard (a fall, a dive) arrives in a hero landing — the pilot does the braking.
+ * The ground never hurts the suit.
  */
 
 export interface FlightInput {
@@ -42,7 +44,7 @@ export interface FlightInput {
   lateral: number;
   /** Forward/back translation in a hover: −1 … +1. */
   forward: number;
-  /** Climb / descend command: −1 … +1. */
+  /** Climb / descend command: −1 … +1 (in free fall: −1 tucks into a faster dive, +1 flares). */
   vertical: number;
   /** Throttle target change this frame: −1 … +1 (held W / S). */
   throttle: number;
@@ -56,9 +58,11 @@ export interface FlightInput {
   /**
    * In flight: climb (+1) / descend (−1) along the path, tilting it off the
    * aim by up to {@link GLIDE_PITCH}, so the rate goes with the airspeed and
-   * the wing keeps flying (where {@link vertical} below −0.5 is a free fall).
+   * the wing keeps flying.
    */
   glide?: number;
+  /** Cut the boots and drop in free fall (double-tap Q). */
+  freefall?: boolean;
 }
 
 export const EMPTY_INPUT = (): FlightInput => ({
@@ -140,15 +144,17 @@ export const STEP_DOWN = 1.0;
 /** Seconds after leaving the ground before it can settle again / the throttle counts. */
 const HOP_GUARD = 0.35;
 const HOP_THROTTLE = 0.5;
-/** Free fall: terminal speed at sea level (m/s), feet first in armour; quicker in thin air. */
+/** Free fall: terminal speed at sea level (m/s), feet first in armour; quicker tucked in a Q dive. */
 export const FALL_TERMINAL = 72;
-const FALL_DRAG = GRAVITY / (FALL_TERMINAL * FALL_TERMINAL);
-/** Down past this much stick is a fall (boots cut); less is a controlled descent. */
-const FALL_STICK = -0.5;
+export const FALL_DIVE_TERMINAL = 108;
+const FALL_FLARE_TERMINAL = 50;
+/** Extra hover authority (× THRUST_MAX) when pressing E to catch out of a fast descent / free fall. */
+const FALL_CATCH_THRUST = 1.7;
 /** Most the glide command tilts the flight path off the aim (rad): ~35°, a climb or dive of over half the airspeed. */
 export const GLIDE_PITCH = 0.62;
 /** Palms and limbs steering a fall (m/s²). */
-const FALL_STEER = 4;
+const FALL_STEER = 4.5;
+const FALL_DIVE_STEER = 7;
 /** Palm jets braking (X) against the travel (m/s²). */
 const PALM_BRAKE = 9;
 /**
@@ -423,8 +429,10 @@ export class FlightModel {
   private leanPrev = 0;
   /** Which way the swing turns the travel (+ left, − right, × its strength). */
   swingTurn = 0;
-  /** 0–1: boots cut and dropping (Q), eased in and out. */
+  /** 0–1: boots cut and dropping (double-tap Q), eased in and out. */
   freefall = 0;
+  /** 0–1: streamlined dive tuck while holding Q in free fall. */
+  fallTuck = 0;
   /** 0–1: the palms firing against the travel (X), eased. */
   palmBrake = 0;
   /** The pad the hover computer captures over, if there is one. */
@@ -522,6 +530,7 @@ export class FlightModel {
     this.grounded = true;
     this.crouch = 0;
     this.freefall = 0;
+    this.fallTuck = 0;
     this.palmBrake = 0;
     this.liftSpill = 0;
     this.swing = 0;
@@ -639,8 +648,10 @@ export class FlightModel {
     const landing = this.autoLand && !this.homing;
     if (landing) input = this.faceInput(input);
     if (!input.boost) this.boostLatch = false;
-    const falling = input.vertical < FALL_STICK && this.power > 0.5;
+    const falling = Boolean(input.freefall) && this.power > 0.5;
     this.freefall += ((falling ? 1 : 0) - this.freefall) * approach(dt, falling ? 0.25 : 0.4);
+    const dive = falling ? clamp(-input.vertical, 0, 1) : 0;
+    this.fallTuck += (dive - this.fallTuck) * approach(dt, 0.2);
     this._prevVel.copy(this.vel);
     const speed = this.vel.length();
     const f = this.forward(this._f);
@@ -729,7 +740,7 @@ export class FlightModel {
     // 100 m/s, a steady sink below wherever the pilot looked. Fly the path
     // onto the aim instead: carry the nose the angle of attack the wing needs
     // to hold the path against gravity (as the lift below is reckoned)
-    const fallK = input.vertical < 0 ? 1 + input.vertical : 1;
+    const fallK = 1 - this.freefall;
     const liftK = fl * (1 - 0.95 * this.liftSpill) * (1 - this.swing) * fallK;
     let aoa = 0;
     if (liftK > 0.2 && speed > 20) {
@@ -930,7 +941,8 @@ export class FlightModel {
     // Height first, then what thrust is left goes to the horizontal (a real
     // VTOL computer never trades altitude for a stop)
     // (auto-land runs the boots hotter, as the boost does: it's in a hurry)
-    const hoverMax = THRUST_MAX * (landing ? AUTOLAND_THRUST : 1.1) * ceilingK;
+    const catching = !falling && input.vertical > 0.05 && this.vel.y < -12;
+    const hoverMax = THRUST_MAX * (landing ? AUTOLAND_THRUST : catching ? FALL_CATCH_THRUST : 1.1) * ceilingK;
     const hoverAcc = vWant.sub(this.vel).multiplyScalar(1.6 * this.reactor.hoverDamping);
     // Braking, a firmer hold on the horizontal: the stop settles, not drifts
     if (input.brake) {
@@ -1007,7 +1019,7 @@ export class FlightModel {
     // hot they answer at once
     const thrustGoal = grounded ? 0 : thrust * this.power;
     const spooled = smooth(0.1, 0.45, this.thrust / THRUST_MAX);
-    const spoolTau = (thrustGoal > this.thrust ? THREE.MathUtils.lerp(SPOOL_IDLE, 0.12, spooled) : 0.16) / this.reactor.spoolRate;
+    const spoolTau = ((thrustGoal > this.thrust ? THREE.MathUtils.lerp(SPOOL_IDLE, 0.12, spooled) : 0.16) * (catching ? 0.65 : 1)) / this.reactor.spoolRate;
     this.thrust += (thrustGoal - this.thrust) * approach(dt, spoolTau);
     this.throttle = clamp(this.thrust / THRUST_BOOST, 0, 1);
     acc.addScaledVector(thrustDir, this.thrust);
@@ -1099,14 +1111,21 @@ export class FlightModel {
     // hit it, and the brakes bit as a step on the first frame)
     const flareCap = FLARE_DRAG_MAX * smooth(0, 1, Math.max(this.airbrake, 1 - fl));
     const flareDrag = Math.min(DRAG * (this.airbrake * 5 + (1 - fl) * 3) * rho * speed * speed, flareCap) * (1 - this.swing);
-    const dragK = rho * THREE.MathUtils.lerp(DRAG * wave, FALL_DRAG, this.freefall);
+    const fallFlare = falling && input.vertical > 0 ? clamp(input.vertical, 0, 1) : 0;
+    const fallTerm =
+      this.fallTuck > fallFlare
+        ? THREE.MathUtils.lerp(FALL_TERMINAL, FALL_DIVE_TERMINAL, this.fallTuck)
+        : THREE.MathUtils.lerp(FALL_TERMINAL, FALL_FLARE_TERMINAL, fallFlare);
+    const fallDrag = GRAVITY / (fallTerm * fallTerm);
+    const dragK = rho * THREE.MathUtils.lerp(DRAG * wave, fallDrag, this.freefall);
     acc.addScaledVector(this.vel, -(dragK * speed + (flareDrag * (1 - this.freefall)) / Math.max(speed, 1)));
     // Falling, the hands and legs steer it a little (forward / sideways)
     if (falling) {
       const hx = vWant.x - this.vel.x;
       const hz = vWant.z - this.vel.z;
       const hl2 = Math.hypot(hx, hz);
-      if (hl2 > 1e-3) acc.add(this._v.set(hx, 0, hz).multiplyScalar(Math.min(FALL_STEER, hl2 * 1.5) / hl2));
+      const steer = THREE.MathUtils.lerp(FALL_STEER, FALL_DIVE_STEER, this.fallTuck);
+      if (hl2 > 1e-3) acc.add(this._v.set(hx, 0, hz).multiplyScalar(Math.min(steer, hl2 * 1.5) / hl2));
     }
     // Palm jets against the travel: X
     const palmGoal = input.brake && !this.grounded ? smooth(2, 14, speed) : 0;
@@ -1128,7 +1147,7 @@ export class FlightModel {
       const perp = this._v.copy(this.vel).addScaledVector(fNow, -this.vel.dot(fNow));
       // Flared for the brakes the body is a parachute, not a wing: no balloon
       // Full down kills the wing so the body falls instead of gliding
-      const fall = input.vertical < 0 ? 1 + input.vertical : 1;
+      const fall = 1 - this.freefall;
       // and the pitch-up of the flare doesn't slam it (the load is capped low)
       const lift = perp.multiplyScalar(-LIFT * speed * rho * fl * (1 - 0.95 * this.liftSpill) * (1 - this.swing) * (dashing ? 0.2 : 1) * fall);
       // Lift works square to the travel: the part of it along the path made
@@ -1352,6 +1371,7 @@ export class FlightModel {
     this.swingTurn = 0;
     this.palmBrake *= 1 - approach(dt, 0.12);
     this.freefall = 0;
+    this.fallTuck = 0;
     this.padPull = 0;
     this.trimRoll *= 1 - approach(dt, 0.2);
     this.trimPitch *= 1 - approach(dt, 0.2);
@@ -1664,6 +1684,7 @@ export class FlightModel {
     this.flightness = 0;
     this.speedCmd = 0;
     this.freefall = 0;
+    this.fallTuck = 0;
     this.strafeDashActive = 0;
     this.strafeDashDir = 0;
   }

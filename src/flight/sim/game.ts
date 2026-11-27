@@ -80,6 +80,9 @@ export class Game {
   /** How long E / Q has been held one way in flight (s), and which way. */
   private glideHold = 0;
   private glideDir = 0;
+  /** Double-tap Q free fall latch: boots cut until E / W / Shift / 2×Q or landing. */
+  freefall = false;
+  private wasFreefall = false;
   private wasGrounded = true;
   /** Vapour cone and shock ring at Mach 1 (and when, with hysteresis). */
   readonly sonic: SonicBoomFx;
@@ -178,6 +181,8 @@ export class Game {
   reset(): void {
     // Heading toward the sun-side horizon over the water (south-west)
     const heading = Math.atan2(-0.55, 1);
+    this.freefall = false;
+    this.wasFreefall = false;
     this.stopAutoLand(false);
     this.hitStop.reset();
     this.vent.reset();
@@ -230,12 +235,22 @@ export class Game {
     i.lateral = c.lateral;
     i.vertical = c.vertical;
     i.glide = 0;
+    if (m.grounded || m.immersion > 0.3 || this.combat.down > 0 || this.autoLand) {
+      this.freefall = false;
+    } else {
+      if (c.freefallToggle) this.freefall = !this.freefall;
+      if (c.freefall) this.freefall = true;
+      if (this.freefall && !c.freefallToggle && (c.pressed.has('KeyE') || c.vertical > 0.15 || c.boost || c.throttle > 0.15)) {
+        this.freefall = false;
+      }
+    }
+    i.freefall = this.freefall;
     // The pilot's E / Q in flight climb and descend along the path, at a rate
-    // that goes with the airspeed; Ctrl still drops it into a free fall
+    // that goes with the airspeed; 2×Q cuts the boots into a free fall
     // (scripted reels keep the raw climb / fall command)
     // — and the longer the key's held, the steeper it goes: a nudge first,
     // building to the full climb or dive over GLIDE_RAMP s
-    if (this.pilotGlide && !c.freefall && m.flightness > 0.5 && !m.grounded) {
+    if (this.pilotGlide && !i.freefall && m.flightness > 0.5 && !m.grounded) {
       const dir = Math.abs(c.vertical) > 0.05 ? Math.sign(c.vertical) : 0;
       this.glideHold = dir !== 0 && dir === this.glideDir ? this.glideHold + this.frameDt : 0;
       this.glideDir = dir;
@@ -252,7 +267,7 @@ export class Game {
     // Rebooting: the stick is dead
     if (this.combat.down > 0) {
       i.vertical = i.lateral = i.throttle = i.glide = 0;
-      i.boost = i.brake = false;
+      i.boost = i.brake = i.freefall = false;
     }
     // Backing up in a hover: S with the throttle already closed
     i.forward = c.forward + (c.throttle < 0 && this.model.speedCmd < 1 ? -1 : 0);
@@ -441,6 +456,14 @@ export class Game {
     const m = this.model;
     if (this.wasGrounded && !m.grounded) this.events.emit('takeoff', { at: m.pos });
     this.wasGrounded = m.grounded;
+    if (this.freefall !== this.wasFreefall) {
+      if (this.freefall) {
+        this.events.emit('freefall', { at: m.pos, value: 1 });
+      } else if (!m.grounded && m.immersion <= 0.3 && this.combat.down <= 0 && !this.autoLand) {
+        this.events.emit('freefall', { at: m.pos, value: 0, text: m.vel.y < -15 ? 'catch' : 'hover' });
+      }
+      this.wasFreefall = this.freefall;
+    }
     if (m.boosting !== this.wasBoosting) this.events.emit(m.boosting ? 'boostStart' : 'boostEnd', { at: m.pos });
     this.wasBoosting = m.boosting;
     const held = m.padPull > (this.padHeld ? 0.3 : 0.7);

@@ -608,6 +608,8 @@ export class FlightApp {
       c.aimYaw = c.aimPitch = c.throttle = c.lateral = c.vertical = c.forward = 0;
       c.fire = c.missile = c.unibeam = c.flares = c.launcher = c.boost = c.brake = false;
       c.strafeDash = 0;
+      c.freefallToggle = false;
+      c.freefall = false;
       c.grapple = c.punch = false;
       c.pressed.clear();
       if (!this.paused) this.handoffPilot?.(dt, c);
@@ -771,11 +773,6 @@ export class FlightApp {
       onAbort: () => this.missions.abortMission(),
     });
     screens.actions.openMissions = () => this.openMissionsMenu();
-    const prevRestart = screens.actions.restart;
-    screens.actions.restart = () => {
-      this.missions.abortMission(true);
-      prevRestart?.();
-    };
     game.events.on((e) => {
       if (e.kind === 'redeploy') this.missions.abortMission(true);
     });

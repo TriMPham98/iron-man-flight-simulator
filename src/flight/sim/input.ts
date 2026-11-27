@@ -83,6 +83,7 @@ export class Input {
   private padPrev = new Map<number, boolean>();
   private readonly lastTapMs = new Map<string, number>();
   private pendingStrafeDash: -1 | 0 | 1 = 0;
+  private pendingFreefallToggle = false;
   /** Ramped (linear) key axes; the output is eased from these. */
   private keyLateral = 0;
   private keyVertical = 0;
@@ -100,17 +101,18 @@ export class Input {
       if (e.repeat) return;
       this.keys.add(e.code);
       this.pressedQueue.add(e.code);
-      if (e.code === 'KeyA' || e.code === 'KeyD') {
+      if (e.code === 'KeyA' || e.code === 'KeyD' || e.code === 'KeyQ') {
         const now = performance.now();
         const prev = this.lastTapMs.get(e.code) ?? -Infinity;
         if (now - prev <= DOUBLE_TAP_MS) {
-          this.pendingStrafeDash = e.code === 'KeyA' ? -1 : 1;
+          if (e.code === 'KeyQ') this.pendingFreefallToggle = true;
+          else this.pendingStrafeDash = e.code === 'KeyA' ? -1 : 1;
           this.lastTapMs.delete(e.code);
         } else {
           this.lastTapMs.set(e.code, now);
         }
       }
-      if (['Space', 'Tab', 'KeyF', 'KeyG', 'KeyQ', 'KeyE', 'ControlLeft'].includes(e.code)) e.preventDefault();
+      if (['Space', 'Tab', 'KeyF', 'KeyG', 'KeyQ', 'KeyE'].includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => {
@@ -118,6 +120,7 @@ export class Input {
       this.buttons = 0;
       this.lastTapMs.clear();
       this.pendingStrafeDash = 0;
+      this.pendingFreefallToggle = false;
       this.touch.clear();
     });
     document.addEventListener('mousemove', (e) => {
@@ -173,12 +176,14 @@ export class Input {
     const sens = MOUSE_SENS * this.sensitivity;
     const strafeDash = this.pendingStrafeDash;
     this.pendingStrafeDash = 0;
+    const freefallToggle = this.pendingFreefallToggle;
+    this.pendingFreefallToggle = false;
     const c: Controls = {
       aimYaw: -this.mouseDX * sens,
       aimPitch: -this.mouseDY * sens * (this.invertY ? -1 : 1),
       throttle: k('KeyW', 'KeyS'),
       lateral: k('KeyD', 'KeyA'),
-      vertical: k('KeyE', 'KeyQ') + (this.key('ControlLeft') ? -1 : 0),
+      vertical: k('KeyE', 'KeyQ'),
       forward: 0,
       boost: this.key('ShiftLeft', 'ShiftRight'),
       brake: this.key('KeyX'),
@@ -192,7 +197,7 @@ export class Input {
       strafeDash,
       grapple: this.pressedQueue.has(ACTION_KEYS.GRAPPLE),
       punch: this.pressedQueue.has(ACTION_KEYS.PUNCH),
-      freefall: this.key('ControlLeft'),
+      freefallToggle,
     };
     // Right button is the missile lock (hold, release to fire)
     c.missile = c.missile || (this.buttons & 2) !== 0;

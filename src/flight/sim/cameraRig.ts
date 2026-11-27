@@ -198,6 +198,7 @@ export class CameraRig {
     let fovGoal = 62;
     let lookAt: THREE.Vector3 | null = null;
 
+    const fallRush = m.freefall * THREE.MathUtils.smoothstep(-m.vel.y, 15, 95);
     if (this.mode === 'attract') {
       // Title: a slow turn round the suit standing on the bluff
       const a = this.time * 0.11 + 0.75;
@@ -211,7 +212,7 @@ export class CameraRig {
       // the aim: looking over a shoulder put it inside the shoulder plates)
       ideal.copy(head);
       this.pos.copy(ideal);
-      fovGoal = 74 + (this.reactorOvercharge ? 3.5 : this.reactorMode === 'THRUST' ? 2.5 : 0);
+      fovGoal = 74 + (this.reactorOvercharge ? 3.5 : this.reactorMode === 'THRUST' ? 2.5 : 0) + fallRush * (3 + 4 * m.fallTuck);
     } else if (this.mode === 'flyby') {
       this.flybyFrame(dt, m, fwd, ground);
       lookAt = this.look;
@@ -232,7 +233,7 @@ export class CameraRig {
       this.surgeLagVel += (sw * sw * (surgeG * surgeGain - this.surgeLag) - 2 * 0.7 * sw * this.surgeLagVel) * Math.min(dt, 0.05);
       this.surgeLag += this.surgeLagVel * Math.min(dt, 0.05);
       const dist = (close ? 3.2 : 7 + 4 * pull) * this.zoom + this.surgeLag * (close ? 0.35 : 1);
-      const height = close ? 0.75 : 2.1 + 1.2 * pull;
+      const height = (close ? 0.75 : 2.1 + 1.2 * pull) + fallRush * 1.1;
       const side = close ? 0.85 : 0;
       const right = this._v.set(1, 0, 0).applyQuaternion(this.aimQ);
       // The offset from the suit is smoothed, not the position: the suit
@@ -270,7 +271,7 @@ export class CameraRig {
       // THRUST adds +4.5 deg FOV punch, SHIELDS tightens slightly)
       const modeFov = this.reactorOvercharge ? 5.5 : this.reactorMode === 'THRUST' ? 4.5 : this.reactorMode === 'SHIELDS' ? -1.5 : 0;
       const pulseFov = this.reactorModePulse * (this.reactorMode === 'THRUST' ? 2.2 : this.reactorMode === 'WEAPONS' ? 1.0 : -0.8);
-      fovGoal = 62 + 14 * pull + (m.boosting ? 3 : 0) + surgeG * (surgeG > 0 ? 1.1 : 0.4) + modeFov + pulseFov;
+      fovGoal = 62 + 14 * pull + (m.boosting ? 3 : 0) + surgeG * (surgeG > 0 ? 1.1 : 0.4) + modeFov + pulseFov + fallRush * (5 + 6 * m.fallTuck);
     }
 
     // Never under the ground or the sea (the helmet eye is wherever the

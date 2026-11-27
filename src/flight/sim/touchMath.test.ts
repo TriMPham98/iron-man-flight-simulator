@@ -334,6 +334,36 @@ describe('Input with the touch source', () => {
     input.requestLock();
     expect(target.requestPointerLock).not.toHaveBeenCalled();
   });
+
+  it('double-tap Q toggles freefall without Ctrl affecting vertical or freefall', async () => {
+    const winListeners = new Map<string, (e: KeyboardEvent) => void>();
+    vi.stubGlobal('window', {
+      addEventListener: (ev: string, fn: (e: KeyboardEvent) => void) => winListeners.set(ev, fn),
+    });
+    const { Input } = await import('./input');
+    const target = (globalThis as Record<string, unknown>).__target as HTMLElement;
+    const input = new Input(target);
+    const kd = winListeners.get('keydown')!;
+    const ku = winListeners.get('keyup')!;
+    const tap = (code: string) => {
+      kd({ code, repeat: false, preventDefault: () => {} } as KeyboardEvent);
+      ku({ code } as KeyboardEvent);
+    };
+
+    kd({ code: 'ControlLeft', repeat: false, preventDefault: () => {} } as KeyboardEvent);
+    let c = input.read(1 / 60);
+    expect(c.vertical).toBe(0);
+    expect(c.freefall).toBeUndefined();
+    expect(c.freefallToggle).toBe(false);
+    ku({ code: 'ControlLeft' } as KeyboardEvent);
+
+    tap('KeyQ');
+    expect(input.read(1 / 60).freefallToggle).toBe(false);
+    tap('KeyQ');
+    c = input.read(1 / 60);
+    expect(c.freefallToggle).toBe(true);
+    expect(input.read(1 / 60).freefallToggle).toBe(false);
+  });
 });
 
 describe('touch take-off / hover / landing on the flight model', () => {

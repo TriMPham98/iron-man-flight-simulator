@@ -1,6 +1,16 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
-import { EMPTY_INPUT, FlightModel, G_LIMIT, MAX_MACH, STRAFE_DASH_COOLDOWN, STRAFE_DASH_DURATION, type GroundProbe } from './flightModel';
+import {
+  EMPTY_INPUT,
+  FALL_DIVE_TERMINAL,
+  FALL_TERMINAL,
+  FlightModel,
+  G_LIMIT,
+  MAX_MACH,
+  STRAFE_DASH_COOLDOWN,
+  STRAFE_DASH_DURATION,
+  type GroundProbe,
+} from './flightModel';
 import { MAX_LEVEL, UPGRADES } from './upgrades';
 
 /** Flat ground at y = 0 (or sea, for the water tests). */
@@ -570,14 +580,14 @@ describe('FlightModel', () => {
     expect(m.grounded).toBe(true);
   });
 
-  it('falls feet first to its terminal speed on full down, and holds it', () => {
+  it('falls feet first to its terminal speed in free fall, and holds it', () => {
     const m = new FlightModel(flat());
     m.pos.set(0, 1500, 0);
     m.grounded = false;
     m.airT = 5;
     let maxFl = 0;
     run(m, 18, (i) => {
-      i.vertical = -1;
+      i.freefall = true;
       maxFl = Math.max(maxFl, m.flightness);
     });
     expect(maxFl).toBeLessThan(0.05); // never tips over into flight
@@ -595,7 +605,7 @@ describe('FlightModel', () => {
     let contact = 'none';
     let touch = 0;
     run(m, 10, (i) => {
-      i.vertical = -1;
+      i.freefall = true;
       if (m.contact !== 'none' && contact === 'none') {
         contact = m.contact;
         touch = m.impactSpeed;
@@ -1082,7 +1092,7 @@ describe('FlightModel', () => {
       fall.pos.set(0, 150, 0);
       fall.grounded = false;
       fall.airT = 5;
-      const feet = watch(fall, 6.5, (i) => (i.vertical = -1));
+      const feet = watch(fall, 6.5, (i) => (i.freefall = true));
       expect(feet.contacts).toContain('splash');
       expect(feet.deepest).toBeLessThan(-6);
       run(fall, 6, () => {});
@@ -1095,7 +1105,7 @@ describe('FlightModel', () => {
       m.pos.set(0, 150, 0);
       m.grounded = false;
       m.airT = 5;
-      const { deepest } = watch(m, 9, (i) => (i.vertical = -1));
+      const { deepest } = watch(m, 9, (i) => (i.freefall = true));
       expect(deepest).toBeGreaterThanOrEqual(-3.001);
     });
 
@@ -1145,6 +1155,52 @@ describe('FlightModel', () => {
       input.strafeDash = -1;
       m.step(1 / 120, input);
       expect(m.strafeDashDir).toBe(-1);
+    });
+  });
+
+  describe('free fall ascend/descend (Q/E & double-tap Q)', () => {
+    it('descends under powered hover on Q without cutting the boots', () => {
+      const m = new FlightModel(flat());
+      m.pos.set(0, 600, 0);
+      m.grounded = false;
+      m.airT = 5;
+      run(m, 6, (i) => {
+        i.vertical = -1;
+        i.freefall = false;
+      });
+      expect(m.freefall).toBeLessThan(0.05);
+      expect(m.thrust).toBeGreaterThan(5);
+      expect(-m.vel.y).toBeGreaterThan(13);
+      expect(-m.vel.y).toBeLessThan(20);
+    });
+
+    it('tucks to dive faster on Q during free fall, and catches swiftly on E', () => {
+      const m = new FlightModel(flat());
+      m.pos.set(0, 2500, 0);
+      m.grounded = false;
+      m.airT = 5;
+      run(m, 14, (i) => {
+        i.freefall = true;
+        i.vertical = 0;
+      });
+      const neutralSink = -m.vel.y;
+      expect(neutralSink).toBeGreaterThan(FALL_TERMINAL - 2);
+      expect(neutralSink).toBeLessThan(FALL_TERMINAL + 10);
+
+      run(m, 10, (i) => {
+        i.freefall = true;
+        i.vertical = -1;
+      });
+      expect(m.fallTuck).toBeGreaterThan(0.9);
+      expect(-m.vel.y).toBeGreaterThan(neutralSink + 25);
+      expect(-m.vel.y).toBeLessThan(FALL_DIVE_TERMINAL + 12);
+
+      run(m, 4.5, (i) => {
+        i.freefall = false;
+        i.vertical = 1;
+      });
+      expect(m.freefall).toBeLessThan(0.05);
+      expect(m.vel.y).toBeGreaterThan(0);
     });
   });
 });

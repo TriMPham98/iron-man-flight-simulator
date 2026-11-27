@@ -205,6 +205,7 @@ export class Hud {
   /** The prompt as last shown (it fades out on it). */
   private refitText = '';
   private takeoffAlpha = 0;
+  private freefallAlpha = 0;
   private promptAlpha = 0;
   private promptT = 0;
   private promptState: 'ready' | 'active' = 'ready';
@@ -382,6 +383,10 @@ export class Hud {
         break;
       case 'sonicBoom':
         this.showBanner('MACH 1', 'THROUGH THE BARRIER', WHITE, true);
+        break;
+      case 'freefall':
+        if (e.value) this.showBanner('FREE FALL', '2×Q HOVER · Q DIVE · E CATCH', AMBER, true);
+        else if (e.text === 'catch') this.showBanner('THRUSTERS LIT', 'CATCHING FALL', CYAN, true);
         break;
       case 'missileDecoyed':
         this.showBanner('DECOYED', 'MISSILE OFF THE SCENT', CYAN, true);
@@ -597,6 +602,7 @@ export class Hud {
     this.drawScope(g, dt, cam, m, s);
     this.drawAutoLand(g, dt, m, s);
     this.drawTakeoff(g, dt, s);
+    this.drawFreefallPrompt(g, dt, m, combat, ground, s);
     this.drawRefitHint(g, dt, s);
     this.drawLines(g, s);
     this.drawBoss(g, combat, s);
@@ -1155,7 +1161,11 @@ export class Hud {
     if (m.grounded || m.speed < 4) return;
     const thrustMode = mode === 'THRUST' || overcharge;
     const modeScale = overcharge ? 1.55 : mode === 'THRUST' ? 1.45 : mode === 'SHIELDS' ? 0.72 : 1;
-    const k = Math.min(1.45, THREE.MathUtils.smoothstep(m.mach, thrustMode ? 0.52 : 0.75, 1.2) * (helmet ? 1 : 0.75) * modeScale);
+    const fallStreaks = m.freefall * THREE.MathUtils.smoothstep(-m.vel.y, 20, 95) * (helmet ? 0.65 : 0.45);
+    const k = Math.max(
+      fallStreaks,
+      Math.min(1.45, THREE.MathUtils.smoothstep(m.mach, thrustMode ? 0.52 : 0.75, 1.2) * (helmet ? 1 : 0.75) * modeScale),
+    );
     if (k < 0.01) return;
     const fp = this.project(this._v.copy(m.pos).addScaledVector(m.vel, 200 / m.speed), cam);
     const ox = fp ? THREE.MathUtils.clamp(fp.x, this.w * 0.2, this.w * 0.8) : this.w / 2;
@@ -1544,7 +1554,17 @@ export class Hud {
     pip(wf.pips.bootL, j?.bootL ?? 0);
     pip(wf.pips.bootR, j?.bootR ?? 0);
     g.restore();
-    this.text(g, m.grounded ? 'SUIT · STANDING' : 'SUIT · THRUSTERS', cx, top + H + 11 * s, 7 * s, CYAN_DIM, 'center', JARVIS);
+    const falling = m.freefall > 0.35 && !m.grounded;
+    this.text(
+      g,
+      m.grounded ? 'SUIT · STANDING' : falling ? 'SUIT · FREE FALL' : 'SUIT · THRUSTERS',
+      cx,
+      top + H + 11 * s,
+      7 * s,
+      falling ? AMBER : CYAN_DIM,
+      'center',
+      JARVIS,
+    );
     this.text(g, oc ? '400% OVERCHARGE' : `MODE · ${mode}`, cx, top + H + 22 * s, 7.5 * s, modeCol, 'center', JARVIS);
   }
 
@@ -1704,7 +1724,7 @@ export class Hud {
       if (m.speed > 4) {
         const p = this.project(this._v.copy(m.pos).addScaledVector(m.vel, 200 / m.speed), cam);
         if (p) {
-          g.strokeStyle = WHITE;
+          g.strokeStyle = m.freefall > 0.35 && !m.grounded ? AMBER : WHITE;
           g.lineWidth = 1.4;
           const r = 6 * s;
           g.beginPath();
@@ -2084,6 +2104,36 @@ export class Hud {
     });
   }
 
+  /** Free-fall prompt under the scope: live sink speed, Q tuck dive, and E to catch. */
+  private drawFreefallPrompt(
+    g: CanvasRenderingContext2D,
+    dt: number,
+    m: FlightModel,
+    c: Combat,
+    ground: GroundProbe,
+    s: number,
+  ): void {
+    const active = !m.grounded && m.freefall > 0.35 && !this.autoLand && !this.takeoff && !c.lost && c.down <= 0;
+    this.freefallAlpha += ((active ? 1 : 0) - this.freefallAlpha) * (1 - Math.exp(-dt / (active ? 0.12 : 0.22)));
+    if (this.freefallAlpha < 0.01) return;
+    const ra = Math.max(0, m.pos.y - m.hipHeight() - ground.surface(m.pos.x, m.pos.z));
+    const low = ra < 120 && m.vel.y < -25;
+    const accent = low ? RED : AMBER;
+    const padConnected = [...(navigator.getGamepads?.() ?? [])].some((p) => p && p.connected);
+    this.keyPrompt(g, s, {
+      key: padConnected ? 'E · Ⓐ' : 'E',
+      title: m.fallTuck > 0.35 ? 'FREE FALL · DIVE' : 'FREE FALL',
+      sub: low ? 'E TO CATCH · PULL UP' : 'E CATCH · Q DIVE · 2×Q HOVER',
+      readout: `▼ ${Math.max(0, Math.round(-m.vel.y))} M/S`,
+      accent,
+      subColor: low ? RED : CYAN_DIM,
+      alpha: this.freefallAlpha,
+      breathe: low ? 0.5 + 0.5 * (0.5 + 0.5 * Math.sin(this.time * 12)) : 0.72 + 0.28 * Math.sin(this.time * 4.5),
+      pop: 1,
+      scan: -1,
+    });
+  }
+
   /**
    * One key prompt under the scope (take-off, auto-land): a key cap, a title
    * over a line of detail and an optional readout on the right, on a panel
@@ -2310,7 +2360,8 @@ export class Hud {
     const ra = m.pos.y - m.hipHeight() - ground.surface(m.pos.x, m.pos.z);
     this.text(g, `R ${Math.max(0, Math.round(ra))}`, rx + ox, y1, 11 * s, ra < 50 ? AMBER : CYAN, 'center', MONO, room);
     const vs = m.vel.y;
-    this.text(g, `${vs >= 0 ? '▲' : '▼'} ${Math.abs(vs).toFixed(0)}`, rx + ox, y2, 11 * s, CYAN_DIM, 'center', MONO, room);
+    const vsColor = m.freefall > 0.35 ? (ra < 120 && vs < -25 ? RED : AMBER) : CYAN_DIM;
+    this.text(g, `${vs >= 0 ? '▲' : '▼'} ${Math.abs(vs).toFixed(0)}`, rx + ox, y2, 11 * s, vsColor, 'center', MONO, room);
   }
 
   /**
@@ -2936,12 +2987,31 @@ export class Hud {
         g.fillRect(bx, y + 22 * s, 118 * s, 1.5 * s);
       }
     });
-    const cmd = m.boosting ? 'BOOST' : m.grounded ? 'GROUND' : m.flightness < 0.5 ? 'HOVER' : `CRUISE ${Math.round((m.speedCmd / CRUISE_MAX) * 100)}%`;
-    this.text(g, cmd, bx, y + 38 * s, 12 * s, m.boosting ? AMBER : WHITE, 'left', MONO, 262 * s - bx);
+    const falling = !m.grounded && m.freefall > 0.35;
+    const hovering = !m.grounded && !falling && m.flightness < 0.5;
+    const hoverVert = hovering ? (m.vel.y > 2.5 ? 'ASCEND' : m.vel.y < -2.5 ? 'DESCEND' : '') : '';
+    const cmd = m.boosting
+      ? 'BOOST'
+      : m.grounded
+        ? 'GROUND'
+        : falling
+          ? m.fallTuck > 0.35
+            ? 'FREE FALL · DIVE'
+            : 'FREE FALL'
+          : hovering
+            ? hoverVert
+              ? `HOVER · ${hoverVert}`
+              : 'HOVER'
+            : `CRUISE ${Math.round((m.speedCmd / CRUISE_MAX) * 100)}%`;
+    this.text(g, cmd, bx, y + 38 * s, 12 * s, m.boosting || falling ? AMBER : WHITE, 'left', MONO, 262 * s - bx);
     if (c.lost || c.down > 0) {
       this.text(g, c.lost ? 'SUIT OFFLINE' : 'POWER REBOOT', bx, y + 58 * s, 9 * s, RED, 'left', MONO, 262 * s - bx);
     } else if (m.icing > 0.01) {
       this.text(g, `ICING ${Math.round(m.icing * 100)}%`, bx, y + 58 * s, 9 * s, AMBER, 'left', MONO, 262 * s - bx);
+    } else if (falling) {
+      this.text(g, `BOOTS CUT · ${Math.max(0, Math.round(-m.vel.y))} M/S`, bx, y + 58 * s, 9 * s, AMBER, 'left', MONO, 262 * s - bx);
+    } else if (hoverVert === 'DESCEND') {
+      this.text(g, '2×Q FREE FALL', bx, y + 58 * s, 9 * s, CYAN_DIM, 'left', MONO, 262 * s - bx);
     } else {
       this.text(g, m.grounded ? 'STANDING BY' : `MACH ${m.mach.toFixed(2)}`, bx, y + 58 * s, 9 * s, CYAN_LABEL, 'left', MONO, 262 * s - bx);
     }

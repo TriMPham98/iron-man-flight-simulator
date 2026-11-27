@@ -105,7 +105,6 @@ export function bindFlightSettings(app: FlightApp): void {
 
   // ── Pause menu actions ──
   screens.actions = {
-    restart: () => game.reset(),
     cycleCamera: () => game.rig.cycle(),
     cameraName: () => game.rig.mode,
     forceResume: () => {

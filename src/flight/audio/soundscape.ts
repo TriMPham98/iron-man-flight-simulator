@@ -480,6 +480,14 @@ export class Soundscape {
           A.play(SFX.servoWhir, { at: m.pos, gain: 0.35, ref: 6, delay: 0.1 });
         } else A.play(SFX.lockTick, { ui: true, gain: 0.2, rate: 0.7 });
         break;
+      case 'freefall':
+        if (e.value) {
+          A.play(SFX.steamRelease, { at: m.pos, gain: 0.35, rate: 0.9, ref: 6 });
+          A.play(SFX.lockTick, { ui: true, gain: 0.22, rate: 0.68 });
+        } else if (e.text === 'catch') {
+          A.play(SFX.thrusterIgnite, { at: m.pos, gain: 0.55, rate: 1.05, offset: 0.4, fadeIn: 0.02, ref: 8 });
+        }
+        break;
       case 'padCapture':
         // The pad has the suit: one soft tick (nothing when it lets go)
         if (e.value) A.play(SFX.lockTick, { ui: true, gain: 0.22, rate: 0.8 });
@@ -1045,21 +1053,27 @@ export class Soundscape {
     const modeGain = rOver ? 1.12 : rMode === 'THRUST' ? 1.08 : 1;
     const supIn = sup * (1 - this.observer);
     const lp = THREE.MathUtils.lerp(16000, 2200, supIn);
-    this.thrust?.set((m.grounded ? 0 : (0.15 + 0.9 * thr) * modeGain) * (1 - 0.4 * supIn), (0.82 + 0.42 * thr) * wmPitch * modePitch, lp);
+    this.thrust?.set((m.grounded ? 0 : (0.15 * (1 - m.freefall) + 0.9 * thr) * modeGain) * (1 - 0.4 * supIn), (0.82 + 0.42 * thr) * wmPitch * modePitch, lp);
     this.boost?.set(m.boosting ? 0.55 * modeGain * (1 - 0.5 * supIn) : 0, (1.35 + 0.2 * thr) * wmPitch * modePitch, lp * 0.7);
     // The air torn open behind a fast suit: only from outside it
     const tear = THREE.MathUtils.smoothstep(m.speed, 40, 320);
     this.roar?.set(tear * (0.9 + 0.5 * (m.boosting ? 1 : 0)), 0.85 + 0.3 * tear);
-    // Wind: rises with the square of airspeed, opens up as it builds
+    // Wind: rises with the square of airspeed, opens up as it builds; free fall brings its own rush
     // (the pilot's, in the helmet — a camera on a hillside hears a breeze)
-    const air = Math.min(1, (m.speed / 260) ** 2);
-    this.wind?.set((0.05 + 0.85 * air) * inside + 0.04 * out, 0.9 + 0.3 * Math.min(1, m.speed / 400) * inside, 600 + 9000 * Math.min(1, m.speed / 300) * inside);
+    const fallRush = m.freefall * THREE.MathUtils.smoothstep(-m.vel.y, 12, 95);
+    const air = Math.min(1, Math.max((m.speed / 260) ** 2, fallRush * 0.72));
+    const windEar = Math.max(inside, fallRush * (1 - this.observer * 0.45));
+    this.wind?.set(
+      (0.05 + 0.85 * air) * windEar + 0.04 * out,
+      0.9 + 0.3 * Math.min(1, m.speed / 400) * windEar + 0.14 * fallRush * m.fallTuck,
+      600 + 9000 * Math.min(1, m.speed / 300) * windEar,
+    );
     // Air brake: the flared plates shake in the stream, a rumble that grows
     // with the air pressing on them (nothing to buffet in a hover); a hard
-    // pull shakes the plates too, under it
+    // pull or free fall shakes the armour too
     const q = THREE.MathUtils.smoothstep(m.speed, 6, 140);
     const pull = THREE.MathUtils.smoothstep(m.gLoad, 4, G_LIMIT);
-    this.buffet?.set(Math.max(m.airbrake * 1.1, pull * 0.5) * q, 0.72 + 0.38 * q, 900 + 5000 * q);
+    this.buffet?.set(Math.max(m.airbrake * 1.1, pull * 0.5, m.freefall * (0.45 + 0.35 * m.fallTuck)) * q, 0.72 + 0.38 * q, 900 + 5000 * q);
     this.beam?.set(beamOn ? 0.6 / Math.max(0.3, near * 1.6) : 0, 1.9, beamOn ? 9000 : 2000);
     this.terrain(dt, m, cam, air * inside);
     // Seeker: a low growl while it searches, higher and louder once it has
