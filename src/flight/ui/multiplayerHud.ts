@@ -44,8 +44,9 @@ const STYLES = /* css */ `
 
 .mp-chip-sub {
   font-size: 9px;
+  line-height: 1.35;
   letter-spacing: 0.08em;
-  padding: 5px 10px;
+  padding: 7px 14px;
   background: rgba(4, 14, 24, 0.62);
   border: 1px solid rgba(var(--mp-cyan-rgb), 0.25);
   border-left: 2px solid var(--mp-green);
@@ -599,7 +600,8 @@ export class MultiplayerHud {
     if (s.connected) {
       this.chipSubEl.classList.remove('hidden');
       this.chipSubEl.classList.toggle('duel', s.mode === 'duel');
-      const modeTag = s.mode === 'duel' ? '1v1 DUEL' : 'CO-OP';
+      const score = this.session.duel;
+      const modeTag = s.mode === 'duel' ? (score ? `1v1 DUEL ${score.me}–${score.them}` : '1v1 DUEL') : 'CO-OP';
       const peerText = s.peer
         ? `${s.peer.suit === 'warmachine' ? 'WAR MACHINE' : 'IRON MAN'} (${s.peer.callsign}) · ${s.rttMs} ms`
         : 'WAITING FOR 2ND PILOT...';
@@ -743,9 +745,8 @@ export class MultiplayerHud {
 
     const suitTag = peer.variant === 'warmachine' ? 'WAR MACHINE' : 'IRON MAN';
     this.mLabelEl.textContent = `${suitTag} · ${peer.callsign}`;
-    const mach = peer.mach;
-    this.mDistEl.textContent =
-      mach >= 0.4 ? `${formatDist(dist)} · M${mach.toFixed(1)}` : formatDist(dist);
+    // (just the range: their airspeed is theirs to know)
+    this.mDistEl.textContent = formatDist(dist);
   }
 
   dispose(): void {

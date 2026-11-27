@@ -167,6 +167,10 @@ function makeStubGame(pos = new THREE.Vector3(10, 50, 20)) {
       down: 0,
       weapons: { unibeamOn: false, arms: { flares: 0 } },
       duelFoes: [] as unknown[],
+      wavesEnabled: true,
+      wave: -1,
+      lost: false,
+      clearHostiles: () => {},
       playerTarget: { hit: vi.fn() },
     },
   } as unknown as ConstructorParameters<typeof MultiplayerSession>[0];
@@ -386,10 +390,22 @@ describe('MultiplayerSession 2-Player End-to-End Sync', () => {
     expect(hit.mock.calls[0][0]).toBeCloseTo(4.5, 3);
     expect(hit.mock.calls[0][2]).toBe('bullet');
 
+    // No waves in a duel, and the knock-downs keep score on both sides
+    expect((hostGame.combat as unknown as { wavesEnabled: boolean }).wavesEnabled).toBe(false);
+    expect(host.duel).toEqual({ me: 0, them: 0, foe: 'STARK' });
+    (guestGame.combat as unknown as { down: number }).down = 3;
+    guest.update(0.05, false);
+    host.update(0.05, false);
+    host.update(0.2, false);
+    expect(guest.duel?.them).toBe(1);
+    expect(host.duel?.me).toBe(1);
+
     // Back to co-op: out of the sights
     host.setMode('coop');
     host.update(0.05, false);
     expect(foes.length).toBe(0);
+    expect(host.duel).toBeNull();
+    expect((hostGame.combat as unknown as { wavesEnabled: boolean }).wavesEnabled).toBe(true);
     host.dispose();
     guest.dispose();
   });

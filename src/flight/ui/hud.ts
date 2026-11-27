@@ -289,6 +289,8 @@ export class Hud {
   showFps = true;
   /** Settings › Display › Text size: every HUD label and readout drawn this much larger (0.75–1.6). */
   textScale = 1;
+  /** A multiplayer duel's score (set by the app; null outside one): on the radar's plate in place of the wave tally. */
+  duel: { me: number; them: number; foe: string } | null = null;
   /** Wall-clock frame times (ms, a ring), the window being averaged, and what the readout shows. */
   private readonly frameMs = new Float32Array(FPS_BARS);
   private frameHead = 0;
@@ -306,6 +308,15 @@ export class Hud {
     Object.assign(canvas.style, { position: 'fixed', left: '0', top: '0', pointerEvents: 'none', zIndex: '2' });
     this.glow = true;
     this.resize(window.innerWidth, window.innerHeight);
+    // The canvas only draws in a web font once it's loaded, and only asks
+    // for the glyph ranges the page's own text has used: load both faces'
+    // every weight the HUD draws in up front (Windows Chrome otherwise drew
+    // some labels in the fallback face, letters mismatched across a prompt)
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+    if (fonts?.load) {
+      const sample = 'AUTO-LAND PAD IN RANGE TAKE CONTROL 0123456789 ·▾▴◂▸—–';
+      for (const f of ['400 12px Michroma', '500 12px "JetBrains Mono"', '600 12px "JetBrains Mono"']) void fonts.load(f, sample).catch(() => {});
+    }
   }
 
   /** The holographic bloom (off on the low preset). */
@@ -639,8 +650,8 @@ export class Hud {
     const pad = 8 * s;
     const fps = this.fpsShown;
     const col = fps > 0 ? fpsColor(fps) : CYAN_DIM;
-    this.text(g, 'FPS', x + pad, y + 11 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
-    this.text(g, fps > 0 ? `${Math.round(fps)}` : '--', x + w - pad, y + 11.5 * s, 13 * s, fps > 0 && fps < 30 && Math.sin(this.time * 8) > 0 ? WHITE : col, 'right');
+    this.text(g, 'FPS', x + pad, y + 11 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS, w * 0.4);
+    this.text(g, fps > 0 ? `${Math.round(fps)}` : '--', x + w - pad, y + 11.5 * s, 13 * s, fps > 0 && fps < 30 && Math.sin(this.time * 8) > 0 ? WHITE : col, 'right', MONO, w * 0.45);
     // Sparkline: oldest on the left, a bar per frame, taller is slower
     const gx = x + pad;
     const gw = w - 2 * pad;
@@ -671,8 +682,8 @@ export class Hud {
       g.setLineDash([]);
     });
     const ms = this.msShown > 0 ? this.msShown.toFixed(1) : '--';
-    this.text(g, `${ms}ms`, gx, y + h - 7 * s, 7 * s, CYAN_LABEL, 'left');
-    this.text(g, `MIN ${this.lowShown > 0 ? Math.round(this.lowShown) : '--'}`, gx + gw, y + h - 7 * s, 7 * s, this.lowShown > 0 ? fpsColor(this.lowShown) : CYAN_DIM, 'right');
+    this.text(g, `${ms}ms`, gx, y + h - 7 * s, 7 * s, CYAN_LABEL, 'left', MONO, gw / 2 - 3 * s);
+    this.text(g, `MIN ${this.lowShown > 0 ? Math.round(this.lowShown) : '--'}`, gx + gw, y + h - 7 * s, 7 * s, this.lowShown > 0 ? fpsColor(this.lowShown) : CYAN_DIM, 'right', MONO, gw / 2 - 3 * s);
   }
 
   /** Runs a panel's drawing as it boots: flickering on and settling in from (dx, dy). */
@@ -941,8 +952,8 @@ export class Hud {
       g.save();
       g.globalAlpha *= r;
       g.translate((1 - r) ** 2 * -16 * s, 0);
-      this.text(g, label, x, y - 7 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
-      this.text(g, value, x, y + 8 * s, 14 * s, color, 'left');
+      this.text(g, label, x, y - 7 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS, W / 2 - 24 * s);
+      this.text(g, value, x, y + 8 * s, 14 * s, color, 'left', MONO, W / 2 - 24 * s);
       g.restore();
     }
     g.restore();
@@ -962,7 +973,7 @@ export class Hud {
       g.save();
       g.globalAlpha *= k * (1 - out);
       const dy = (1 - k) * 6 * s;
-      this.text(g, `+${a.pts} R&D`, x, y + dy, 10.5 * s, AMBER, 'right');
+      this.text(g, `+${a.pts} R&D`, x, y + dy, 10.5 * s, AMBER, 'right', MONO, 62 * s);
       if (a.why) this.text(g, a.why, x - 68 * s, y + dy, 7.5 * s, CYAN_LABEL, 'right', JARVIS);
       g.restore();
       y -= 17 * s;
@@ -984,14 +995,20 @@ export class Hud {
     const open = 1 - (1 - Math.min(1, age / 0.35)) ** 3;
     const out = age > life - 0.4 ? (age - (life - 0.4)) / 0.4 : 0;
     const size = (b.minor ? 14 : 24) * s;
-    const half = (b.minor ? 110 : 190) * s;
+    // (as wide as the title and its tracking at the text size set, so neither line runs past the rules)
+    g.font = `400 ${size * this.textScale}px ${JARVIS}`;
+    const titleW = g.measureText(b.title).width + b.title.length * size * this.textScale * 0.3;
+    g.font = `400 ${size * 0.34 * this.textScale}px ${JARVIS}`;
+    const subW = g.measureText(b.sub).width + b.sub.length * size * 0.12 * this.textScale;
+    const vs = size * this.textScale;
+    const half = Math.min(this.w / 2 - 12 * s, Math.max((b.minor ? 110 : 190) * s, Math.max(titleW, subW) / 2 + 18 * s));
     g.save();
     g.globalAlpha *= 1 - out;
     // Rules, out from the centre (they close back in on the way out)
     const reach = half * open * (1 - out * 0.6);
     g.strokeStyle = b.color;
     g.lineWidth = 1.2;
-    for (const dy of [-size * 0.95, size * 1.25]) {
+    for (const dy of [-vs * 0.95, vs * 1.25]) {
       g.beginPath();
       g.moveTo(cx - reach, cy + dy);
       g.lineTo(cx + reach, cy + dy);
@@ -1000,20 +1017,20 @@ export class Hud {
     // End caps
     g.fillStyle = b.color;
     for (const sx of [-1, 1]) {
-      g.fillRect(cx + sx * reach - 1.5 * s, cy - size * 0.95 - 3 * s, 3 * s, 6 * s);
+      g.fillRect(cx + sx * reach - 1.5 * s, cy - vs * 0.95 - 3 * s, 3 * s, 6 * s);
     }
     // The title tracks in, flickering on
     if (age > 0.12) {
       const t = Math.min(1, (age - 0.12) / 0.4);
       if (t > 0.6 || flick(this.time, 9) > 0.35) {
         g.fillStyle = 'rgba(2, 14, 24, 0.4)';
-        g.fillRect(cx - reach, cy - size * 0.95, reach * 2, size * 2.2);
+        g.fillRect(cx - reach, cy - vs * 0.95, reach * 2, vs * 2.2);
         // (the spacing trails the last letter too: shift by half of it to stay centred)
         const track = (0.35 + (1 - t) * 0.6) * size * 0.3;
         g.letterSpacing = `${track}px`;
-        this.text(g, b.title, cx + track / 2, cy + size * 0.05, size, b.minor ? WHITE : b.color, 'center', JARVIS);
+        this.text(g, b.title, cx + track / 2, cy + vs * 0.05, size, b.minor ? WHITE : b.color, 'center', JARVIS);
         g.letterSpacing = `${size * 0.12}px`;
-        this.text(g, b.sub, cx + size * 0.06, cy + size * 0.85, size * 0.34, CYAN, 'center', JARVIS);
+        this.text(g, b.sub, cx + size * 0.06, cy + vs * 0.85, size * 0.34, CYAN, 'center', JARVIS);
         g.letterSpacing = '0px';
       }
     }
@@ -1030,9 +1047,9 @@ export class Hud {
     const hp = b.core.hp / b.core.maxHp;
     g.save();
     this.glass(g, x0 - 10 * s, y - 16 * s, W + 20 * s, 38 * s, s);
-    this.text(g, 'DREADNOUGHT', x0, y - 6 * s, 8 * s, RED, 'left', JARVIS);
+    this.text(g, 'DREADNOUGHT', x0, y - 6 * s, 8 * s, RED, 'left', JARVIS, W / 2 - 6 * s);
     const shield = b.shielded;
-    this.text(g, shield ? 'CORE SHIELDED' : 'CORE OPEN', x0 + W, y - 6 * s, 8 * s, shield ? (b.shieldFlash > 0.3 ? WHITE : AMBER) : CYAN, 'right', JARVIS);
+    this.text(g, shield ? 'CORE SHIELDED' : 'CORE OPEN', x0 + W, y - 6 * s, 8 * s, shield ? (b.shieldFlash > 0.3 ? WHITE : AMBER) : CYAN, 'right', JARVIS, W / 2 - 6 * s);
     g.fillStyle = 'rgba(255,255,255,0.14)';
     g.fillRect(x0, y + 3 * s, W, 4 * s);
     g.fillStyle = shield ? AMBER : RED;
@@ -1043,8 +1060,8 @@ export class Hud {
       g.fillStyle = i < n ? RED : 'rgba(255,255,255,0.16)';
       g.fillRect(x0 + i * 12 * s, y + 12 * s, 9 * s, 3 * s);
     }
-    this.text(g, 'ENGINES', x0 + 54 * s, y + 14 * s, 7 * s, CYAN_LABEL, 'left', JARVIS);
-    if (b.shelling && Math.sin(this.time * 10) > 0) this.text(g, 'CANNON ON THE HOUSE', x0 + W, y + 14 * s, 7 * s, AMBER, 'right', JARVIS);
+    this.text(g, 'ENGINES', x0 + 54 * s, y + 14 * s, 7 * s, CYAN_LABEL, 'left', JARVIS, 80 * s);
+    if (b.shelling && Math.sin(this.time * 10) > 0) this.text(g, 'CANNON ON THE HOUSE', x0 + W, y + 14 * s, 7 * s, AMBER, 'right', JARVIS, W - 144 * s);
     g.restore();
   }
 
@@ -1062,9 +1079,19 @@ export class Hud {
     g.restore();
   }
 
-  private text(g: CanvasRenderingContext2D, str: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left', font = MONO): void {
+  /**
+   * A line of HUD text (at the text size set). `maxW`: the room it has on a
+   * panel or plate; a line that would run past it is set smaller to fit, so
+   * it never crosses the border (the wide face, a long value, a big text size).
+   */
+  private text(g: CanvasRenderingContext2D, str: string, x: number, y: number, size: number, color: string, align: CanvasTextAlign = 'left', font = MONO, maxW?: number): void {
     size *= this.textScale;
-    g.font = `${font === JARVIS ? 400 : 500} ${size}px ${font}`;
+    const weight = font === JARVIS ? 400 : 500;
+    g.font = `${weight} ${size}px ${font}`;
+    if (maxW !== undefined && maxW > 0) {
+      const w = g.measureText(str).width;
+      if (w > maxW) g.font = `${weight} ${(size * maxW) / w}px ${font}`;
+    }
     g.fillStyle = color;
     g.textAlign = align;
     g.textBaseline = 'middle';
@@ -2001,7 +2028,7 @@ export class Hud {
   /**
    * The auto-land prompt under the scope: a key cap and AUTO-LAND while
    * it's on offer (popping in when the pad comes in range), then, once
-   * handed over, what it's doing and how to take the suit back.
+   * handed over, what it's doing and the same key cap to take the suit back.
    */
   private drawAutoLand(g: CanvasRenderingContext2D, dt: number, m: FlightModel, s: number): void {
     const state = this.autoLand;
@@ -2014,35 +2041,90 @@ export class Hud {
     if (this.promptAlpha < 0.01) return;
     const active = this.promptState === 'active';
     const pad = this.pad;
-    const cx = this.w / 2;
-    const cy = Math.min(this.h - 92 * s - this.bottomInset, this.h / 2 + 186 * s);
-    // Pops in with a little overshoot
-    const pop = 1 + 0.18 * Math.exp(-this.promptT * 10) * Math.cos(this.promptT * 26);
     const padConnected = [...(navigator.getGamepads?.() ?? [])].some((p) => p && p.connected);
     const key = this.landKey === 'TAB' && padConnected ? 'TAB · D-PAD ▼' : this.landKey;
-    const title = 'AUTO-LAND';
-    const sub = active ? `${key}  TAKE CONTROL` : 'PAD IN RANGE';
-    g.save();
-    g.translate(cx, cy);
-    g.scale(pop, pop);
-    g.globalAlpha = this.alpha * this.promptAlpha;
-    g.shadowBlur = 0;
-    g.font = `500 ${10 * s}px ${MONO}`;
-    const keyW = Math.max(18 * s, g.measureText(key).width + 12 * s);
-    const W = active ? 196 * s : keyW + 132 * s;
-    const H = 34 * s;
+    let readout: string | undefined;
+    if (active) {
+      const d = pad ? Math.hypot(m.pos.x - pad.x, m.pos.z - pad.z) : 0;
+      const h = pad ? Math.max(0, m.pos.y - m.hipHeight() - pad.y) : 0;
+      readout = `${offText(d)}  ▾${h.toFixed(h < 10 ? 1 : 0)}`;
+    }
+    // Pops in with a little overshoot
+    const pop = 1 + 0.18 * Math.exp(-this.promptT * 10) * Math.cos(this.promptT * 26);
+    const breathe = active ? 0.9 : 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(this.promptT * 5));
+    this.keyPrompt(g, s, {
+      key,
+      title: 'AUTO-LAND',
+      sub: active ? 'TAKE CONTROL' : 'PAD IN RANGE',
+      readout,
+      accent: active ? CYAN : AMBER,
+      subColor: active ? CYAN_DIM : AMBER,
+      alpha: this.promptAlpha,
+      breathe,
+      pop,
+      scan: active ? (this.promptT * 0.8) % 1 : -1,
+    });
+  }
+
+  /** TEMP: a key cap and TAKE OFF under the scope while the suit stands on the ground. */
+  private drawTakeoff(g: CanvasRenderingContext2D, dt: number, s: number): void {
+    this.takeoffAlpha += ((this.takeoff ? 1 : 0) - this.takeoffAlpha) * (1 - Math.exp(-dt / (this.takeoff ? 0.12 : 0.25)));
+    if (this.takeoffAlpha < 0.01) return;
+    const padConnected = [...(navigator.getGamepads?.() ?? [])].some((p) => p && p.connected);
+    this.keyPrompt(g, s, {
+      key: padConnected ? 'E · Ⓐ' : 'E',
+      title: 'TAKE OFF',
+      sub: 'HOLD TO CLIMB',
+      accent: CYAN,
+      subColor: CYAN_DIM,
+      alpha: this.takeoffAlpha,
+      breathe: 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(this.time * 5)),
+      pop: 1,
+      scan: -1,
+    });
+  }
+
+  /**
+   * One key prompt under the scope (take-off, auto-land): a key cap, a title
+   * over a line of detail and an optional readout on the right, on a panel
+   * sized to what's on it (at the text size set), so nothing runs over its edge.
+   */
+  private keyPrompt(
+    g: CanvasRenderingContext2D,
+    s: number,
+    o: { key: string; title: string; sub: string; readout?: string; accent: string; subColor: string; alpha: number; breathe: number; pop: number; scan: number },
+  ): void {
+    const ts = this.textScale;
+    const width = (str: string, size: number, font: string) => {
+      g.font = `${font === JARVIS ? 400 : 500} ${size * ts}px ${font}`;
+      return g.measureText(str).width;
+    };
+    const pad = 10 * s;
+    const keyW = Math.max(18 * s, width(o.key, 10 * s, MONO) + 12 * s);
+    const keyH = Math.max(20 * s, 14 * s * ts);
+    const textW = Math.max(width(o.title, 10 * s, JARVIS) + (o.readout ? width(o.readout, 9 * s, MONO) + 14 * s : 0), width(o.sub, 6.5 * s, JARVIS));
+    const W = pad + keyW + 10 * s + textW + pad;
+    const H = Math.max(34 * s, keyH + 14 * s, (10 + 6.5) * s * ts + 17 * s);
     const x0 = -W / 2;
     const y0 = -H / 2;
-    const accent = active ? CYAN : AMBER;
-    // Panel, with a breathing edge while it waits for the key
-    const breathe = active ? 0.9 : 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(this.promptT * 5));
+    // The title over the detail line, the pair centred on the cap
+    const block = (10 + 6.5) * s * ts + 3 * s;
+    const titleY = -block / 2 + 5 * s * ts;
+    const subY = block / 2 - 3.25 * s * ts;
+    const cy = Math.min(this.h - 92 * s - this.bottomInset, this.h / 2 + 186 * s);
+    g.save();
+    g.translate(this.w / 2, cy);
+    g.scale(o.pop, o.pop);
+    const a = this.alpha * o.alpha;
+    g.globalAlpha = a;
+    g.shadowBlur = 0;
     g.fillStyle = 'rgba(0, 16, 26, 0.55)';
     g.fillRect(x0, y0, W, H);
-    g.strokeStyle = accent;
-    g.globalAlpha = this.alpha * this.promptAlpha * breathe;
+    g.strokeStyle = o.accent;
+    g.globalAlpha = a * o.breathe;
     g.lineWidth = 1.2;
     g.strokeRect(x0, y0, W, H);
-    g.globalAlpha = this.alpha * this.promptAlpha;
+    g.globalAlpha = a;
     // Corner ticks
     const t = 5 * s;
     g.lineWidth = 2;
@@ -2058,61 +2140,23 @@ export class Hud {
       g.lineTo(x + dx * t, y);
       g.stroke();
     }
-    if (active) {
-      // Working: a scanning bar along the foot, and the distance still to go
-      const u = (this.promptT * 0.8) % 1;
-      g.fillStyle = CYAN;
-      g.fillRect(x0 + u * (W - 30 * s), y0 + H - 2 * s, 30 * s, 2 * s);
-      const d = pad ? Math.hypot(m.pos.x - pad.x, m.pos.z - pad.z) : 0;
-      const h = pad ? Math.max(0, m.pos.y - m.hipHeight() - pad.y) : 0;
-      this.text(g, title, x0 + 10 * s, -5 * s, 9 * s, WHITE, 'left', JARVIS);
-      this.text(g, `${offText(d)}  ▾${h.toFixed(h < 10 ? 1 : 0)}`, x0 + W - 10 * s, -5 * s, 9 * s, CYAN, 'right');
-      this.text(g, sub, x0 + 10 * s, 8 * s, 6.5 * s, CYAN_DIM, 'left', JARVIS);
-    } else {
-      // The key cap, then the offer
-      const kx = x0 + 9 * s;
-      g.fillStyle = 'rgba(255, 184, 77, 0.16)';
-      g.fillRect(kx, -10 * s, keyW, 20 * s);
-      g.strokeStyle = AMBER;
-      g.lineWidth = 1.2;
-      g.strokeRect(kx, -10 * s, keyW, 20 * s);
-      this.text(g, key, kx + keyW / 2, 0.5 * s, 10 * s, WHITE, 'center');
-      this.text(g, title, kx + keyW + 10 * s, -5 * s, 10 * s, WHITE, 'left', JARVIS);
-      this.text(g, sub, kx + keyW + 10 * s, 8 * s, 6.5 * s, AMBER, 'left', JARVIS);
+    // Working: a scanning bar along the foot
+    if (o.scan >= 0) {
+      g.fillStyle = o.accent;
+      g.fillRect(x0 + o.scan * (W - 30 * s), y0 + H - 2 * s, 30 * s, 2 * s);
     }
-    g.restore();
-    g.globalAlpha = this.alpha;
-  }
-
-  /** TEMP: a key cap and TAKE OFF under the scope while the suit stands on the ground. */
-  private drawTakeoff(g: CanvasRenderingContext2D, dt: number, s: number): void {
-    this.takeoffAlpha += ((this.takeoff ? 1 : 0) - this.takeoffAlpha) * (1 - Math.exp(-dt / (this.takeoff ? 0.12 : 0.25)));
-    if (this.takeoffAlpha < 0.01) return;
-    const padConnected = [...(navigator.getGamepads?.() ?? [])].some((p) => p && p.connected);
-    const key = padConnected ? 'E · Ⓐ' : 'E';
-    g.save();
-    g.translate(this.w / 2, Math.min(this.h - 92 * s - this.bottomInset, this.h / 2 + 186 * s));
-    g.globalAlpha = this.alpha * this.takeoffAlpha;
-    g.shadowBlur = 0;
-    g.font = `500 ${10 * s}px ${MONO}`;
-    const keyW = Math.max(18 * s, g.measureText(key).width + 12 * s);
-    const W = keyW + 96 * s;
-    const H = 34 * s;
-    const x0 = -W / 2;
-    g.fillStyle = 'rgba(0, 16, 26, 0.55)';
-    g.fillRect(x0, -H / 2, W, H);
-    g.strokeStyle = CYAN;
-    g.globalAlpha = this.alpha * this.takeoffAlpha * (0.55 + 0.45 * (0.5 + 0.5 * Math.sin(this.time * 5)));
+    // The key cap
+    const kx = x0 + pad;
+    g.fillStyle = o.accent === AMBER ? 'rgba(255, 184, 77, 0.16)' : 'rgba(126, 232, 255, 0.14)';
+    g.fillRect(kx, -keyH / 2, keyW, keyH);
+    g.strokeStyle = o.accent;
     g.lineWidth = 1.2;
-    g.strokeRect(x0, -H / 2, W, H);
-    g.globalAlpha = this.alpha * this.takeoffAlpha;
-    const kx = x0 + 9 * s;
-    g.fillStyle = 'rgba(126, 232, 255, 0.14)';
-    g.fillRect(kx, -10 * s, keyW, 20 * s);
-    g.strokeRect(kx, -10 * s, keyW, 20 * s);
-    this.text(g, key, kx + keyW / 2, 0.5 * s, 10 * s, WHITE, 'center');
-    this.text(g, 'TAKE OFF', kx + keyW + 10 * s, -5 * s, 10 * s, WHITE, 'left', JARVIS);
-    this.text(g, 'HOLD TO CLIMB', kx + keyW + 10 * s, 8 * s, 6.5 * s, CYAN_DIM, 'left', JARVIS);
+    g.strokeRect(kx, -keyH / 2, keyW, keyH);
+    this.text(g, o.key, kx + keyW / 2, 0.5 * s, 10 * s, WHITE, 'center');
+    const tx = kx + keyW + 10 * s;
+    this.text(g, o.title, tx, titleY, 10 * s, WHITE, 'left', JARVIS);
+    if (o.readout) this.text(g, o.readout, x0 + W - pad, titleY, 9 * s, o.accent, 'right');
+    this.text(g, o.sub, tx, subY, 6.5 * s, o.subColor, 'left', JARVIS);
     g.restore();
     g.globalAlpha = this.alpha;
   }
@@ -2186,8 +2230,12 @@ export class Hud {
       const y = cy - (v - value) * pxPer;
       // (fading out toward the ends of the tape)
       const fade = Math.max(0, 1 - (Math.abs(y - cy) / (H / 2)) ** 2);
-      // (and kept clear of the readout box and its label)
-      const clear = THREE.MathUtils.smoothstep(Math.abs(y - cy), 16 * s, 34 * s);
+      // (and kept clear of the readout box and its label above, and the
+      // Mach / g or radar / climb readouts stacked under it: the numbers
+      // used to run through those as the tape rolled past)
+      const ts = this.textScale;
+      const out = y < cy ? cy - y - 16 * s * ts : y - cy - 36 * s * ts;
+      const clear = THREE.MathUtils.smoothstep(out, 0, 18 * s);
       g.strokeStyle = `rgba(126, 232, 255, ${0.5 * fade})`;
       g.beginPath();
       g.moveTo(x, y);
@@ -2226,9 +2274,10 @@ export class Hud {
     this.tape(g, lx, cy, spd, 50, (v) => (v >= 0 ? `${v}` : ''), -1, s, m.speedTarget * KNOTS);
     this.tape(g, rx, cy, m.pos.y, 100, (v) => `${v}`, 1, s);
     // Readout boxes, pointing in at their tape; their digits roll like a drum counter
+    const ts = this.textScale;
     const box = (x: number, label: string, value: number, align: 1 | -1) => {
-      const bw = 74 * s;
-      const bh = 24 * s;
+      const bw = 74 * s * ts;
+      const bh = 24 * s * ts;
       const tip = 7 * s;
       const near = x + align * 3 * s;
       const far = near + align * bw;
@@ -2246,17 +2295,22 @@ export class Hud {
       g.stroke();
       const mid = (near + align * tip + far) / 2;
       this.drum(g, value, mid, cy, 15 * s, bh - 3 * s);
-      this.text(g, label, mid, cy - 22 * s, 8 * s, CYAN_LABEL, 'center', JARVIS);
+      this.text(g, label, mid, cy - bh / 2 - 10 * s * ts, 8 * s, CYAN_LABEL, 'center', JARVIS, bw + 6 * s);
     };
     box(lx, 'AIRSPEED KT', spd, -1);
     box(rx, 'ALT MSL', m.pos.y, 1);
     const mach = m.mach;
-    this.text(g, `M ${mach.toFixed(2)}`, lx - 42 * s, cy + 26 * s, 11 * s, mach > 0.98 ? AMBER : CYAN, 'center');
-    this.text(g, `G ${m.gLoad.toFixed(1)}`, lx - 42 * s, cy + 42 * s, 11 * s, m.gLoad > 8 ? AMBER : CYAN_DIM, 'center');
+    // (centred under the box, stacked clear of it at the text size set)
+    const ox = (6.5 + 37 * ts) * s;
+    const y1 = cy + 26 * s * ts;
+    const y2 = cy + 42 * s * ts;
+    const room = 74 * s * ts;
+    this.text(g, `M ${mach.toFixed(2)}`, lx - ox, y1, 11 * s, mach > 0.98 ? AMBER : CYAN, 'center', MONO, room);
+    this.text(g, `G ${m.gLoad.toFixed(1)}`, lx - ox, y2, 11 * s, m.gLoad > 8 ? AMBER : CYAN_DIM, 'center', MONO, room);
     const ra = m.pos.y - m.hipHeight() - ground.surface(m.pos.x, m.pos.z);
-    this.text(g, `R ${Math.max(0, Math.round(ra))}`, rx + 42 * s, cy + 26 * s, 11 * s, ra < 50 ? AMBER : CYAN, 'center');
+    this.text(g, `R ${Math.max(0, Math.round(ra))}`, rx + ox, y1, 11 * s, ra < 50 ? AMBER : CYAN, 'center', MONO, room);
     const vs = m.vel.y;
-    this.text(g, `${vs >= 0 ? '▲' : '▼'} ${Math.abs(vs).toFixed(0)}`, rx + 42 * s, cy + 42 * s, 11 * s, CYAN_DIM, 'center');
+    this.text(g, `${vs >= 0 ? '▲' : '▼'} ${Math.abs(vs).toFixed(0)}`, rx + ox, y2, 11 * s, CYAN_DIM, 'center', MONO, room);
   }
 
   /**
@@ -2269,10 +2323,11 @@ export class Hud {
       this.text(g, `${Math.round(value)}`, x, y + size * 0.03, size, WHITE, 'center');
       return;
     }
-    g.font = `500 ${size}px ${MONO}`;
+    // (the digits are drawn at the text size set: measure them there)
+    g.font = `500 ${size * this.textScale}px ${MONO}`;
     const dw = g.measureText('0').width;
     const n = Math.max(1, `${Math.floor(value)}`.length);
-    const pitch = size * 1.15;
+    const pitch = size * this.textScale * 1.15;
     g.save();
     g.beginPath();
     g.rect(x - (n * dw) / 2 - 2, y - win / 2, n * dw + 4, win);
@@ -2819,8 +2874,8 @@ export class Hud {
     const armor = c.armor;
     const low = armor < 0.3;
     const numColor = this.armorFlash > 0 ? RED : low && Math.sin(this.time * 8) > 0 ? RED : WHITE;
-    this.text(g, `${Math.round(armor * 100)}`, ax, ay - 2 * s, 20 * s, numColor, 'center');
-    this.text(g, shieldMode ? 'SHIELD +' : 'ARMOR', ax, ay + 16 * s, 7.5 * s, shieldMode ? AMBER : oc ? WHITE : CYAN_LABEL, 'center', JARVIS);
+    this.text(g, `${Math.round(armor * 100)}`, ax, ay - 2 * s, 20 * s, numColor, 'center', MONO, r * 1.5);
+    this.text(g, shieldMode ? 'SHIELD +' : 'ARMOR', ax, ay + 16 * s, 7.5 * s, shieldMode ? AMBER : oc ? WHITE : CYAN_LABEL, 'center', JARVIS, r * 1.7);
     // Reserves: a diamond per reboot left, in the arc's open foot
     this.crisp(g, () => {
       for (let i = 0; i < RESERVES; i++) {
@@ -2846,8 +2901,8 @@ export class Hud {
     // Thrust: segments filling (eased) to the throttle, the leading one lit;
     // on boost they shimmer amber; in THRUST mode they glow electric cyan/white
     const bx = x + r * 2 + 24 * s;
-    this.text(g, thrustMode ? 'THRUST +' : 'THRUST', bx, y - 6 * s, 8 * s, oc || thrustMode ? WHITE : CYAN_LABEL, 'left', JARVIS);
-    this.text(g, `${Math.round(this.thrustShown * 100)}%`, bx + 118 * s, y - 6 * s, 9 * s, oc || thrustMode ? WHITE : CYAN, 'right');
+    this.text(g, thrustMode ? 'THRUST +' : 'THRUST', bx, y - 6 * s, 8 * s, oc || thrustMode ? WHITE : CYAN_LABEL, 'left', JARVIS, 78 * s);
+    this.text(g, `${Math.round(this.thrustShown * 100)}%`, bx + 118 * s, y - 6 * s, 9 * s, oc || thrustMode ? WHITE : CYAN, 'right', MONO, 36 * s);
     const N = 20;
     const lit = this.thrustShown * N;
     this.crisp(g, () => {
@@ -2882,13 +2937,13 @@ export class Hud {
       }
     });
     const cmd = m.boosting ? 'BOOST' : m.grounded ? 'GROUND' : m.flightness < 0.5 ? 'HOVER' : `CRUISE ${Math.round((m.speedCmd / CRUISE_MAX) * 100)}%`;
-    this.text(g, cmd, bx, y + 38 * s, 12 * s, m.boosting ? AMBER : WHITE);
+    this.text(g, cmd, bx, y + 38 * s, 12 * s, m.boosting ? AMBER : WHITE, 'left', MONO, 262 * s - bx);
     if (c.lost || c.down > 0) {
-      this.text(g, c.lost ? 'SUIT OFFLINE' : 'POWER REBOOT', bx, y + 58 * s, 9 * s, RED);
+      this.text(g, c.lost ? 'SUIT OFFLINE' : 'POWER REBOOT', bx, y + 58 * s, 9 * s, RED, 'left', MONO, 262 * s - bx);
     } else if (m.icing > 0.01) {
-      this.text(g, `ICING ${Math.round(m.icing * 100)}%`, bx, y + 58 * s, 9 * s, AMBER);
+      this.text(g, `ICING ${Math.round(m.icing * 100)}%`, bx, y + 58 * s, 9 * s, AMBER, 'left', MONO, 262 * s - bx);
     } else {
-      this.text(g, m.grounded ? 'STANDING BY' : `MACH ${m.mach.toFixed(2)}`, bx, y + 58 * s, 9 * s, CYAN_LABEL);
+      this.text(g, m.grounded ? 'STANDING BY' : `MACH ${m.mach.toFixed(2)}`, bx, y + 58 * s, 9 * s, CYAN_LABEL, 'left', MONO, 262 * s - bx);
     }
   }
 
@@ -2930,10 +2985,10 @@ export class Hud {
 
     const px = x0 + 10 * s;
     const rx = x0 + panelW - 10 * s;
-    this.text(g, 'REACTOR', px, y0 + 12 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+    this.text(g, 'REACTOR', px, y0 + 12 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS, (rx - px) * 0.45);
     g.save();
     g.globalAlpha *= pulse;
-    this.text(g, `${R.displayCode} · [4]`, rx, y0 + 12 * s, 9.5 * s, modeCol, 'right', JARVIS);
+    this.text(g, `${R.displayCode} · [4]`, rx, y0 + 12 * s, 9.5 * s, modeCol, 'right', JARVIS, (rx - px) * 0.52);
     g.restore();
 
     // 3-way live power allocation bars
@@ -2947,7 +3002,7 @@ export class Hud {
     const barW = panelW - 64 * s;
     axes.forEach((ax, i) => {
       const ay = y0 + (28 + i * 14) * s;
-      this.text(g, `${ax.key} ${ax.label}`, px, ay, 8 * s, ax.active ? ax.color : CYAN_DIM, 'left');
+      this.text(g, `${ax.key} ${ax.label}`, px, ay, 8 * s, ax.active ? ax.color : CYAN_DIM, 'left', MONO, barX - px - 4 * s);
       this.meterBar(g, barX, ay - 2.5 * s, barW, 5 * s, ax.level, ax.active ? ax.color : ax.level < 0.5 ? CYAN_DIM : CYAN);
     });
 
@@ -2962,14 +3017,14 @@ export class Hud {
           ? `COOL ${W.laserCutterCooldown.toFixed(1)}s`
           : 'HOT';
     const cutCol = W.laserCutterActive ? WHITE : W.laserCutterReady ? (isWM ? AMBER : RED) : W.laserCutterCooldown > 0 ? CYAN_DIM : AMBER;
-    this.text(g, isWM ? 'C · FLAK SWEEP' : 'C · LASER', px, cy, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
-    this.text(g, cutStatus, rx, cy, 8.5 * s, cutCol, 'right');
+    this.text(g, isWM ? 'C · FLAK SWEEP' : 'C · LASER', px, cy, 7.5 * s, CYAN_LABEL, 'left', JARVIS, (rx - px) * 0.56);
+    this.text(g, cutStatus, rx, cy, 8.5 * s, cutCol, 'right', MONO, (rx - px) * 0.4);
 
     // Overcharge capacitor bar (0–100% -> 400% surge countdown)
     const oy = y0 + 91 * s;
     const ocLabel = oc ? `400%  ${R.overchargeRemaining.toFixed(1)}s` : `${Math.round(R.overcharge * 100)}%`;
-    this.text(g, 'OVERCHARGE', px, oy, 7 * s, oc ? WHITE : CYAN_LABEL, 'left', JARVIS);
-    this.text(g, ocLabel, rx, oy, 8.5 * s, oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN, 'right');
+    this.text(g, 'OVERCHARGE', px, oy, 7 * s, oc ? WHITE : CYAN_LABEL, 'left', JARVIS, (rx - px) * 0.5);
+    this.text(g, ocLabel, rx, oy, 8.5 * s, oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN, 'right', MONO, (rx - px) * 0.46);
     this.meterBar(g, px, oy + 9 * s, panelW - 20 * s, 4 * s, THREE.MathUtils.clamp(R.overcharge, 0, 1), oc ? WHITE : R.overcharge > 0.75 ? AMBER : CYAN);
   }
 
@@ -3003,8 +3058,8 @@ export class Hud {
         g.fillRect(rowLeft - 6 * s, y - 9 * s, 2 * s, 21 * s);
         g.restore();
       }
-      this.text(g, label, rowLeft, y, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
-      this.text(g, value, x, y, 10.5 * s, color, 'right');
+      this.text(g, label, rowLeft, y, 7.5 * s, CYAN_LABEL, 'left', JARVIS, rowW * 0.52);
+      this.text(g, value, x, y, 10.5 * s, color, 'right', MONO, rowW * 0.44);
       if (extra) this.crisp(g, () => extra(rowLeft, y + 9 * s, rowW));
       y += 26 * s;
     };
@@ -3227,34 +3282,48 @@ export class Hud {
     g.fillStyle = plate;
     g.fillRect(x - R, y + R + 6 * s, 2 * R, 84 * s);
     g.restore();
+    const room = 2 * R - 8 * s;
+    // A duel: the score in place of the wave's tally
+    const duel = this.duel;
+    if (duel) {
+      this.text(g, `DUEL · ${duel.foe}`, x, y + R + 14 * s, 8 * s, RED, 'center', JARVIS, room);
+      g.save();
+      const pop = 1 + 0.45 * this.killPop * this.killPop;
+      g.translate(x, y + R + 30 * s);
+      g.scale(pop, pop);
+      this.text(g, `YOU ${duel.me}  –  ${duel.them}`, 0, 0, 12 * s, this.killFlash > 0 ? WHITE : CYAN, 'center', MONO, room);
+      g.restore();
+      this.text(g, 'FIRST TO DOWN THE OTHER SCORES', x, y + R + 46 * s, 6 * s, CYAN_LABEL, 'center', JARVIS, room);
+      return;
+    }
     // What's left of the house, once a run is going: a bar that whitens on a hit
     if (c.wave >= 0) {
       const hp = c.houseHp;
       const col = c.houseFlash > 0.5 ? WHITE : hp < 0.3 ? RED : hp < 0.6 ? AMBER : CYAN;
       const by = y + R + 70 * s;
       const hot = hp < 0.3 && Math.sin(this.time * 8) > 0;
-      this.text(g, 'HOUSE', x - R + 4 * s, by, 8 * s, hot ? RED : CYAN_LABEL, 'left', JARVIS);
-      this.text(g, `${Math.ceil(hp * 100)}%`, x + R - 4 * s, by, 9 * s, col, 'right');
+      this.text(g, 'HOUSE', x - R + 4 * s, by, 8 * s, hot ? RED : CYAN_LABEL, 'left', JARVIS, R - 6 * s);
+      this.text(g, `${Math.ceil(hp * 100)}%`, x + R - 4 * s, by, 9 * s, col, 'right', MONO, R - 6 * s);
       this.meterBar(g, x - R + 4 * s, by + 8 * s, 2 * R - 8 * s, 2.5 * s, hp, col);
     }
-    this.text(g, c.wave >= 0 ? `WAVE ${c.wave + 1}` : 'FREE FLIGHT', x, y + R + 14 * s, 8 * s, CYAN_LABEL, 'center', JARVIS);
+    this.text(g, c.wave >= 0 ? `WAVE ${c.wave + 1}` : 'FREE FLIGHT', x, y + R + 14 * s, 8 * s, CYAN_LABEL, 'center', JARVIS, room);
     // The tally pops on a kill
     g.save();
     const pop = 1 + 0.45 * this.killPop * this.killPop;
     g.translate(x, y + R + 28 * s);
     g.scale(pop, pop);
-    this.text(g, `KILLS ${c.kills}`, 0, 0, 10 * s, this.killFlash > 0 ? WHITE : CYAN, 'center');
+    this.text(g, `KILLS ${c.kills}`, 0, 0, 10 * s, this.killFlash > 0 ? WHITE : CYAN, 'center', MONO, room);
     g.restore();
     const alive = c.hostiles.filter((h) => h.alive).length;
-    if (alive) this.text(g, `HOSTILES ${alive}`, x, y + R + 42 * s, 10 * s, RED, 'center');
+    if (alive) this.text(g, `HOSTILES ${alive}`, x, y + R + 42 * s, 10 * s, RED, 'center', MONO, room);
     else if (c.waveReady) {
       // A wave is on offer: a slow pulse, and the countdown once a run is going
       g.save();
       g.globalAlpha *= 0.55 + 0.45 * Math.sin(this.time * 3);
-      this.text(g, `${this.waveKey} — CALL WAVE ${c.wave + 2}`, x, y + R + 42 * s, 9 * s, AMBER, 'center', JARVIS);
+      this.text(g, `${this.waveKey} — CALL WAVE ${c.wave + 2}`, x, y + R + 42 * s, 9 * s, AMBER, 'center', JARVIS, room);
       g.restore();
       const due = c.autoWaveIn;
-      if (due !== null) this.text(g, `INBOUND IN ${Math.ceil(due)}`, x, y + R + 56 * s, 9 * s, AMBER, 'center', JARVIS);
+      if (due !== null) this.text(g, `INBOUND IN ${Math.ceil(due)}`, x, y + R + 56 * s, 9 * s, AMBER, 'center', JARVIS, room);
     }
   }
 

@@ -240,6 +240,8 @@ export class RemotePilot {
    */
   update(dt: number, hostiles: readonly Hostile[]): void {
     this.clock += dt;
+    // (its sounds' debounce runs on this clock)
+    this.events.time = this.clock;
     this.controls.pressed.clear();
     if (!this.sample()) {
       this.mesh.visible = false;
@@ -258,8 +260,16 @@ export class RemotePilot {
     m.omega.copy(p.omega);
     const ms = m as unknown as Record<PilotScalar, number>;
     for (const k of PILOT_SCALARS) ms[k] = p.s[k];
+    const wasGrounded = m.grounded;
+    const wasBoosting = m.boosting;
     m.grounded = (p.flags & PilotFlag.GROUNDED) !== 0;
     m.boosting = (p.flags & PilotFlag.BOOSTING) !== 0;
+    // The suit's own state changes, for its sounds (the sim that flies it emits these from its model)
+    if (!first) {
+      if (wasGrounded && !m.grounded) this.events.emit('takeoff', { at: m.pos });
+      else if (!wasGrounded && m.grounded) this.events.emit(p.s.impactSpeed > 7 ? 'heroLanding' : 'touchdown', { at: m.pos, value: p.s.impactSpeed });
+      if (m.boosting !== wasBoosting) this.events.emit(m.boosting ? 'boostStart' : 'boostEnd', { at: m.pos });
+    }
     m.strafeDashDir = p.strafeDashDir;
     const g = m.gait;
     if (first) g.attached = false;
@@ -272,6 +282,7 @@ export class RemotePilot {
     this.reactor.mode = mode;
     this.reactor.overchargeRemaining = p.flags & PilotFlag.OVERCHARGE ? Math.max(this.reactor.overchargeRemaining, 1) : 0;
     if (p.reactor !== this.lastMode && !first) {
+      this.events.emit('reactorMode', { at: m.pos, text: mode });
       const v = this.vent.trigger(mode);
       if (v) this.driver.vent(v.flaps, v.dur + 0.15, v.open);
     }

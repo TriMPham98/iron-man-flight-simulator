@@ -8,7 +8,9 @@ import { applyTouch, TouchState } from './touchMath';
  * on foot, W/S walk forward and back and A/D sidestep relative to the
  * look, Shift runs and E takes off; in the air, mouse aims (the suit
  * steers toward where you look), W/S set the throttle, A/D roll in flight
- * and strafe in a hover, E climbs, Q cuts the boots (free fall), Shift
+ * and strafe in a hover, E ascends / catches a fall, Q descends (or glides
+ * in flight), double-tap Q cuts the boots (free fall; hold Q to dive faster,
+ * press E / W / Shift or double-tap Q again to recover), Shift
  * boosts, X fires the palms forward to brake. LMB repulsors, RMB missile lock
  * (release to fire), Space unibeam, C sweeping wrist laser cutter, F flares,
  * G forearm launchers, 1/2/3/4 reactor power allocation (Thrust / Weapons /
@@ -47,11 +49,13 @@ export interface Controls {
   grapple?: boolean;
   /** One-shot Thruster Punch trigger (KeyH). */
   punch?: boolean;
-  /** Held free-fall key (Ctrl): in flight, E / Q glide along the path; this drops it. */
+  /** One-shot free-fall toggle from double-tapping Q (KeyQ). */
+  freefallToggle?: boolean;
+  /** Held or forced free-fall override (e.g. scripted / test input). */
   freefall?: boolean;
 }
 
-/** Maximum interval (ms) between taps on A/D to trigger a lateral strafe burst. */
+/** Maximum interval (ms) between taps on A/D or Q to trigger a double-tap action. */
 const DOUBLE_TAP_MS = 280;
 
 /** Conflict-free keyboard bindings for close-quarters actions. */

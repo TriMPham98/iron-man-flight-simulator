@@ -24,6 +24,7 @@ export type SimEventKind =
   | 'sonicBoom'
   | 'boostStart'
   | 'boostEnd'
+  | 'freefall'
   | 'flapServo'
   // Weapons
   | 'repulsorCharge'

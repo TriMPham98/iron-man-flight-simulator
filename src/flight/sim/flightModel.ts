@@ -145,8 +145,8 @@ export const FALL_TERMINAL = 72;
 const FALL_DRAG = GRAVITY / (FALL_TERMINAL * FALL_TERMINAL);
 /** Down past this much stick is a fall (boots cut); less is a controlled descent. */
 const FALL_STICK = -0.5;
-/** Most the glide command tilts the flight path off the aim (rad): ~18°, a climb or sink of a third of the airspeed. */
-export const GLIDE_PITCH = 0.32;
+/** Most the glide command tilts the flight path off the aim (rad): ~35°, a climb or dive of over half the airspeed. */
+export const GLIDE_PITCH = 0.62;
 /** Palms and limbs steering a fall (m/s²). */
 const FALL_STEER = 4;
 /** Palm jets braking (X) against the travel (m/s²). */

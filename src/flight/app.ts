@@ -18,6 +18,8 @@ import { Hud } from './ui/hud';
 import { MissionManager } from './missions/missionManager';
 import { MissionHud } from './ui/missionHud';
 import { MultiplayerSession } from './net/multiplayer';
+import type { EventBus } from './sim/events';
+import type { FlightModel } from './sim/flightModel';
 import { MultiplayerHud } from './ui/multiplayerHud';
 import { SuitWireframe } from './ui/suitWireframe';
 import { TouchControls } from './ui/touchControls';
@@ -65,6 +67,10 @@ export class FlightApp {
   readonly camera: THREE.PerspectiveCamera;
   readonly audio = new GameAudio();
   readonly sounds = new Soundscape(this.audio);
+  /** The other pilot's suit in multiplayer, heard as a cinematic camera hears one: from outside, through the air. */
+  readonly peerSounds = new Soundscape(this.audio, true);
+  /** The wingman whose events {@link peerSounds} is hearing. */
+  private peerHeard: object | null = null;
   readonly timings: BuildTimings = {};
   readonly query = new URLSearchParams(location.search);
   readonly device = deviceProfile();
@@ -666,6 +672,7 @@ export class FlightApp {
       : home
         ? `RETURN TO THE PAD TO REFIT · ${this.upgrades.state.rd} R&D`
         : null;
+    hud.duel = this.multiplayer?.duel ?? null;
     hud.draw(dt, camera, game.model, game.combat, game.ground, game.rig.mode === 'helmet');
     this.missionHud.update(camera, game.model.pos, this.missions.telemetry, this.engaged && !director && !cinematic);
     // (the wingman's marker never sits over a menu: pause, refit, missions or the uplink drawer)
@@ -674,6 +681,7 @@ export class FlightApp {
     this.sounds.update(dt, game.model, game.combat, camera, game.rig.mode === 'helmet', game.combat.weapons.unibeamOn);
     // The wingman's sonic boom, as their Mach cone sweeps over the ear
     const peer = this.multiplayer?.peer;
+    this.hearPeer(dt, camera);
     this.sounds.wingman(peer && peer.mesh.visible ? peer.pos : null, peer?.vel ?? game.model.vel, peer?.mach ?? 0);
     this.post.render(dt, this.lens);
   }
@@ -785,9 +793,37 @@ export class FlightApp {
       return;
     }
     this.paused = true;
-    this.audio.setPaused(!this.multiplayer?.active);
+    this.audio.setPaused(true);
     this.missionHud.setOpen(true);
     this.input?.releaseLock();
+  }
+
+  /** The other pilot's full suit sounds: its weapons' and jets' events, and its loops from where it flies. */
+  private hearPeer(dt: number, camera: THREE.PerspectiveCamera): void {
+    const peer = this.multiplayer?.peer as
+      | (NonNullable<MultiplayerSession['peer']> & { events?: EventBus; model?: FlightModel; weapons?: { unibeamOn?: boolean }; reactor?: { mode: string; overchargeActive: boolean } })
+      | null
+      | undefined;
+    if (!peer?.events || !peer.model) {
+      if (this.peerHeard) this.peerSounds.updateRemote(dt, this.game.model, camera.position, { visible: false, beamOn: false });
+      this.peerHeard = null;
+      return;
+    }
+    if (this.peerHeard !== peer) {
+      this.peerHeard = peer;
+      const model = peer.model;
+      peer.events.on((e) => {
+        if (this.peerHeard === peer) this.peerSounds.on(e, model);
+      });
+    }
+    this.peerSounds.variant = peer.variant;
+    this.peerSounds.updateRemote(dt, peer.model, camera.position, {
+      visible: peer.mesh.visible,
+      beamOn: !!peer.weapons?.unibeamOn,
+      mode: peer.reactor?.mode,
+      overcharge: peer.reactor?.overchargeActive,
+      down: peer.down,
+    });
   }
 
   /** Wires 2-player Iron Man + War Machine multiplayer session & JARVIS lobby drawer. */
@@ -840,7 +876,7 @@ export class FlightApp {
       return;
     }
     this.paused = true;
-    this.audio.setPaused(!this.multiplayer.active);
+    this.audio.setPaused(true);
     this.multiplayerHud.setOpen(true);
     this.input?.releaseLock();
   }
@@ -905,7 +941,7 @@ export class FlightApp {
       if (this.engaged && !locked && !this.autopilot && !this.director) {
         if (this.missionHud?.open || this.multiplayerHud?.open) return;
         this.paused = true;
-        this.audio.setPaused(!this.multiplayer?.active);
+        this.audio.setPaused(true);
         screens.setPaused(true, () => this.input?.requestLock());
       } else if (locked) {
         this.paused = false;

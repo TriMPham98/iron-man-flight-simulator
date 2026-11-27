@@ -145,6 +145,10 @@ export class MultiplayerSession {
   private readonly hitAt = new THREE.Vector3();
   private hitAcc = 0;
   private peerWasDown = false;
+  private selfWasDown = false;
+  private inDuel = false;
+  private wavesWere = true;
+  private readonly duelScore = { me: 0, them: 0 };
   private readonly _aim = new THREE.Vector3();
   private readonly _invQ = new THREE.Quaternion();
   private clockT = 0;
@@ -439,10 +443,32 @@ export class MultiplayerSession {
   private updateDuel(dt: number, connected: boolean): void {
     const foes = this.game.combat?.duelFoes;
     if (!foes) return;
+    const c = this.game.combat;
     const want = connected && this.mode === 'duel' && !!this.peer;
     const i = foes.indexOf(this.duelFoe);
     if (want && i < 0) foes.push(this.duelFoe);
     else if (!want && i >= 0) foes.splice(i, 1);
+    if (want !== this.inDuel) {
+      this.inDuel = want;
+      if (want) {
+        // Pilot against pilot: no waves to call (N spawns nothing), the sky
+        // cleared of the run's enemies, and a knock-down always reboots —
+        // no reserves to run out, no suit lost for good, no score lost
+        this.wavesWere = c.wavesEnabled;
+        c.wavesEnabled = false;
+        if (this.role === 'host') {
+          c.clearHostiles?.();
+          c.wave = -1;
+        }
+        if (c.lost) this.game.redeploy?.();
+        this.duelScore.me = this.duelScore.them = 0;
+        this.selfWasDown = c.down > 0;
+        this.peerWasDown = !!this.peer?.down;
+      } else {
+        c.wavesEnabled = this.wavesWere;
+      }
+      this.notify();
+    }
     if (!want) {
       this.hitAmount = 0;
       this.peerWasDown = false;
@@ -460,11 +486,34 @@ export class MultiplayerSession {
         this.hitAmount = 0;
       }
     }
+    // The score: each pilot counts their own knock-downs and the other's
+    // (both sims see both, so the two scoreboards agree)
+    const name = this.peer?.callsign ?? 'They';
     const down = !!this.peer?.down;
     if (down && !this.peerWasDown) {
-      this.game.events.emit('jarvis', { text: `${this.peer?.callsign ?? 'They'} is down, sir. Splash one.` });
+      this.duelScore.me++;
+      this.game.events.emit('kill', { at: this.duelFoe.pos, text: 'rival' });
+      this.game.events.emit('jarvis', { text: `${name} is down, sir. Splash one. ${this.scoreLine()}` });
+      this.notify();
     }
     this.peerWasDown = down;
+    const selfDown = c.down > 0;
+    if (selfDown && !this.selfWasDown) {
+      this.duelScore.them++;
+      this.game.events.emit('jarvis', { text: `${name} put us down, sir. Rebooting. ${this.scoreLine()}` });
+      this.notify();
+    }
+    this.selfWasDown = selfDown;
+  }
+
+  private scoreLine(): string {
+    const { me, them } = this.duelScore;
+    return me === them ? `All square at ${me}.` : me > them ? `We lead ${me} to ${them}.` : `We trail ${me} to ${them}.`;
+  }
+
+  /** The duel's score (null outside a duel): your knock-downs of the other pilot, and theirs of you. */
+  get duel(): { me: number; them: number; foe: string } | null {
+    return this.inDuel ? { me: this.duelScore.me, them: this.duelScore.them, foe: this.peer?.callsign ?? 'PILOT' } : null;
   }
 
   /**
@@ -648,7 +697,7 @@ export class MultiplayerSession {
           this.game.events.emit('jarvis', { text: e.text });
         } else if (e.kind === 'dmg' && Array.isArray(e.hits)) {
           this.enemies?.applyDamage(e.hits);
-        } else if (e.kind === 'callWave' && this.role === 'host') {
+        } else if (e.kind === 'callWave' && this.role === 'host' && this.mode !== 'duel') {
           const c = this.game.combat;
           if (c.waveReady) c.callWave();
         } else if (e.kind === 'repairHouse' && this.role === 'host') {

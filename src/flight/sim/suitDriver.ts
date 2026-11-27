@@ -702,25 +702,27 @@ export class SuitDriver {
     springTo(this.fallK, clamp01(m.freefall) * (1 - crouch) * (1 - bk), 6, 0.55, dt);
     const ff = clamp01(this.fallK.x);
     if (ff > 1e-3) {
+      const tuck = clamp01(m.fallTuck);
       const gust = (k: number, ph: number) => ff * k * (Math.sin(t * 11.3 + ph) * 0.6 + Math.sin(t * 17.9 + ph * 2.1) * 0.4) * clamp01(sp / 40);
       for (const [s, ph] of [
         ['L', 0],
         ['R', 1.7],
       ] as const) {
-        limbs[`arm${s}`] = lerp(limbs[`arm${s}`], 1.2 + gust(0.06, ph), ff);
-        limbs[`armFlex${s}`] = lerp(limbs[`armFlex${s}`], 0.25 + gust(0.05, ph + 1), ff);
+        limbs[`arm${s}`] = lerp(limbs[`arm${s}`], lerp(1.2, 0.28, tuck) + gust(0.06, ph), ff);
+        limbs[`armFlex${s}`] = lerp(limbs[`armFlex${s}`], lerp(0.25, -0.32, tuck) + gust(0.05, ph + 1), ff);
         limbs[`armTwist${s}`] = lerp(limbs[`armTwist${s}`], 0, ff);
-        limbs[`elbow${s}`] = lerp(limbs[`elbow${s}`], 0.6 + gust(0.08, ph + 2), ff);
-        limbs[`hip${s}`] = lerp(limbs[`hip${s}`], 0.12 + gust(0.04, ph + 3), ff);
-        limbs[`hipOut${s}`] = lerp(limbs[`hipOut${s}`], 0.16, ff);
-        limbs[`knee${s}`] = lerp(limbs[`knee${s}`], 0.22 + gust(0.05, ph + 4), ff);
-        limbs[`ankle${s}`] = lerp(limbs[`ankle${s}`], 0.45, ff);
+        limbs[`elbow${s}`] = lerp(limbs[`elbow${s}`], lerp(0.6, 0.22, tuck) + gust(0.08, ph + 2), ff);
+        limbs[`hip${s}`] = lerp(limbs[`hip${s}`], lerp(0.12, 0.04, tuck) + gust(0.04, ph + 3), ff);
+        limbs[`hipOut${s}`] = lerp(limbs[`hipOut${s}`], lerp(0.16, 0.05, tuck), ff);
+        limbs[`knee${s}`] = lerp(limbs[`knee${s}`], lerp(0.22, 0.08, tuck) + gust(0.05, ph + 4), ff);
+        limbs[`ankle${s}`] = lerp(limbs[`ankle${s}`], lerp(0.45, 0.65, tuck), ff);
       }
-      wristL = lerp(wristL, 0.25, ff);
-      wristR = lerp(wristR, 0.25, ff);
-      fingersL = fingersL.map((f) => lerp(f, -0.15, ff));
-      fingersR = fingersR.map((f) => lerp(f, -0.15, ff));
-      spineBend = lerp(spineBend, -0.12, ff);
+      wristL = lerp(wristL, lerp(0.25, 0.05, tuck), ff);
+      wristR = lerp(wristR, lerp(0.25, 0.05, tuck), ff);
+      fingersL = fingersL.map((f) => lerp(f, lerp(-0.15, -0.3, tuck), ff));
+      fingersR = fingersR.map((f) => lerp(f, lerp(-0.15, -0.3, tuck), ff));
+      pitch += 0.34 * ff * tuck;
+      spineBend = lerp(spineBend, lerp(-0.12, 0.16, tuck), ff);
     }
     const pitch0 = pitch;
     const bend0 = spineBend;

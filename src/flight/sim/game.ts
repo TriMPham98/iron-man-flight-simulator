@@ -51,6 +51,10 @@ export const AUTOLAND_CEILING = 150;
  * One flight: the suit, its flight model and body language, the camera,
  * and everything it leaves in the air. Stepped by the frame loop.
  */
+/** The glide's share of its full tilt the moment E / Q goes down, and how long a hold takes to build to all of it (s). */
+const GLIDE_START = 0.3;
+const GLIDE_RAMP = 2.5;
+
 export class Game {
   readonly model: FlightModel;
   readonly driver = new SuitDriver();
@@ -73,6 +77,9 @@ export class Game {
   private controls: Controls | null = null;
   /** The pilot has the stick (set by the app each frame): E / Q in flight glide along the path rather than climb / fall. */
   pilotGlide = false;
+  /** How long E / Q has been held one way in flight (s), and which way. */
+  private glideHold = 0;
+  private glideDir = 0;
   private wasGrounded = true;
   /** Vapour cone and shock ring at Mach 1 (and when, with hysteresis). */
   readonly sonic: SonicBoomFx;
@@ -226,9 +233,17 @@ export class Game {
     // The pilot's E / Q in flight climb and descend along the path, at a rate
     // that goes with the airspeed; Ctrl still drops it into a free fall
     // (scripted reels keep the raw climb / fall command)
+    // — and the longer the key's held, the steeper it goes: a nudge first,
+    // building to the full climb or dive over GLIDE_RAMP s
     if (this.pilotGlide && !c.freefall && m.flightness > 0.5 && !m.grounded) {
-      i.glide = c.vertical;
+      const dir = Math.abs(c.vertical) > 0.05 ? Math.sign(c.vertical) : 0;
+      this.glideHold = dir !== 0 && dir === this.glideDir ? this.glideHold + this.frameDt : 0;
+      this.glideDir = dir;
+      i.glide = c.vertical * (GLIDE_START + (1 - GLIDE_START) * THREE.MathUtils.smoothstep(this.glideHold, 0, GLIDE_RAMP));
       i.vertical = 0;
+    } else {
+      this.glideHold = 0;
+      this.glideDir = 0;
     }
     i.throttle = c.throttle;
     i.boost = c.boost;

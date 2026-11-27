@@ -218,7 +218,9 @@ describe('FlightModel', () => {
     const slow = sink(80, -1);
     const fast = sink(220, -1);
     expect(slow).toBeLessThan(-12);
-    expect(fast).toBeLessThan(slow * 2);
+    expect(fast).toBeLessThan(slow * 1.6);
+    // (a light touch — the start of a hold — is a gentler slope than a held key)
+    expect(sink(160, -0.3)).toBeGreaterThan(sink(160, -1) * 0.6);
     expect(sink(160, 1)).toBeGreaterThan(25);
     expect(Math.abs(sink(160, 0))).toBeLessThan(4);
   });

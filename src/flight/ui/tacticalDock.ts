@@ -48,7 +48,8 @@ const DOCK_STYLES = /* css */ `
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 11px;
+  padding: 6px 10px 6px 11px;
+  line-height: 1;
   background: rgba(4, 14, 24, 0.54);
   border: 1px solid rgba(var(--ftd-cyan-rgb), 0.34);
   color: rgba(232, 246, 255, 0.9);
@@ -78,6 +79,29 @@ const DOCK_STYLES = /* css */ `
   border: 1px solid rgba(var(--ftd-cyan-rgb), 0.4);
   padding: 1px 5px;
   letter-spacing: 0.04em;
+}
+/* The face's tracking trails the last letter: pulled back so the label
+   sits centred between the dot and the key cap, the same in every browser */
+.ftd-pill > span {
+  display: inline-block;
+  line-height: 1;
+  margin-right: -0.22em;
+  padding-top: 1px;
+}
+/* Status dots stay round (a squeezed flex item drew them as ovals) */
+.ftd-pill > i {
+  flex: none;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.ftd-pill kbd { line-height: 1.3; flex: none; }
+/* Cards under the pills share one width and inset */
+.ftd-stack > * {
+  box-sizing: border-box;
+  width: min(330px, 44vw);
+  max-width: 100%;
 }
 html.tc-touch .ftd-pill {
   backdrop-filter: none;

@@ -173,6 +173,23 @@ const DEBOUNCE: Partial<Record<SimEvent['kind'], number>> = {
 
 const pick = <T>(xs: readonly T[]): T => xs[Math.floor(Math.random() * xs.length)];
 
+/**
+ * The audio engine as the other pilot's suit may use it: through the air
+ * only. Its cockpit cues (the HUD bus) are theirs, not ours, so they're
+ * dropped, and it never moves or muffles the listener.
+ */
+function outsideOnly(audio: GameAudio): GameAudio {
+  return new Proxy(audio, {
+    get(target, key) {
+      if (key === 'play') return (url: string, o: { ui?: boolean } = {}) => (o.ui ? null : target.play(url, o));
+      if (key === 'loop') return (url: string, o: { ui?: boolean } = {}) => (o.ui ? null : target.loop(url, o));
+      if (key === 'setListener' || key === 'muffle') return () => {};
+      const v = Reflect.get(target, key, target);
+      return typeof v === 'function' ? v.bind(target) : v;
+    },
+  });
+}
+
 export class Soundscape {
   /** Active suit chassis: shifts War Machine's weapons & thrusters into a heavier, mechanical-ballistic sibling timbre. */
   variant: SuitVariant = 'ironman';
@@ -248,10 +265,61 @@ export class Soundscape {
   private dipLow = Infinity;
   private lastRidge = -99;
 
-  constructor(private readonly audio: GameAudio) {}
+  /**
+   * `remote`: the other pilot's suit in multiplayer, heard only as an outside
+   * camera hears a suit (the cinematic mix: its burn, boost, roar and weapons
+   * through the air, distance, delay and Doppler included). It never owns the
+   * listener, the cockpit's warnings or the ambience: those are this pilot's.
+   */
+  private readonly audio: GameAudio;
+
+  constructor(
+    audio: GameAudio,
+    private readonly remote = false,
+  ) {
+    this.audio = remote ? outsideOnly(audio) : audio;
+  }
 
   static files(): string[] {
     return [...Object.values(SFX), ...BULLET_HITS, ...BULLET_CRACKS];
+  }
+
+  /**
+   * The other pilot's suit, per frame (a `remote` soundscape): its loops
+   * from where it flies, heard at the ears {@link ear} the local mix set.
+   */
+  updateRemote(dt: number, m: FlightModel, ear: THREE.Vector3, opts: { visible: boolean; beamOn: boolean; mode?: string; overcharge?: boolean; down?: boolean }): void {
+    const A = this.audio;
+    if (!A.ready) return;
+    this.now += dt;
+    this.observer = 1;
+    this.start();
+    const ctx = A.ctx;
+    if (ctx && this.onboard) this.onboard.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+    this.track.push(this.now, m.pos);
+    // (ahead of a supersonic suit's Mach cone it isn't heard yet)
+    let gate = opts.visible ? 1 : 0;
+    if (gate && m.mach > 1.0 && m.speed > 1) {
+      const r = this._w.copy(ear).sub(m.pos);
+      const ahead = -r.dot(m.vel) / (r.length() * m.speed + 1e-6);
+      gate = ahead > Math.sqrt(1 - 1 / (m.mach * m.mach)) ? 1 : 0;
+    }
+    this.ear.copy(ear);
+    this.air?.update(this.track, this.now, ear, opts.visible ? 1 : 0, gate);
+    const on = opts.visible && !opts.down ? 1 : 0;
+    const thr = m.throttle;
+    const wmPitch = this.variant === 'warmachine' ? 0.88 : 1;
+    const modePitch = opts.overcharge ? 1.09 : opts.mode === 'THRUST' ? 1.06 : opts.mode === 'SHIELDS' ? 0.95 : 1;
+    const modeGain = opts.overcharge ? 1.12 : opts.mode === 'THRUST' ? 1.08 : 1;
+    this.thrust?.set(on * (m.grounded ? 0 : (0.15 + 0.9 * thr) * modeGain), (0.82 + 0.42 * thr) * wmPitch * modePitch, 16000);
+    this.boost?.set(on * (m.boosting ? 0.55 * modeGain : 0), (1.35 + 0.2 * thr) * wmPitch * modePitch, 11000);
+    const tear = THREE.MathUtils.smoothstep(m.speed, 40, 320);
+    this.roar?.set(opts.visible ? tear * (0.9 + 0.5 * (m.boosting ? 1 : 0)) : 0, 0.85 + 0.3 * tear);
+    const q = THREE.MathUtils.smoothstep(m.speed, 6, 140);
+    const pull = THREE.MathUtils.smoothstep(m.gLoad, 4, G_LIMIT);
+    this.buffet?.set(on * Math.max(m.airbrake * 1.1, pull * 0.5) * q, 0.72 + 0.38 * q, 900 + 5000 * q);
+    this.beam?.set(on && opts.beamOn ? 0.6 : 0, 1.9, opts.beamOn ? 9000 : 2000);
+    this.spray?.set(0, 1);
   }
 
   /** Start the loops (after unlock). */
@@ -275,6 +343,7 @@ export class Soundscape {
     this.buffet = A.loop(SFX.buffet, { out });
     this.roar = A.loop(SFX.jetLoop, { out: this.air ? [this.air.input] : undefined });
     this.spray = A.loop(SFX.spray, { out });
+    if (this.remote) return;
     this.sea = A.loop(SFX.sea);
     this.surf = A.loop(SFX.surf);
     this.trees = A.loop(SFX.trees);
