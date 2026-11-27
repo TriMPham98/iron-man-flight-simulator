@@ -524,7 +524,7 @@ export class MultiplayerHud {
         this.session.hostRoom();
         break;
       case 'join': {
-        const input = this.bodyEl.querySelector<HTMLInputElement>('.mp-input');
+        const input = this.bodyEl.querySelector<HTMLInputElement>('.mp-input:not(.mp-invite)');
         const code = sanitizeRoomCode(input?.value ?? '');
         if (code) this.session.joinRoom(code);
         break;
@@ -534,8 +534,15 @@ export class MultiplayerHud {
         break;
       case 'copy': {
         const url = this.session.inviteUrl();
-        if (url && navigator.clipboard) {
-          void navigator.clipboard.writeText(url).then(() => this.flashCopied('INVITE LINK COPIED'));
+        if (!url) break;
+        // navigator.clipboard only exists on secure origins (https / localhost), not http://<LAN-IP>.
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(url).then(
+            () => this.flashCopied('INVITE LINK COPIED'),
+            () => this.copyFallback(url),
+          );
+        } else {
+          this.copyFallback(url);
         }
         break;
       }
@@ -545,6 +552,24 @@ export class MultiplayerHud {
         break;
       }
     }
+  }
+
+  /** Legacy execCommand copy for insecure origins; if even that fails, the link stays visible to copy by hand. */
+  private copyFallback(url: string): void {
+    const ta = document.createElement('textarea');
+    ta.value = url;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    ta.remove();
+    this.flashCopied(ok ? 'INVITE LINK COPIED' : 'COPY BLOCKED · SELECT LINK BELOW');
   }
 
   private flashCopied(msg: string): void {
@@ -585,7 +610,7 @@ export class MultiplayerHud {
 
     if (!this._open) return;
 
-    const prevInput = this.bodyEl.querySelector<HTMLInputElement>('.mp-input')?.value ?? '';
+    const prevInput = this.bodyEl.querySelector<HTMLInputElement>('.mp-input:not(.mp-invite)')?.value ?? '';
     const statusCls = s.status === 'connected' ? 'online' : s.status === 'error' ? 'error' : '';
     const peerHtml = s.peer
       ? `<div>PEER: <strong>${s.peer.suit === 'warmachine' ? 'WAR MACHINE MK II' : 'IRON MAN MK III'}</strong> (${esc(s.peer.callsign)}) · ${formatDist(s.peer.distance)} · ${s.rttMs} ms</div>`
@@ -646,7 +671,8 @@ export class MultiplayerHud {
                 <button type="button" class="mp-btn" data-act="openTab">OPEN 2ND TAB</button>
                 <button type="button" class="mp-btn danger" data-act="leave">LEAVE ROOM</button>
                 ${this.copiedMsg ? `<span class="mp-copied">${esc(this.copiedMsg)}</span>` : ''}
-              </div>`
+              </div>
+              <input class="mp-input mp-invite" type="text" readonly value="${esc(this.session.inviteUrl())}" aria-label="Invite link" style="width:100%;margin-top:8px;text-transform:none;letter-spacing:normal" onfocus="this.select()">`
             : `<div class="mp-row">
                 <button type="button" class="mp-btn primary" data-act="host">HOST NEW ROOM</button>
                 <input class="mp-input" type="text" maxlength="12" placeholder="ROOM CODE" value="${esc(prevInput)}" aria-label="Room code">

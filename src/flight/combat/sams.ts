@@ -577,6 +577,17 @@ export class SamSite implements Hostile {
     for (const w of this.wheels) w.rotation.x = this.rolled / WHEEL_R;
     this.pos.copy(this.ground).add(new THREE.Vector3(0, 2.2, 0).applyQuaternion(this.mesh.quaternion));
   }
+
+  /** Multiplayer puppet (guest): wear the host's pose over whatever this frame's own update did. */
+  netPose(pos: THREE.Vector3, vel: THREE.Vector3, meshPos: THREE.Vector3, meshQ: THREE.Quaternion): void {
+    this.ground.copy(meshPos);
+    this.mesh.position.copy(meshPos);
+    this.mesh.quaternion.copy(meshQ);
+    this.pos.copy(pos);
+    this.vel.copy(vel);
+    const f = this._v.set(0, 0, 1).applyQuaternion(meshQ);
+    this.heading = Math.atan2(f.x, f.z);
+  }
 }
 
 /** Ridge-top sites in a ring round the house, chosen from the heightfield. */

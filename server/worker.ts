@@ -9,7 +9,7 @@
  *   GET /room/:code    -> WebSocket upgrade for a 2-player room (Iron Man + War Machine)
  *
  * Wire protocol:
- *   - Binary frames (64 B): high-frequency suit kinematics relayed raw to the other peer
+ *   - Binary frames: pilot state (25 Hz) and host enemy snapshots (15 Hz), relayed raw to the other peer
  *   - JSON text frames: hello / select / ping / event control messages
  */
 

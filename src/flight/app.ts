@@ -635,7 +635,8 @@ export class FlightApp {
         aimY: game.input.aim.y,
       });
     }
-    this.multiplayer?.update(dt, c.fire && this.engaged && !this.paused);
+    // (the controls are already zeroed off the stick: title, pause)
+    this.multiplayer?.update(dt, c);
     this.cameraOverride?.(camera, dt);
     world.update(simPaused ? dt : simDt, camera);
     this.updateLens(dt);
@@ -789,7 +790,8 @@ export class FlightApp {
   /** Wires 2-player Iron Man + War Machine multiplayer session & JARVIS lobby drawer. */
   private bindMultiplayer(): void {
     const { game, world, screens, query } = this;
-    this.multiplayer = new MultiplayerSession(game, world.atmosphere.uniforms);
+    // The wingman flies a second full rigged suit, built when a room opens
+    this.multiplayer = new MultiplayerSession(game, world.atmosphere.uniforms, undefined, { loadSuit: () => Suit.create() });
     this.scene.add(this.multiplayer.group);
 
     // Apply URL invite parameters (?suit=warmachine&mode=duel&mp=local&room=XXXXX)

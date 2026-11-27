@@ -679,6 +679,21 @@ export class Frigate {
     const roll = Math.sin(t * 0.29 + 1) * 0.028 + this.list;
     this.mesh.position.set(this.pos.x, this.pos.y + bob, this.pos.z);
     this.mesh.rotation.set(-pitch, this.heading, roll, 'YXZ');
+    this.carryParts();
+  }
+
+  /** Multiplayer puppet (guest): wear the host's pose over whatever this frame's own update did. */
+  netPose(pos: THREE.Vector3, vel: THREE.Vector3, meshPos: THREE.Vector3, meshQ: THREE.Quaternion): void {
+    this.pos.copy(pos);
+    this.vel.copy(vel);
+    this.mesh.position.copy(meshPos);
+    this.mesh.quaternion.copy(meshQ);
+    const f = this._v.set(0, 0, 1).applyQuaternion(meshQ);
+    this.heading = Math.atan2(f.x, f.z);
+    this.carryParts();
+  }
+
+  private carryParts(): void {
     this.mesh.updateMatrixWorld();
     for (const p of this.parts) {
       p.pos.copy(p.local).applyMatrix4(this.mesh.matrixWorld);

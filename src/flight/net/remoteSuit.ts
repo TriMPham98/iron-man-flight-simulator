@@ -5,7 +5,7 @@ import { hazeAll } from '../render/haze';
 import { beam, bolts, box, chamfer, cyl, frustum, glowMaterial, loft, merge, paint, slats, type V3 } from '../combat/modelKit';
 import { FLIGHT_POSTURE } from '../sim/flightModel';
 import { SPEED_OF_SOUND } from '../world/config';
-import { SuitFlag, type SuitNetState, type SuitVariant } from './protocol';
+import { PilotFlag, SuitFlag, type PilotNetState, type SuitNetState, type SuitVariant } from './protocol';
 import { animateWarMachinePack, buildWarMachinePack, type WarMachinePack } from './suitVisuals';
 
 /**
@@ -425,6 +425,7 @@ export class RemoteSuit {
 
   private readonly hazeUniforms?: Record<string, THREE.IUniform>;
   private readonly _dir = new THREE.Vector3();
+  private readonly _euler = new THREE.Euler(0, 0, 0, 'YXZ');
   private readonly _invQ = new THREE.Quaternion();
 
   constructor(id: string, variant: SuitVariant, callsign: string, hazeUniforms?: Record<string, THREE.IUniform>) {
@@ -560,6 +561,40 @@ export class RemoteSuit {
 
     patchLogDepth(this.visualRoot);
     if (this.hazeUniforms) hazeAll(this.visualRoot, this.hazeUniforms);
+  }
+
+  /** A full pilot packet, read down to what the stand-in draws. */
+  applyPilot(p: PilotNetState): void {
+    let flags = 0;
+    if (p.flags & PilotFlag.GROUNDED) flags |= SuitFlag.GROUNDED;
+    if (p.flags & PilotFlag.BOOSTING) flags |= SuitFlag.BOOSTING;
+    if (p.flags & PilotFlag.FIRE) flags |= SuitFlag.FIRING;
+    if (p.flags & PilotFlag.UNIBEAM) flags |= SuitFlag.UNIBEAM;
+    if (p.flags & PilotFlag.FLARES) flags |= SuitFlag.FLARES;
+    if (p.flags & PilotFlag.DOWN) flags |= SuitFlag.DOWN;
+    if (p.s.airbrake > 0.25) flags |= SuitFlag.BRAKING;
+    const f = this._dir.set(0, 0, 1).applyQuaternion(p.q);
+    this._euler.setFromQuaternion(p.q, 'YXZ');
+    this.applySnapshot({
+      flags,
+      armor: p.armor,
+      reserves: p.reserves,
+      t: p.t,
+      px: p.pos.x,
+      py: p.pos.y,
+      pz: p.pos.z,
+      vx: p.vel.x,
+      vy: p.vel.y,
+      vz: p.vel.z,
+      ax: p.aim.x,
+      ay: p.aim.y,
+      az: p.aim.z,
+      heading: Math.atan2(f.x, f.z),
+      pitch: Math.asin(THREE.MathUtils.clamp(p.aim.y, -1, 1)),
+      roll: this._euler.z,
+      flightness: p.s.flightness,
+      thrust: p.flags & PilotFlag.BOOSTING ? 1.4 : p.flags & PilotFlag.GROUNDED ? 0 : Math.max(0.4, p.s.throttle),
+    });
   }
 
   /** Apply an incoming binary kinematic snapshot from the network. */

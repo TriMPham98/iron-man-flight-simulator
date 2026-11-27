@@ -1359,6 +1359,15 @@ export class RivalSuit implements Hostile {
     }
   }
 
+  /** Multiplayer puppet (guest): wear the host's pose over whatever this frame's own update did. */
+  netPose(pos: THREE.Vector3, vel: THREE.Vector3, meshPos: THREE.Vector3, meshQ: THREE.Quaternion): void {
+    this.pos.copy(pos);
+    this.vel.copy(vel);
+    this.q.copy(meshQ);
+    this.mesh.position.copy(meshPos);
+    this.mesh.quaternion.copy(meshQ);
+  }
+
   private chestWorldPos(out: THREE.Vector3): THREE.Vector3 {
     this.mesh.updateMatrixWorld(true);
     return out.set(0, 0.45, 0.24).applyMatrix4(this.body.matrixWorld);

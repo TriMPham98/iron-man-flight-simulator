@@ -121,6 +121,18 @@ export class Combat {
   /** The supersonic rival powered-armour ace, while there is one. */
   rival: RivalSuit | null = null;
   readonly hostiles: Hostile[] = [];
+  /**
+   * Multiplayer: the wingman's suit as the enemy sees it (the host's AI picks
+   * whichever pilot is nearer). Hits on it are only for show here: each pilot
+   * takes damage from the enemy fire in their own sim.
+   */
+  readonly allies: PlayerTarget[] = [];
+  /**
+   * Multiplayer guest: the enemies are puppets of the host's. No waves of our
+   * own, and a dreadnought here launches nothing (the host's drones arrive in
+   * its snapshots).
+   */
+  puppet = false;
   /** Armour 0–1. */
   armor = 1;
   /** Seconds since the last hit. */
@@ -242,6 +254,7 @@ export class Combat {
         }
       },
     };
+    this.missiles.self = this.player;
   }
 
   get playerTarget(): PlayerTarget {
@@ -268,22 +281,12 @@ export class Combat {
 
   /** A fresh run: the sky cleared, wave one next, full armour and reserves. */
   resetRun(): void {
-    for (const d of this.drones) this.group.remove(d.mesh);
-    for (const s of this.sams) this.group.remove(s.mesh);
-    for (const f of this.ships) this.group.remove(f.mesh);
-    if (this.boss) this.group.remove(this.boss.mesh);
-    this.boss = null;
-    if (this.rival) {
-      this.rival.disposeFlares(this.group);
-      this.group.remove(this.rival.mesh);
-      this.rival = null;
-    }
+    this.clearHostiles();
     this.houseHp = 1;
     this.houseFlash = 0;
     this.jam = this.weapons.jam = 0;
     this.pdT = 0;
     this.zaps.length = 0;
-    this.drones.length = this.sams.length = this.ships.length = this.hostiles.length = 0;
     this.missiles.clear();
     this.physics.reset();
     this.closeQuarters.reset();
@@ -308,6 +311,21 @@ export class Combat {
     for (const m of this.scorch) this.group.remove(m);
     this.scorch.length = 0;
     this.events.emit('redeploy', { at: this.model.pos });
+  }
+
+  /** Every enemy out of the sky at once (no kills, no blasts): a run reset, or joining a host's fight. */
+  clearHostiles(): void {
+    for (const d of this.drones) this.group.remove(d.mesh);
+    for (const s of this.sams) this.group.remove(s.mesh);
+    for (const f of this.ships) this.group.remove(f.mesh);
+    if (this.boss) this.group.remove(this.boss.mesh);
+    this.boss = null;
+    if (this.rival) {
+      this.rival.disposeFlares(this.group);
+      this.group.remove(this.rival.mesh);
+      this.rival = null;
+    }
+    this.drones.length = this.sams.length = this.ships.length = this.hostiles.length = 0;
   }
 
   /** Reboots a full run carries. */
@@ -339,12 +357,53 @@ export class Combat {
   /** The dreadnought, in off the sea toward the house (one at a time). */
   spawnBoss(): Dreadnought {
     if (this.boss) return this.boss;
-    const b = new Dreadnought(HOME, (at, heading) => this.spawnDrone(at, heading));
+    // (a puppet's hangar launches a dud: the host's drones come in its snapshots)
+    const b = new Dreadnought(HOME, (at, heading) => (this.puppet ? Object.assign(new Drone(at, heading), { alive: false }) : this.spawnDrone(at, heading)));
     this.boss = b;
     this.hostiles.push(...b.parts);
     hazeAll(b.mesh, this.hazeUniforms);
     this.group.add(b.mesh);
     return b;
+  }
+
+  /** Take one enemy (a drone, SAM, frigate, the dreadnought or the rival) out of the fight without a kill: gone on the host. */
+  removeBody(body: Drone | SamSite | Frigate | Dreadnought | RivalSuit): void {
+    const drop = (h: Hostile) => {
+      const i = this.hostiles.indexOf(h);
+      if (i >= 0) this.hostiles.splice(i, 1);
+    };
+    const pull = <T>(list: T[], x: T) => {
+      const i = list.indexOf(x);
+      if (i >= 0) list.splice(i, 1);
+    };
+    this.group.remove(body.mesh);
+    if (body instanceof Frigate) {
+      pull(this.ships, body);
+      body.parts.forEach(drop);
+    } else if (body instanceof Dreadnought) {
+      if (this.boss === body) this.boss = null;
+      body.parts.forEach(drop);
+    } else if (body instanceof RivalSuit) {
+      body.disposeFlares(this.group);
+      if (this.rival === body) this.rival = null;
+      drop(body);
+    } else if (body instanceof SamSite) {
+      pull(this.sams, body);
+      drop(body);
+    } else {
+      pull(this.drones, body);
+      drop(body);
+    }
+  }
+
+  /** A SAM launcher set up at a spot (a wave's, or the host's in multiplayer). */
+  spawnSam(spot: THREE.Vector3): SamSite {
+    const s = new SamSite(spot, HOME);
+    this.sams.push(s);
+    this.hostiles.push(s);
+    hazeAll(s.mesh, this.hazeUniforms);
+    this.group.add(s.mesh);
+    return s;
   }
 
   /** The supersonic Rival Ace powered-armour boss (one at a time). */
@@ -379,7 +438,7 @@ export class Combat {
 
   /** Start the next wave, if one is on offer. */
   callWave(): void {
-    if (!this.waveReady) return;
+    if (this.puppet || !this.waveReady) return;
     this.waveT = 0;
     this.wave++;
     const w = waveAt(this.wave);
@@ -413,14 +472,25 @@ export class Combat {
     for (let i = 0; i < w.sams; i++) {
       const spot = this.samSpots.find((p) => !this.sams.some((s) => s.alive && s.pos.distanceTo(p) < 20));
       if (!spot) break;
-      const s = new SamSite(spot, HOME);
-      this.sams.push(s);
-      this.hostiles.push(s);
-      hazeAll(s.mesh, this.hazeUniforms);
-      this.group.add(s.mesh);
+      this.spawnSam(spot);
     }
     this.events.emit('waveStart', { value: this.wave + 1 });
     this.events.emit('jarvis', { text: w.line });
+  }
+
+  /** Who an enemy at `at` goes after: the nearer live pilot (this one, or a wingman in multiplayer). */
+  private targetFor(at: THREE.Vector3): PlayerTarget {
+    let best = this.player;
+    let bd = this.player.alive ? at.distanceToSquared(this.player.pos) : Infinity;
+    for (const a of this.allies) {
+      if (!a.alive) continue;
+      const d = at.distanceToSquared(a.pos);
+      if (d < bd) {
+        bd = d;
+        best = a;
+      }
+    }
+    return best;
   }
 
   private addDrone(d: Drone): void {
@@ -500,20 +570,20 @@ export class Combat {
     }
     this.closeQuarters.update(dt, this.model, aim, this.hostiles, this.ground, this.explosions, this.particles, this.events);
     for (const d of this.drones) {
-      d.update(dt, t, this.player, this.ground, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
+      d.update(dt, t, this.targetFor(d.pos), this.ground, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
       if (!d.flybyDone && d.alive && d.pos.distanceTo(this.model.pos) < 120) {
         d.flybyDone = true;
         this.events.emit('droneFlyby', { at: d.pos, value: d.vel.length() });
       }
       if (d.flybyDone && d.pos.distanceTo(this.model.pos) > 400) d.flybyDone = false;
     }
-    for (const s of this.sams) s.update(dt, t, this.player, this.house, this.field, this.missiles, this.events, this.explosions, this.particles);
+    for (const s of this.sams) s.update(dt, t, this.targetFor(s.pos), this.house, this.field, this.missiles, this.events, this.explosions, this.particles);
     for (const f of this.ships) {
-      f.update(dt, t, this.player, this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events);
+      f.update(dt, t, this.targetFor(f.pos), this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events);
       f.collide(this.model.pos, this.model.vel);
     }
     if (this.boss) {
-      this.boss.update(dt, t, this.player, this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
+      this.boss.update(dt, t, this.targetFor(this.boss.pos), this.field, this.guns.rounds, this.missiles, this.particles, this.explosions, this.events, this.house);
       this.boss.collide(this.model.pos, this.model.vel);
       // Flying close to an exposed Dreadnought reactor core siphons energy into overcharge
       if (!this.boss.falling && !this.boss.shielded && this.boss.core.alive && this.down <= 0) {
@@ -524,7 +594,7 @@ export class Combat {
       }
     }
     if (this.rival) {
-      this.rival.update(dt, t, this.player, this.ground, this.missiles, this.particles, this.streaks, this.explosions, this.events, this.group);
+      this.rival.update(dt, t, this.targetFor(this.rival.pos), this.ground, this.missiles, this.particles, this.streaks, this.explosions, this.events, this.group);
     }
     this.physics.update(dt, this.model, this.weapons, this.drones, this.missiles, this.player, this.ground, this.particles, this.explosions, this.events);
     const swapRes = this.houseParty.update(

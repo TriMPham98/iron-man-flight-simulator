@@ -705,6 +705,15 @@ export class Drone implements Hostile {
     return to;
   }
 
+  /** Multiplayer puppet (guest): wear the host's pose over whatever this frame's own update did. */
+  netPose(pos: THREE.Vector3, vel: THREE.Vector3, meshPos: THREE.Vector3, meshQ: THREE.Quaternion): void {
+    this.pos.copy(pos);
+    this.vel.copy(vel);
+    this.q.copy(meshQ);
+    this.mesh.position.copy(meshPos);
+    this.mesh.quaternion.copy(meshQ);
+  }
+
   private orient(dt: number, dir: THREE.Vector3, roll: number): void {
     void dt;
     this._m.lookAt(new THREE.Vector3(), dir, new THREE.Vector3(0, 1, 0));

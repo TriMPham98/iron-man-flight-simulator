@@ -1,21 +1,32 @@
 import * as THREE from 'three';
+import type { Suit } from '../../suit/Suit';
+import type { PlayerTarget } from '../combat/types';
 import type { Game } from '../sim/game';
+import { REACTOR_KEYS } from '../sim/reactorPower';
 import { PAD } from '../world/house';
+import { EnemySync } from './enemySync';
 import {
-  encodeSuitState,
-  decodeSuitState,
+  decodePilotState,
+  decodeWorldState,
+  encodePilotState,
   generateRoomCode,
+  makePilotState,
+  PILOT_PACKET_TAG,
+  PILOT_SCALARS,
+  PILOT_STATE_BYTES,
+  PilotFlag,
+  REACTOR_MODES,
   sanitizeRoomCode,
-  SuitFlag,
-  SUIT_STATE_BYTES,
+  WORLD_PACKET_TAG,
   type MatchMode,
   type NetEvent,
   type PeerInfo,
+  type PilotScalar,
   type PlayerRole,
   type ServerControlMessage,
-  type SuitNetState,
   type SuitVariant,
 } from './protocol';
+import { RemotePilot } from './remotePilot';
 import { RemoteSuit } from './remoteSuit';
 import { animateWarMachinePack, applyLocalSuitVariant, type WarMachinePack } from './suitVisuals';
 import {
@@ -30,6 +41,27 @@ import {
 /** Outbound kinematic snapshot rate (Hz). */
 const SEND_HZ = 25;
 const SEND_INTERVAL = 1 / SEND_HZ;
+const ZERO = new THREE.Vector3();
+
+/** The local pilot's triggers this frame (what the wingman's copy of the weapons fires on). */
+export interface PilotTriggers {
+  fire: boolean;
+  missile?: boolean;
+  unibeam?: boolean;
+  flares?: boolean;
+  launcher?: boolean;
+  pressed?: ReadonlySet<string>;
+}
+
+const NO_TRIGGERS: PilotTriggers = { fire: false };
+
+export interface MultiplayerSessionOptions {
+  /**
+   * Builds another full rigged suit for the wingman (the app passes
+   * `Suit.create`). Without it the wingman is the light procedural stand-in.
+   */
+  loadSuit?: () => Promise<Suit>;
+}
 
 export interface MultiplayerSnapshot {
   status: TransportStatus;
@@ -71,26 +103,54 @@ export class MultiplayerSession {
   status: TransportStatus = 'disconnected';
   statusDetail = 'OFFLINE';
 
-  peer: RemoteSuit | null = null;
+  /** The wingman: the full rigged suit once it's built, the procedural stand-in until then. */
+  peer: RemotePilot | RemoteSuit | null = null;
   peerInfo: PeerInfo | null = null;
   selfId = '';
+  /** The shared fight (absent on a stubbed game with no combat). */
+  readonly enemies: EnemySync | null;
 
   private transport: NetTransport;
-  private readonly sendBuf = new ArrayBuffer(SUIT_STATE_BYTES);
+  private readonly sendBuf = new ArrayBuffer(PILOT_STATE_BYTES);
+  private readonly outState = makePilotState();
+  private readonly inState = makePilotState();
+  private hasPilotPacket = false;
+  /** The laser cutter's key went down since the last packet. */
+  private laserPressed = false;
+  /** A full suit for the wingman, built once and kept between peers. */
+  private fullSuit: Promise<Suit | null> | null = null;
+  private spareSuit: Suit | null = null;
+  /** The wingman as this sim's enemies see it (host only). */
+  private readonly allyTarget: PlayerTarget;
   private readonly listeners = new Set<() => void>();
   private sendAcc = 0;
   private localPack: WarMachinePack | null = null;
   private readonly _aim = new THREE.Vector3();
   private readonly _invQ = new THREE.Quaternion();
-  private readonly _euler = new THREE.Euler(0, 0, 0, 'YXZ');
   private clockT = 0;
 
   constructor(
     private readonly game: Game,
     private readonly hazeUniforms: Record<string, THREE.IUniform>,
     transportFactory?: (backend: TransportBackend) => NetTransport,
+    private readonly opts: MultiplayerSessionOptions = {},
   ) {
     this.group.name = 'multiplayer';
+    this.enemies = game.combat?.hostiles ? new EnemySync(game.combat) : null;
+    const self = this;
+    this.allyTarget = {
+      get pos() {
+        return self.peer?.pos ?? new THREE.Vector3(0, -1e6, 0);
+      },
+      get vel() {
+        return self.peer?.vel ?? new THREE.Vector3();
+      },
+      get alive() {
+        return !!self.peer && !self.peer.down;
+      },
+      // (the wingman's sim takes its own hits)
+      hit: () => {},
+    };
     this.makeTransport =
       transportFactory ?? ((b) => (b === 'local' ? new BroadcastChannelTransport() : new WebSocketTransport()));
     // Default to WebSocket if a server is configured (or localhost), otherwise local 2-tab preview
@@ -177,6 +237,7 @@ export class MultiplayerSession {
     this.clearPeer();
     this.room = code;
     this.sendAcc = 0;
+    this.preloadSuit();
     this.transport.connect({
       room: code,
       suit: this.suit,
@@ -191,6 +252,11 @@ export class MultiplayerSession {
   leaveRoom(): void {
     this.transport.disconnect();
     this.clearPeer();
+    if (this.enemies) {
+      // A guest's enemies were the host's: they leave with the room
+      if (this.enemies.role === 'guest') this.game.combat.clearHostiles();
+      this.enemies.detach();
+    }
     this.room = '';
     this.selfId = '';
     this.status = 'disconnected';
@@ -245,9 +311,15 @@ export class MultiplayerSession {
     };
   }
 
-  /** Per-frame update: fallback-animate local War Machine pack, send 25 Hz state, step RemoteSuit. */
-  update(dt: number, firingLocal: boolean): void {
+  /**
+   * Per frame, after the sim: send this pilot's state (25 Hz), run the
+   * shared fight (snapshots out as host, puppets posed as guest) and fly the
+   * wingman.
+   */
+  update(dt: number, triggers: PilotTriggers | boolean = NO_TRIGGERS): void {
+    const tr: PilotTriggers = typeof triggers === 'boolean' ? { fire: triggers } : triggers;
     this.clockT += dt;
+    if (tr.pressed?.has(REACTOR_KEYS.LASER_CUTTER)) this.laserPressed = true;
 
     // PlayerWeapons drives the full War Machine pack animation in live flights;
     // keep a lightweight fallback here when running standalone/stubbed sessions.
@@ -259,8 +331,8 @@ export class MultiplayerSession {
       animateWarMachinePack(this.localPack, dt, {
         aimWorld: aim,
         chestWorldQuat: this._invQ,
-        minigunFiring: firingLocal || !!weapons?.minigunFiring,
-        minigunShot: firingLocal || !!weapons?.minigunFiring,
+        minigunFiring: tr.fire || !!weapons?.minigunFiring,
+        minigunShot: tr.fire || !!weapons?.minigunFiring,
         podOpen: 0,
         podArmed: 0,
         podLoaded: 6,
@@ -272,17 +344,34 @@ export class MultiplayerSession {
       });
     }
 
-    // Stream binary kinematic snapshot at 25 Hz while connected
-    if (this.status === 'connected') {
+    const connected = this.status === 'connected';
+    if (connected) {
+      // The guest's wave key asks the host for the next wave
+      if (this.role === 'guest' && tr.pressed?.has('KeyN') && this.peer) {
+        this.transport.sendControl({ type: 'event', event: { kind: 'callWave' } });
+      }
       this.sendAcc += dt;
       if (this.sendAcc >= SEND_INTERVAL) {
         this.sendAcc %= SEND_INTERVAL;
-        this.sendLocalState(firingLocal || !!weapons?.minigunFiring);
+        this.sendLocalState(tr);
       }
     }
 
-    // Advance remote pilot's interpolated 3D suit
-    if (this.peer) {
+    if (this.enemies) {
+      // The host's enemies go after whichever pilot is nearer
+      const allies = this.game.combat.allies;
+      const want = this.role === 'host' && connected && !!this.peer;
+      if (want && !allies.includes(this.allyTarget)) allies.push(this.allyTarget);
+      else if (!want && allies.includes(this.allyTarget)) allies.splice(allies.indexOf(this.allyTarget), 1);
+      const out = this.enemies.update(dt, connected && !!this.peer);
+      if (out.world) this.transport.sendBinary(out.world);
+      if (out.damage) this.transport.sendControl({ type: 'event', event: out.damage });
+    }
+
+    // Fly the wingman (the full suit runs its weapons against this sim's enemies, for show)
+    if (this.peer instanceof RemotePilot) {
+      this.peer.update(dt, this.game.combat.hostiles);
+    } else if (this.peer) {
       this.peer.update(dt, this.game.ground, this.game.particles);
     }
   }
@@ -297,45 +386,42 @@ export class MultiplayerSession {
     this.game.model.placeOnGround(PAD.x + sideX * offset, PAD.y + sideZ * offset, heading);
   }
 
-  private sendLocalState(firingLocal: boolean): void {
-    const m = this.game.model;
-    const c = this.game.combat;
-    const o = this.game.driver.outputs;
-    const aim = this.game.rig.aim(this._aim);
-
+  private sendLocalState(tr: PilotTriggers): void {
+    const g = this.game;
+    const m = g.model;
+    const c = g.combat;
+    const p = this.outState;
     let flags = 0;
-    if (m.grounded) flags |= SuitFlag.GROUNDED;
-    if (m.boosting) flags |= SuitFlag.BOOSTING;
-    if (m.airbrake > 0.25) flags |= SuitFlag.BRAKING;
-    if (firingLocal) flags |= SuitFlag.FIRING;
-    if (c.weapons.unibeamOn) flags |= SuitFlag.UNIBEAM;
-    if (c.weapons.arms.flares > 0.1) flags |= SuitFlag.FLARES;
-    if (c.down > 0) flags |= SuitFlag.DOWN;
-
-    this._euler.setFromQuaternion(m.q, 'YXZ');
-
-    const state: SuitNetState = {
-      flags,
-      armor: c.armor,
-      reserves: c.reserves,
-      t: this.game.time,
-      px: m.pos.x,
-      py: m.pos.y,
-      pz: m.pos.z,
-      vx: m.vel.x,
-      vy: m.vel.y,
-      vz: m.vel.z,
-      ax: aim.x,
-      ay: aim.y,
-      az: aim.z,
-      heading: m.heading,
-      pitch: Math.asin(THREE.MathUtils.clamp(aim.y, -1, 1)),
-      roll: this._euler.z,
-      flightness: m.flightness,
-      thrust: Math.max(o.bootL, o.bootR),
-    };
-
-    encodeSuitState(state, this.sendBuf);
+    if (m.grounded) flags |= PilotFlag.GROUNDED;
+    if (m.boosting) flags |= PilotFlag.BOOSTING;
+    if (c.down > 0) flags |= PilotFlag.DOWN;
+    if (tr.fire) flags |= PilotFlag.FIRE;
+    if (tr.missile) flags |= PilotFlag.MISSILE;
+    if (tr.unibeam) flags |= PilotFlag.UNIBEAM;
+    if (tr.flares) flags |= PilotFlag.FLARES;
+    if (tr.launcher) flags |= PilotFlag.LAUNCHER;
+    if (this.laserPressed) flags |= PilotFlag.LASER;
+    this.laserPressed = false;
+    const reactor = c.reactor;
+    if (reactor?.overchargeActive) flags |= PilotFlag.OVERCHARGE;
+    p.flags = flags;
+    p.reactor = Math.max(0, REACTOR_MODES.indexOf(reactor?.mode ?? 'BALANCED'));
+    p.armor = c.armor;
+    p.reserves = c.reserves;
+    p.strafeDashDir = m.strafeDashDir ?? 0;
+    // (the session's own clock: the sim's runs slow through a hit-stop)
+    p.t = this.clockT;
+    p.pos.copy(m.pos);
+    p.vel.copy(m.vel);
+    p.q.copy(m.q);
+    p.omega.copy(m.omega ?? ZERO);
+    g.rig.aim(p.aim);
+    // Shots are sighted from the eye the pilot is looking through
+    const mode = g.rig.mode;
+    p.eye.copy(mode === 'flyby' || mode === 'attract' || !g.rig.camera ? (g.head ?? m.pos) : g.rig.camera.position);
+    const ms = m as unknown as Partial<Record<PilotScalar, number>>;
+    for (const k of PILOT_SCALARS) p.s[k] = ms[k] ?? 0;
+    encodePilotState(p, this.sendBuf);
     this.transport.sendBinary(this.sendBuf);
   }
 
@@ -352,8 +438,13 @@ export class MultiplayerSession {
     t.onControl = (msg) => this.handleControl(msg);
 
     t.onBinary = (buf) => {
-      const state = decodeSuitState(buf);
-      if (!state) return;
+      const tag = new Uint8Array(buf, 0, Math.min(1, buf.byteLength))[0];
+      if (tag === WORLD_PACKET_TAG) {
+        const w = decodeWorldState(buf);
+        if (w) this.enemies?.onWorld(w);
+        return;
+      }
+      if (tag !== PILOT_PACKET_TAG || !decodePilotState(buf, this.inState)) return;
       if (!this.peer) {
         // Fallback if binary arrived slightly before peerJoined
         this.spawnPeer({
@@ -364,7 +455,8 @@ export class MultiplayerSession {
           callsign: this.suit === 'ironman' ? 'RHODES' : 'STARK',
         });
       }
-      this.peer?.applySnapshot(state);
+      this.hasPilotPacket = true;
+      this.peer?.applyPilot(this.inState);
     };
   }
 
@@ -375,6 +467,8 @@ export class MultiplayerSession {
         this.room = msg.room;
         this.role = msg.role;
         this.mode = msg.mode;
+        // Joining a host's room: their enemies replace ours
+        this.enemies?.reset(msg.role);
         // Sync procedural ocean clock so wave swell matches across both clients
         if (Number.isFinite(msg.worldTime)) {
           this.game.world.time = msg.worldTime;
@@ -407,7 +501,7 @@ export class MultiplayerSession {
               : `${this.peerLabel(msg.peer)} is online and forming up on your wing, sir.`,
         });
         // Immediately transmit our current pose so the arriving pilot sees us at once
-        this.sendLocalState(false);
+        this.sendLocalState(NO_TRIGGERS);
         this.notify();
         break;
       }
@@ -430,6 +524,8 @@ export class MultiplayerSession {
         const who = this.peerInfo ? this.peerLabel(this.peerInfo) : 'Wingman';
         if (msg.newHostId && msg.newHostId === this.selfId) {
           this.role = 'host';
+          // The host left: their enemies, puppets here, fly on as ours
+          this.enemies?.promote();
         }
         this.clearPeer();
         this.game.events.emit('jarvis', { text: `${who} has broken formation and left the airspace, sir.` });
@@ -441,11 +537,18 @@ export class MultiplayerSession {
         this.notify();
         break;
 
-      case 'event':
-        if (msg.event.kind === 'pingCallout') {
-          this.game.events.emit('jarvis', { text: msg.event.text });
+      case 'event': {
+        const e = msg.event;
+        if (e.kind === 'pingCallout') {
+          this.game.events.emit('jarvis', { text: e.text });
+        } else if (e.kind === 'dmg' && Array.isArray(e.hits)) {
+          this.enemies?.applyDamage(e.hits);
+        } else if (e.kind === 'callWave' && this.role === 'host') {
+          const c = this.game.combat;
+          if (c.waveReady) c.callWave();
         }
         break;
+      }
 
       case 'error':
         this.statusDetail = msg.message;
@@ -467,12 +570,52 @@ export class MultiplayerSession {
     const r = new RemoteSuit(info.id, info.suit, info.callsign, this.hazeUniforms);
     this.peer = r;
     this.group.add(r.mesh);
+    void this.upgradePeer(r);
+  }
+
+  /** Start building the wingman's full suit (once) as soon as a room is in play. */
+  private preloadSuit(): void {
+    if (this.fullSuit || !this.opts.loadSuit) return;
+    this.fullSuit = this.opts.loadSuit().catch((err) => {
+      console.warn('[multiplayer] full wingman suit failed to build; keeping the stand-in', err);
+      return null;
+    });
+    void this.fullSuit.then((s) => {
+      if (s && !this.spareSuit) this.spareSuit = s;
+    });
+  }
+
+  /** Swap the stand-in for the full rigged suit once it's built (if the same wingman is still here). */
+  private async upgradePeer(standIn: RemoteSuit): Promise<void> {
+    this.preloadSuit();
+    if (!this.fullSuit) return;
+    const suit = await this.fullSuit;
+    if (!suit || this.peer !== standIn || this.spareSuit !== suit) return;
+    const g = this.game;
+    const pilot = new RemotePilot(standIn.id, standIn.variant, standIn.callsign, {
+      suit,
+      ground: g.ground,
+      field: g.world.field,
+      particles: g.particles,
+      explosions: g.combat.explosions,
+      streaks: g.combat.streaks,
+      hazeUniforms: this.hazeUniforms,
+    });
+    this.spareSuit = null;
+    this.group.remove(standIn.mesh);
+    standIn.dispose();
+    this.peer = pilot;
+    this.group.add(pilot.mesh);
+    if (this.hasPilotPacket) pilot.applyPilot(this.inState);
+    this.notify();
   }
 
   private clearPeer(): void {
     if (this.peer) {
       this.group.remove(this.peer.mesh);
       this.peer.dispose();
+      // The full suit is built once (a second download and skinning pass is seconds): a new pilot builds another
+      if (this.peer instanceof RemotePilot) this.fullSuit = null;
       this.peer = null;
     }
     this.peerInfo = null;

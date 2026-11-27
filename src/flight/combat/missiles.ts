@@ -360,9 +360,19 @@ export class Missiles {
     return pulled;
   }
 
+  /**
+   * This sim's own pilot, when set (multiplayer: seekers sent after the
+   * wingman aren't this pilot's warning).
+   */
+  self: PlayerTarget | null = null;
+
+  private onSelf(m: Missile): boolean {
+    return isPlayer(m.target) && (!this.self || m.target === this.self);
+  }
+
   /** Enemy seekers currently chasing the player (for the warning). */
   threats(): Missile[] {
-    return this.live.filter((m) => m.team === 'enemy' && isPlayer(m.target));
+    return this.live.filter((m) => m.team === 'enemy' && this.onSelf(m));
   }
 
   /** Enemy rounds on their way to the house. */
@@ -372,7 +382,7 @@ export class Missiles {
 
   /** Enemy rounds in the air: seekers on the suit and strikes on the house. */
   inbound(): Missile[] {
-    return this.live.filter((m) => m.team === 'enemy' && (m.onImpact !== null || isPlayer(m.target)));
+    return this.live.filter((m) => m.team === 'enemy' && (m.onImpact !== null || this.onSelf(m)));
   }
 
   /** Burn a round out of the air: it goes off where it is and does nothing more. */
@@ -494,8 +504,10 @@ export class Missiles {
         }
         if (isHostile(m.target) && m.target.alive) m.target.threatened = 1;
       } else if (isPlayer(m.target)) {
-        if (player.alive && player.pos.distanceToSquared(m.pos) < 3.2 ** 2) {
-          player.hit(m.damage, m.pos, 'missile');
+        // (the suit it was sent for: this pilot's, or the wingman's in multiplayer)
+        const victim = m.target;
+        if (victim.alive && victim.pos.distanceToSquared(m.pos) < 3.2 ** 2) {
+          victim.hit(m.damage, m.pos, 'missile');
           boom = true;
         }
       } else if (isDecoy(m.target) && segDistSq(m.target.pos, prev, m.pos) < 4 ** 2) {
