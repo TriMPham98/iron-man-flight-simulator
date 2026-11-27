@@ -5,6 +5,7 @@ import { Particles } from '../fx/particles';
 import { SonicBoomFx } from '../fx/sonicBoom';
 import { GVaporFx } from '../fx/gVapor';
 import { WaterFx } from '../fx/water';
+import { ReactorVentFx, type VentKind } from '../fx/reactorVent';
 import { patchLogDepth } from '../render/depth';
 import { PAD, PAD_R, PAD_Y } from '../world/house';
 import { gradeLanding } from '../world/landingPad';
@@ -76,6 +77,8 @@ export class Game {
   readonly gVapor: GVaporFx;
   /** Splashes, wakes and water running off the armour. */
   readonly water: WaterFx;
+  /** Steam blown out from under the flaps on a reactor re-route. */
+  private readonly vent = new ReactorVentFx();
   private wasBoosting = false;
   /** The pad capture is holding (with hysteresis, for the cue). */
   private padHeld = false;
@@ -125,10 +128,14 @@ export class Game {
     }, world.atmosphere.uniforms);
     this.combat.hitStop = this.hitStop;
     this.events.on((e) => {
-      if (e.kind === 'reactorOvercharge' && e.value) this.rig.shake += 1.25;
+      if (e.kind === 'reactorOvercharge') {
+        if (e.value) this.rig.shake += 1.25;
+        else this.ventReactor('PURGE');
+      }
       else if (e.kind === 'reactorMode') {
         this.rig.shake += 0.14;
         this.emitReactorModeFx(e.text as ReactorMode | undefined);
+        this.ventReactor((e.text as ReactorMode | undefined) ?? this.combat.reactor.mode);
       } else if (e.kind === 'laserCutterFire') this.rig.shake += 0.35;
       else if (e.kind === 'minigunStart') this.rig.shake += 0.1;
       else if (e.kind === 'minigunFire') this.rig.shake = Math.min(0.45, this.rig.shake + 0.045);
@@ -164,6 +171,7 @@ export class Game {
     const heading = Math.atan2(-0.55, 1);
     this.stopAutoLand(false);
     this.hitStop.reset();
+    this.vent.reset();
     this.model.placeOnGround(PAD.x, PAD.y, heading);
     this.rig.lookHeading(heading, -0.05);
   }
@@ -394,6 +402,7 @@ export class Game {
         this.particles.burst('vapor', n.pos, 1, 9 * k, n.dir, 0.35, { scale: 0.9, life: 0.5 });
       }
     }
+    this.vent.update(dt, this.suit, this.particles, this.model.vel);
     this.water.update(dt, this.model, this.particles);
     this.particles.update(dt, this.rig.camera);
     this.sonic.update(dt, this.model.pos, this.model.vel, this.model.speed / SPEED_OF_SOUND, this.cleanFlow);
@@ -488,6 +497,12 @@ export class Game {
       this.rig.shake += 0.35;
       this.particles.burst('spark', below, 10, 4, new THREE.Vector3(0, 1, 0), 1);
     }
+  }
+
+  /** Crack the flaps for this re-route and blow the steam out from under them. */
+  private ventReactor(kind: VentKind): void {
+    const p = this.vent.trigger(kind);
+    if (p) this.driver.vent(p.flaps, p.dur + 0.15, p.open);
   }
 
   /** Emit a crisp reactor-routing plasma & spark puff around the suit when switching modes. */

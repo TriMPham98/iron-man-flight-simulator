@@ -27,7 +27,7 @@ import {
   type DiagnosticScan,
 } from './diagnosticScan';
 import { FitKinematics } from '../workshop/fittingKinematics';
-import type { FlightCheckFrame } from '../animation/flightCheck';
+import type { FlapId, FlightCheckFrame } from '../animation/flightCheck';
 import { armorPieceDef } from './armorPieces';
 import { buildFlightFlaps, flapMotion, type Flap } from './flightFlaps';
 import { FlightFx, type PalmEmitter } from './flightFx';
@@ -90,6 +90,8 @@ export class Suit {
   private readonly reactorFx = new ReactorPowerDown();
   private flightActive = false;
   private flaps: Flap[] = [];
+  private readonly _ventP: [number, number, number] = [0, 0, 0];
+  private readonly _ventD: [number, number, number] = [0, 0, 0];
   private flapRests = new Map<ArmorPieceId, THREE.SkinnedMesh>();
   private flapped = new Set<ArmorPieceId>();
   /**
@@ -371,6 +373,42 @@ export class Suit {
   boneWorldPoint(bone: BoneName, at: readonly [number, number, number], out: THREE.Vector3): THREE.Vector3 {
     const h = boneSpec(bone).head;
     return out.set(at[0] - h[0], at[1] - h[1], at[2] - h[2]).applyMatrix4(this.rig.bones[bone].matrixWorld);
+  }
+
+  /**
+   * Where a flight flap vents from: the middle of its trailing (bottom) edge
+   * on the outer skin, and the way gas blown out from under it leaves
+   * (straight out of the shell, a little down), in world space. False when
+   * the suit has no such flap.
+   */
+  flapVent(id: FlapId, at: THREE.Vector3, dir: THREE.Vector3): boolean {
+    const f = this.flaps.find((fl) => fl.id === id);
+    if (!f) return false;
+    const b = f.bounds;
+    const bone = armorPieceDef(f.piece.id).anchor;
+    const p = this._ventP;
+    const d = this._ventD;
+    if (id.startsWith('shoulder')) {
+      // Pauldron face: swings out sideways
+      const out = id.endsWith('.L') ? 1 : -1;
+      p[0] = out > 0 ? b.max.x : b.min.x;
+      p[1] = b.min.y;
+      p[2] = 0.5 * (b.min.z + b.max.z);
+      d[0] = out;
+      d[1] = -0.45;
+      d[2] = 0;
+    } else {
+      // Back, hamstring and calf plates: out behind the suit
+      p[0] = 0.5 * (b.min.x + b.max.x);
+      p[1] = b.min.y;
+      p[2] = b.min.z;
+      d[0] = 0;
+      d[1] = -0.45;
+      d[2] = -1;
+    }
+    this.boneWorldPoint(bone, p, at);
+    this.boneWorldDir(bone, d, dir);
+    return true;
   }
 
   /** A bind-space direction carried by a bone, in world space (unit). */

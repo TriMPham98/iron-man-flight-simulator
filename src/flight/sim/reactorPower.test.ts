@@ -401,9 +401,9 @@ describe('FlightModel + ReactorPower integration', () => {
     const shieldsUrls = callsFor('SHIELDS');
     const balancedUrls = callsFor('BALANCED');
 
-    expect(thrustUrls).toEqual([SFX.electricMotor, SFX.thrusterIgnite, SFX.lockTick]);
-    expect(weaponsUrls).toEqual([SFX.weaponDeploy, SFX.charge, SFX.repulsorZap]);
-    expect(shieldsUrls).toEqual([SFX.weaponLock, SFX.heroThud, SFX.metalTighten]);
-    expect(balancedUrls).toEqual([SFX.lockTick, SFX.lockTick, SFX.servoWhir]);
+    expect(thrustUrls).toEqual([SFX.electricMotor, SFX.thrusterIgnite, SFX.lockTick, SFX.steamRelease]);
+    expect(weaponsUrls).toEqual([SFX.weaponDeploy, SFX.charge, SFX.repulsorZap, SFX.steamRelease]);
+    expect(shieldsUrls).toEqual([SFX.weaponLock, SFX.heroThud, SFX.metalTighten, SFX.steamRelease]);
+    expect(balancedUrls).toEqual([SFX.lockTick, SFX.lockTick, SFX.servoWhir, SFX.steamRelease]);
   });
 });

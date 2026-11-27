@@ -571,24 +571,29 @@ export class Soundscape {
             A.play(SFX.electricMotor, { at: m.pos, propagate: false, gain: 0.42, rate: 1.5, duration: 0.35, ref: 6 });
             A.play(SFX.thrusterIgnite, { at: m.pos, propagate: false, gain: 0.45, rate: 1.25, offset: 0.35, fadeIn: 0.02, duration: 0.38, ref: 8 });
             A.play(SFX.lockTick, { ui: true, gain: 0.28, rate: 1.45 });
+            // Leg vents blowing off
+            A.play(SFX.steamRelease, { at: m.pos, propagate: false, gain: 0.34, rate: 1.2, delay: 0.06, duration: 0.55, ref: 6 });
             break;
           case 'WEAPONS':
             // Weapon arming + capacitor whine + repulsor snap
             A.play(SFX.weaponDeploy, { at: m.pos, propagate: false, gain: 0.48, rate: 1.15, duration: 0.35, ref: 6 });
             A.play(SFX.charge, { ui: true, gain: 0.42, rate: 1.35, duration: 0.38 });
             A.play(SFX.repulsorZap, { at: m.pos, propagate: false, gain: 0.24, rate: 1.4, delay: 0.05, ref: 6 });
+            A.play(SFX.steamRelease, { at: m.pos, propagate: false, gain: 0.32, rate: 1.05, delay: 0.06, duration: 0.5, ref: 6 });
             break;
           case 'SHIELDS':
             // Deep magnetic clamp + heavy armour brace thud
             A.play(SFX.weaponLock, { at: m.pos, propagate: false, gain: 0.52, rate: 0.78, ref: 6 });
             A.play(SFX.heroThud, { at: m.pos, propagate: false, gain: 0.46, rate: 0.72, lowpass: 550, duration: 0.28, ref: 6 });
             A.play(SFX.metalTighten, { at: m.pos, propagate: false, gain: 0.34, rate: 0.85, delay: 0.04, ref: 6 });
+            A.play(SFX.steamRelease, { at: m.pos, propagate: false, gain: 0.36, rate: 0.82, delay: 0.07, duration: 0.85, ref: 6 });
             break;
           default:
             // BALANCED: clean neutral double-chirp + light servo settle
             A.play(SFX.lockTick, { ui: true, gain: 0.26, rate: 1.0 });
             A.play(SFX.lockTick, { ui: true, gain: 0.22, rate: 1.18, delay: 0.09 });
             A.play(SFX.servoWhir, { at: m.pos, propagate: false, gain: 0.2, rate: 1.15, duration: 0.2, ref: 6 });
+            A.play(SFX.steamRelease, { at: m.pos, propagate: false, gain: 0.22, rate: 1.1, delay: 0.06, duration: 0.4, ref: 6 });
             break;
         }
         break;

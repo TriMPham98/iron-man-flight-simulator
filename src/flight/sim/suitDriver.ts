@@ -422,6 +422,15 @@ export class SuitDriver {
   /** Last frame's pose (debug / tests). */
   lastPose: FlightPose | null = null;
 
+  /** Pop flight flaps open (0–1) for `hold` seconds to vent the reactor. */
+  vent(ids: readonly FlapId[], hold: number, open = 1): void {
+    for (const id of ids) {
+      const live = (this.ventHold[id] ?? 0) > 0;
+      this.ventOpen[id] = live ? Math.max(this.ventOpen[id] ?? 0, open) : open;
+      this.ventHold[id] = Math.max(this.ventHold[id] ?? 0, hold);
+    }
+  }
+
   update(dt: number, suit: Suit, m: FlightModel, aim: THREE.Vector3, arms: ArmsState): void {
     this.time += dt;
     const t = this.time;
@@ -1066,11 +1075,16 @@ export class SuitDriver {
       'flare.L': arms.flares * (1 - 0.3 * arms.flareKickL),
       'flare.R': arms.flares * (1 - 0.3 * arms.flareKickR),
     };
-    // Surfaces move like servos: never more than ~3 strokes a second
+    // Surfaces move like servos: never more than ~3 strokes a second. A
+    // reactor vent kicks its plates open faster (a latch letting go) and
+    // holds them while the steam blows out
     for (const id of Object.keys(flaps) as FlapId[]) {
       const prev = this.flapState[id] ?? 0;
-      const goal = clamp01(flaps[id]);
-      const rate = id.startsWith('launcher') || id.startsWith('trap') || id.startsWith('flare') ? 99 : 3.2;
+      const hold = this.ventHold[id] ?? 0;
+      const venting = hold > 0;
+      if (venting) this.ventHold[id] = hold - dt;
+      const goal = clamp01(Math.max(flaps[id], venting ? (this.ventOpen[id] ?? 0) : 0));
+      const rate = id.startsWith('launcher') || id.startsWith('trap') || id.startsWith('flare') ? 99 : venting ? 9 : 3.2;
       this.flapState[id] = prev + clamp(goal - prev, -rate * dt, rate * dt);
     }
 
@@ -1170,6 +1184,9 @@ export class SuitDriver {
   }
 
   private readonly flapState: Partial<Record<FlapId, number>> = {};
+  /** Seconds each reactor vent still holds its flap open, and how far. */
+  private readonly ventHold: Partial<Record<FlapId, number>> = {};
+  private readonly ventOpen: Partial<Record<FlapId, number>> = {};
 
   // ── Hero landing ────────────────────────────────────────────────────
 
