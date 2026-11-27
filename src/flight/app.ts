@@ -556,6 +556,7 @@ export class FlightApp {
     if (this.hud) {
       this.hud.glow = s.quality !== 'low' && (!this.screens.touch || s.quality === 'ultra');
       this.hud.shadow = s.quality !== 'low' && !this.screens.touch;
+      this.hud.showFps = s.showFps;
     }
   }
 

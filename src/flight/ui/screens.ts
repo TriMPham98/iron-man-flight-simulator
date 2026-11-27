@@ -81,9 +81,11 @@ export interface Settings {
   touchOpacity: number;
   /** Touch screens: stick on the right, buttons on the left. */
   leftHanded: boolean;
+  /** The HUD's frame-rate readout (under the radar's left shoulder). */
+  showFps: boolean;
 }
 
-const DEFAULTS: Settings = { invertY: false, sensitivity: 1, volume: 0.9, sfx: 1, quality: 'ultra', touchOpacity: 0.75, leftHanded: false };
+const DEFAULTS: Settings = { invertY: false, sensitivity: 1, volume: 0.9, sfx: 1, quality: 'ultra', touchOpacity: 0.75, leftHanded: false, showFps: true };
 
 /** First-run graphics preset: a phone's or tablet's GPU starts lower (the menu still goes up to ULTRA). */
 const TIER_QUALITY: Record<DeviceTier, Quality> = { phone: 'medium', tablet: 'high', desktop: 'ultra' };
@@ -302,6 +304,9 @@ export class Screens {
                     .map((q) => `<button role="radio" data-q="${q}" aria-checked="false">${QUALITY[q].label}<small>${QUALITY[q].note}</small></button>`)
                     .join('')}
                 </div>
+                <div class="fp-h" style="margin-top:16px">DIAGNOSTICS</div>
+                <div class="fp-field toggle"><span class="lbl" id="fp-fps-l">FRAME RATE</span>
+                  <button class="fp-switch" role="switch" aria-labelledby="fp-fps-l" data-k="showFps"></button></div>
               </section>
             </div>
           </div>
@@ -366,7 +371,7 @@ export class Screens {
       input.setAttribute('aria-valuetext', out.textContent);
     }
     for (const sw of this.pause.querySelectorAll<HTMLElement>('.fp-switch')) {
-      sw.setAttribute('aria-checked', String(s[sw.dataset.k as 'invertY' | 'leftHanded']));
+      sw.setAttribute('aria-checked', String(s[sw.dataset.k as 'invertY' | 'leftHanded' | 'showFps']));
     }
     for (const b of this.pause.querySelectorAll<HTMLElement>('[data-q]')) {
       const on = b.dataset.q === s.quality;
@@ -381,7 +386,7 @@ export class Screens {
       input.addEventListener('input', () => this.set(input.dataset.k as 'volume', Number(input.value)));
     }
     for (const sw of p.querySelectorAll<HTMLElement>('.fp-switch')) {
-      const k = sw.dataset.k as 'invertY' | 'leftHanded';
+      const k = sw.dataset.k as 'invertY' | 'leftHanded' | 'showFps';
       sw.addEventListener('click', () => this.set(k, !this.settings[k]));
     }
     for (const b of p.querySelectorAll<HTMLElement>('[data-q]')) b.addEventListener('click', () => this.set('quality', b.dataset.q as Quality));
@@ -657,7 +662,7 @@ export class Screens {
       return true;
     }
     if (cur.classList.contains('fp-switch')) {
-      const k = cur.dataset.k as 'invertY' | 'leftHanded';
+      const k = cur.dataset.k as 'invertY' | 'leftHanded' | 'showFps';
       if (dir < 0 && !this.settings[k]) return this.toNav(pad);
       this.set(k, dir > 0);
       return true;

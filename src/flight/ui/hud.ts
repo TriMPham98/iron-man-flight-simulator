@@ -58,8 +58,14 @@ const JARVIS_TAG = 'J.A.R.V.I.S.  ';
 /** The holographic bloom round the linework (a CSS filter on the canvas, composited on the GPU). */
 const GLOW = 'drop-shadow(0 0 4px rgba(90, 215, 255, 0.42))';
 /** Boot: when each panel comes up after the HUD does (s), and how long it takes. */
-const BOOT = { visor: 0, reticle: 0.1, ladder: 0.25, heading: 0.35, tapes: 0.45, status: 0.6, weapons: 0.72, radar: 0.85, suit: 1.0 } as const;
+const BOOT = { visor: 0, reticle: 0.1, ladder: 0.25, heading: 0.35, tapes: 0.45, status: 0.6, weapons: 0.72, radar: 0.85, suit: 1.0, fps: 0.95 } as const;
 const BOOT_RISE = 0.35;
+/** Frame-rate readout: frames in its sparkline, how often the number updates (s), and the frame time its graph tops out at (ms). */
+const FPS_BARS = 40;
+const FPS_SAMPLE = 0.5;
+const FPS_GRAPH_MS = 50;
+/** Frame-rate bands: cyan holding 55+, amber dipping under, red under 30. */
+const fpsColor = (fps: number) => (fps >= 55 ? CYAN : fps >= 30 ? AMBER : RED);
 /** Cheap deterministic flicker (0–1) from a time and a seed. */
 const flick = (t: number, seed: number) => {
   const v = Math.sin(Math.floor(t * 40) * 12.9898 + seed * 78.233) * 43758.5453;
@@ -279,6 +285,18 @@ export class Hud {
   private readonly maxDpr: number;
   /** 2D canvas shadowBlur halo (disabled on low quality & touch devices for frame rate). */
   shadow = true;
+  /** The frame-rate readout under the radar's shoulder (a graphics setting). */
+  showFps = true;
+  /** Wall-clock frame times (ms, a ring), the window being averaged, and what the readout shows. */
+  private readonly frameMs = new Float32Array(FPS_BARS);
+  private frameHead = 0;
+  private lastFrameAt = 0;
+  private fpsWindow = 0;
+  private fpsFrames = 0;
+  private fpsWorst = 0;
+  private fpsShown = 0;
+  private msShown = 0;
+  private lowShown = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement, opts: { maxDpr?: number } = {}) {
     this.maxDpr = opts.maxDpr ?? 2;
@@ -480,6 +498,7 @@ export class Hud {
 
   draw(dt: number, cam: THREE.PerspectiveCamera, m: FlightModel, combat: Combat, ground: GroundProbe, helmet: boolean): void {
     this.time += dt;
+    this.sampleFrame();
     this.killFlash = Math.max(0, this.killFlash - dt * 2);
     this.hitMarker = Math.max(0, this.hitMarker - dt * 4);
     this.recoil = Math.max(0, this.recoil - dt * 6);
@@ -571,11 +590,84 @@ export class Hud {
     this.drawBanner(g, s);
     this.drawSummary(g, dt, s);
     this.drawAwards(g, s);
+    if (this.showFps) this.panel('fps', 30 * s, 0, () => this.drawFps(g, s));
     g.restore();
     if (combat.lost) this.drawLost(g, combat, cx, cy, s);
     g.restore();
     g.globalAlpha = 1;
     this.drawGlitch(g, s, helmet && combat.armor < 0.32 ? (0.32 - combat.armor) / 0.32 : 0);
+  }
+
+  /** Times this frame off the wall clock (the sim's dt is clamped and stops on pause). */
+  private sampleFrame(): void {
+    const now = performance.now();
+    const ms = now - this.lastFrameAt;
+    this.lastFrameAt = now;
+    // (the first frame, or back from a hidden tab: not a frame worth counting)
+    if (ms <= 0 || ms > 1000) return;
+    this.frameMs[this.frameHead] = ms;
+    this.frameHead = (this.frameHead + 1) % FPS_BARS;
+    this.fpsWindow += ms;
+    this.fpsFrames++;
+    this.fpsWorst = Math.max(this.fpsWorst, ms);
+    if (this.fpsWindow < FPS_SAMPLE * 1000) return;
+    this.msShown = this.fpsWindow / this.fpsFrames;
+    this.fpsShown = 1000 / this.msShown;
+    this.lowShown = 1000 / this.fpsWorst;
+    this.fpsWindow = 0;
+    this.fpsFrames = 0;
+    this.fpsWorst = 0;
+  }
+
+  /**
+   * Frame rate on a chip of glass at the radar's left shoulder: the rate,
+   * a sparkline of the last frames' times against a 60 fps line, and the
+   * mean frame time and the window's worst frame. Bands go amber and red.
+   */
+  private drawFps(g: CanvasRenderingContext2D, s: number): void {
+    const w = 104 * s;
+    const h = 54 * s;
+    const x = this.w - 40 * s - 124 * s - 18 * s - w;
+    // (clear of the heading tape on a narrow view: tuck under it)
+    const y = this.w / 2 + 180 * s > x ? 80 * s : 22 * s;
+    this.glass(g, x, y, w, h, s, true);
+    const pad = 9 * s;
+    const fps = this.fpsShown;
+    const col = fps > 0 ? fpsColor(fps) : CYAN_DIM;
+    this.text(g, 'FPS', x + pad, y + 12 * s, 7.5 * s, CYAN_LABEL, 'left', JARVIS);
+    this.text(g, fps > 0 ? `${Math.round(fps)}` : '--', x + w - pad - 10 * s, y + 13 * s, 15 * s, fps > 0 && fps < 30 && Math.sin(this.time * 8) > 0 ? WHITE : col, 'right');
+    // Sparkline: oldest on the left, a bar per frame, taller is slower
+    const gx = x + pad;
+    const gw = w - 2 * pad;
+    const gy = y + 36 * s;
+    const gh = 12 * s;
+    const bw = gw / FPS_BARS;
+    this.crisp(g, () => {
+      g.fillStyle = CYAN_FAINT;
+      g.fillRect(gx, gy, gw, 1);
+      for (let i = 0; i < FPS_BARS; i++) {
+        const ms = this.frameMs[(this.frameHead + i) % FPS_BARS];
+        if (ms <= 0) continue;
+        const bh = Math.max(1, Math.min(1, ms / FPS_GRAPH_MS) * gh);
+        g.fillStyle = i === FPS_BARS - 1 ? WHITE : fpsColor(1000 / ms);
+        g.globalAlpha *= 0.75;
+        g.fillRect(gx + i * bw, gy - bh, Math.max(1, bw - 1 * s), bh);
+        g.globalAlpha /= 0.75;
+      }
+      // The 60 fps line (dashed): bars over it are frames that missed
+      const ly = Math.round(gy - (1000 / 60 / FPS_GRAPH_MS) * gh) + 0.5;
+      g.strokeStyle = CYAN_DIM;
+      g.lineWidth = 1;
+      g.setLineDash([2 * s, 2 * s]);
+      g.beginPath();
+      g.moveTo(gx, ly);
+      g.lineTo(gx + gw, ly);
+      g.stroke();
+      g.setLineDash([]);
+    });
+    const ms = this.msShown > 0 ? this.msShown.toFixed(1) : '--';
+    this.text(g, `${ms} MS`, gx, y + h - 8 * s, 7.5 * s, CYAN_LABEL, 'left');
+    this.text(g, `LOW ${this.lowShown > 0 ? Math.round(this.lowShown) : '--'}`, gx + gw, y + h - 8 * s, 7.5 * s, this.lowShown > 0 ? fpsColor(this.lowShown) : CYAN_DIM, 'right');
   }
 
   /** Runs a panel's drawing as it boots: flickering on and settling in from (dx, dy). */
