@@ -62,7 +62,8 @@ void main() {
   float cliffH = mix(5.0, 62.0 + 46.0 * fbm(q / 900.0, 4), cliffy);
   // The house's bluff: a clean 50 m drop with nothing between it and the sea
   cliffH = mix(50.0, cliffH, smoothstep(250.0, 1100.0, homeD));
-  float shoreW = mix(220.0, 38.0, cliffy);
+  float cliffShore = mix(38.0, 56.0, smoothstep(300.0, 1100.0, homeD));
+  float shoreW = mix(220.0, cliffShore, cliffy);
   float land = smoothstep(-shoreW * 0.25, shoreW, d);
 
   // Foothills climb straight off the bluffs into the range behind: the
@@ -100,9 +101,9 @@ void main() {
   float pad = 1.0 - smoothstep(55.0, 180.0, length(vec2(dot(hr, vec2(cn.y, -cn.x)), across * (across > 0.0 ? 3.2 : 1.0))));
   h = mix(h, uHomeH, pad * pad * (3.0 - 2.0 * pad));
 
-  // Past the edge of the map everything slips under the sea
+  // Past the edge of the map everything slips under the sea (kept tight to the rim so inland valleys stay solid)
   vec2 e = abs(vUv - 0.5) * 2.0;
-  float edge = smoothstep(1.0, 0.84, max(e.x, e.y));
+  float edge = smoothstep(1.0, 0.91, max(e.x, e.y));
   h = mix(-140.0, h, edge);
 
   gl_FragColor = vec4(h, 0.0, 0.0, 1.0);

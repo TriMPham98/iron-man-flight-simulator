@@ -28,6 +28,8 @@ interface Node {
   level: number;
   minY: number;
   maxY: number;
+  /** True when the node straddles the shoreline or steep relief that needs finer triangles. */
+  refine: boolean;
   children: Node[] | null;
 }
 
@@ -90,9 +92,9 @@ const VERT_BODY = /* glsl */ `
   float dist = distance(vec3(world.x, h0, world.y), uEye);
   float morph = aPatch.w >= ${LEVELS - 1}.0 ? 0.0 : clamp((dist - range * 0.72) / (range * 0.26), 0.0, 1.0);
   // Odd vertices slide onto their even neighbour: the coarser grid.
-  // Ring 1 performs a two-stage 4x morph so its 8 m grid meets ring 2's 32 m grid seamlessly.
+  // Ring 3 performs a two-stage 4x morph so its 32 m grid meets ring 4's 128 m grid seamlessly.
   vec2 odd = fract(grid * 0.5) * 2.0;
-  if (abs(aPatch.w - 1.0) < 0.5) {
+  if (abs(aPatch.w - 3.0) < 0.5) {
     float m1 = clamp(morph * 2.0, 0.0, 1.0);
     float m2 = clamp(morph * 2.0 - 1.0, 0.0, 1.0);
     vec2 g1 = grid - odd * m1;
@@ -407,7 +409,7 @@ export class Terrain {
   /** Quadtree with per-node height bounds from the heightfield. */
   private buildTree(): Node {
     const make = (x: number, z: number, size: number, level: number): Node => {
-      const node: Node = { x, z, size, level, minY: 0, maxY: 0, children: null };
+      const node: Node = { x, z, size, level, minY: 0, maxY: 0, refine: false, children: null };
       if (level > 0) {
         const h = size / 2;
         node.children = [
@@ -418,6 +420,7 @@ export class Terrain {
         ];
         node.minY = Math.min(...node.children.map((c) => c.minY));
         node.maxY = Math.max(...node.children.map((c) => c.maxY));
+        node.refine = node.children.some((c) => c.refine);
       } else {
         // Bounds of the texels under the leaf (plus a texel either side for the spline)
         let lo = Infinity;
@@ -433,9 +436,10 @@ export class Terrain {
             if (y > hi) hi = y;
           }
         }
-        // Margin for the close-up crags the base relief doesn't carry
-        node.minY = lo - 8;
-        node.maxY = hi + 8;
+        // Margin for close-up crags and spline relief so steep ridges never frustum-cull early
+        node.minY = lo - 16;
+        node.maxY = hi + 16;
+        node.refine = (lo <= 6 && hi >= -6) || hi - lo > size * 0.35;
       }
       return node;
     };
@@ -456,12 +460,12 @@ export class Terrain {
   }
 
   private add(n: Node, lod: number, child: boolean, ox = n.x, oz = n.z): void {
-    const far = lod >= 2;
+    const far = lod >= 4;
     const geo = far ? (child ? this.quarter : this.halfFar) : child ? this.halfNear : this.full;
     const count = far ? (child ? this.quarterCount : this.halfFarCount) : child ? this.halfNearCount : this.fullCount;
     if (count >= MAX_PATCHES) return;
     const attr = geo.getAttribute('aPatch') as THREE.InstancedBufferAttribute;
-    // Far rings (lod >= 2) step to 2x coarser vertex spacing (halfFar on full nodes, quarter on child quarters)
+    // Far rings (lod >= 4) step to 2x coarser vertex spacing; near/mid rings keep full density for crisp coasts & ridges
     const spacing = (LEAF * 2 ** lod) / (far ? CELLS / 2 : CELLS);
     attr.setXYZW(count, ox, oz, spacing, lod);
     if (far) {
@@ -474,11 +478,18 @@ export class Terrain {
     }
   }
 
+  private rangeFor(n: Node, lod: number): number {
+    // 1.4x stays below the 0.72 * 2 = 1.44 morph-start of the parent LOD, keeping transitions crack-free
+    return n.refine && lod <= 4 ? this.ranges[lod] * 1.4 : this.ranges[lod];
+  }
+
   private select(n: Node, eye: THREE.Vector3): boolean {
     const lod = n.level;
-    if (this.boxDist2(n, eye) > this.ranges[lod] ** 2) return false;
-    if (!this.inFrustum(n)) return true;
-    if (lod === 0 || this.boxDist2(n, eye) > this.ranges[lod - 1] ** 2) {
+    const d2 = this.boxDist2(n, eye);
+    if (d2 > this.rangeFor(n, lod) ** 2) return false;
+    // Deep ocean floor is completely opaque under water shading: skip emitting patches for it
+    if (n.maxY < -8 || !this.inFrustum(n)) return true;
+    if (lod === 0 || d2 > this.rangeFor(n, lod - 1) ** 2) {
       this.add(n, lod, false);
       return true;
     }
@@ -486,13 +497,14 @@ export class Terrain {
       // A child out of the finer range is drawn at this node's LOD: a
       // half-res (near) or quarter-res (far) patch over the child's quarter
       if (!this.select(c, eye)) {
-        if (this.inFrustum(c)) this.add(c, lod, true);
+        if (c.maxY >= -8 && this.inFrustum(c)) this.add(c, lod, true);
       }
     }
     return true;
   }
 
   update(camera: THREE.Camera, time: number): void {
+    camera.updateMatrixWorld();
     const eye = camera.position;
     this._m.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this._m);
