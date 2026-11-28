@@ -30,3 +30,11 @@ Open two browser tabs to `http://localhost:5173/flight.html`, press **M** (Multi
    VITE_MP_SERVER=wss://stark-flight-mp.<your-subdomain>.workers.dev
    ```
 4. Redeploy on Vercel. Both players can now join via `?room=XXXXX` invite links from anywhere!
+
+## Reconnects
+
+A client whose link drops retries on its own (up to 10 times, backing off) and
+asks for its old seat with `/room/CODE?rejoin=<its id>`. `worker.ts` hands the
+seat back (same id, role and suit) and tells the other pilot `peerUpdated`, not
+`peerLeft`. `dev-relay.mjs` doesn't do the seat swap: locally a reconnect is an
+ordinary join, so it only succeeds while the room has a free seat.

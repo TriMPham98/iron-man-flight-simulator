@@ -64,10 +64,16 @@ export function resolveServerBaseUrl(override?: string): string | null {
   return null;
 }
 
-function toWsUrl(base: string, room: string): string {
+function toWsUrl(base: string, room: string, rejoin = ''): string {
   const wsBase = base.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://');
-  return `${wsBase}/room/${encodeURIComponent(sanitizeRoomCode(room) || 'MALIBU')}`;
+  const url = `${wsBase}/room/${encodeURIComponent(sanitizeRoomCode(room) || 'MALIBU')}`;
+  return rejoin ? `${url}?rejoin=${encodeURIComponent(rejoin)}` : url;
 }
+
+/** Reconnect attempts after a dropped link (phones lose the socket on a tower switch or a locked screen). */
+const RECONNECT_TRIES = 10;
+/** A link that has heard nothing (not even a pong to the 2 s ping) for this long is dead (ms). */
+const SILENT_MS = 9000;
 
 /**
  * Production & local-relay WebSocket transport targeting `server/worker.ts`
@@ -85,17 +91,32 @@ export class WebSocketTransport implements NetTransport {
 
   private ws: WebSocket | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  /** The room we mean to be in (null once the pilot leaves). */
+  private opts: ConnectOptions | null = null;
+  /** Our id in the room, so a reconnect takes back our own seat. */
+  private selfId = '';
+  private tries = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastHeard = 0;
+  private lastTick = 0;
 
   connect(opts: ConnectOptions): void {
     this.disconnect();
+    this.opts = opts;
+    this.selfId = '';
+    this.tries = 0;
+    this.open(opts);
+  }
+
+  private open(opts: ConnectOptions): void {
     const base = resolveServerBaseUrl(opts.serverUrl);
     if (!base) {
       this.setStatus('error', 'NO SERVER CONFIGURED · SET VITE_MP_SERVER OR USE LOCAL 2-TAB');
       return;
     }
-    const url = toWsUrl(base, opts.room);
+    const url = toWsUrl(base, opts.room, this.selfId);
     this.endpointLabel = base.replace(/^wss?:\/\//, '');
-    this.setStatus('connecting', `LINKING ${this.endpointLabel}`);
+    this.setStatus('connecting', this.tries > 0 ? `RECONNECTING (${this.tries}/${RECONNECT_TRIES})` : `LINKING ${this.endpointLabel}`);
 
     let ws: WebSocket;
     try {
@@ -109,6 +130,7 @@ export class WebSocketTransport implements NetTransport {
 
     ws.addEventListener('open', () => {
       if (this.ws !== ws) return;
+      this.lastHeard = performance.now();
       this.setStatus('connected', 'ONLINE');
       this.sendControl({
         type: 'hello',
@@ -121,6 +143,7 @@ export class WebSocketTransport implements NetTransport {
 
     ws.addEventListener('message', (ev) => {
       if (this.ws !== ws) return;
+      this.lastHeard = performance.now();
       if (ev.data instanceof ArrayBuffer) {
         this.onBinary(ev.data);
         return;
@@ -132,6 +155,10 @@ export class WebSocketTransport implements NetTransport {
         } catch {
           return;
         }
+        if (parsed.type === 'welcome') {
+          this.selfId = parsed.id;
+          this.tries = 0;
+        }
         if (parsed.type === 'pong') {
           const rtt = Math.max(0, Math.round(performance.now() - parsed.t));
           this.rttMs = this.rttMs > 0 ? Math.round(this.rttMs * 0.65 + rtt * 0.35) : rtt;
@@ -142,23 +169,58 @@ export class WebSocketTransport implements NetTransport {
 
     ws.addEventListener('close', (ev) => {
       if (this.ws !== ws) return;
-      this.stopPing();
-      this.ws = null;
-      // Keep the actionable 'error' detail (e.g. "RUN npm run mp:dev") instead of
-      // overwriting it with a generic LINK LOST (1006) when the failed socket closes.
-      if (this.status !== 'disconnected' && this.status !== 'error') {
-        const reason = ev.code === 1000 ? 'DISCONNECTED' : `LINK LOST (${ev.code})`;
-        this.setStatus('disconnected', reason);
-      }
+      this.lost(ev.code);
     });
 
     ws.addEventListener('error', () => {
       if (this.ws !== ws) return;
-      this.setStatus('error', `UNREACHABLE (${this.endpointLabel}) · RUN npm run mp:dev`);
+      // Never reached the relay this session: say how to start it rather than retrying
+      if (!this.selfId) {
+        this.opts = null;
+        this.stopPing();
+        this.ws = null;
+        this.setStatus('error', `UNREACHABLE (${this.endpointLabel}) · RUN npm run mp:dev`);
+        return;
+      }
+      this.lost(1006);
     });
   }
 
+  /** The link dropped without the pilot leaving: try the same seat again, backing off. */
+  private lost(code: number): void {
+    const ws = this.ws;
+    this.stopPing();
+    this.ws = null;
+    try {
+      ws?.close();
+    } catch {
+      /* already closed */
+    }
+    const opts = this.opts;
+    if (!opts || code === 1000) {
+      if (this.status !== 'disconnected') this.setStatus('disconnected', code === 1000 ? 'DISCONNECTED' : `LINK LOST (${code})`);
+      return;
+    }
+    if (this.tries >= RECONNECT_TRIES) {
+      this.opts = null;
+      this.setStatus('disconnected', `LINK LOST (${code}) · REJOIN THE ROOM`);
+      return;
+    }
+    this.tries++;
+    this.setStatus('connecting', `RECONNECTING (${this.tries}/${RECONNECT_TRIES})`);
+    const delay = Math.min(500 * 2 ** (this.tries - 1), 5000);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.opts === opts) this.open(opts);
+    }, delay);
+  }
+
   disconnect(): void {
+    this.opts = null;
+    if (this.retryTimer !== null) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     this.stopPing();
     const ws = this.ws;
     this.ws = null;
@@ -188,7 +250,19 @@ export class WebSocketTransport implements NetTransport {
   private startPing(): void {
     this.stopPing();
     this.sendControl({ type: 'ping', t: performance.now() });
+    this.lastTick = performance.now();
     this.pingTimer = setInterval(() => {
+      // A page that was frozen (building a suit, compiling shaders, in the
+      // background) heard nothing because it wasn't listening: start the
+      // silence count over rather than calling a live link dead
+      const now = performance.now();
+      if (now - this.lastTick > 4000) this.lastHeard = now;
+      this.lastTick = now;
+      // A socket can die without closing (the phone changed networks): call it lost
+      if (now - this.lastHeard > SILENT_MS) {
+        this.lost(4001);
+        return;
+      }
       this.sendControl({ type: 'ping', t: performance.now() });
     }, 2000);
   }

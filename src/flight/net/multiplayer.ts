@@ -680,12 +680,14 @@ export class MultiplayerSession {
   private handleControl(msg: ServerControlMessage): void {
     switch (msg.type) {
       case 'welcome': {
+        // The link dropped and the relay gave our seat back: the fight carries on as it was
+        const rejoined = this.selfId !== '' && msg.id === this.selfId;
         this.selfId = msg.id;
         this.room = msg.room;
         this.role = msg.role;
         this.mode = msg.mode;
         // Joining a host's room: their enemies replace ours
-        this.enemies?.reset(msg.role);
+        if (!rejoined) this.enemies?.reset(msg.role);
         // Sync procedural ocean clock so wave swell matches across both clients
         if (Number.isFinite(msg.worldTime)) {
           this.game.world.time = msg.worldTime;
@@ -694,11 +696,15 @@ export class MultiplayerSession {
           this.spawnPeer(msg.peers[0]);
         }
         // Offset standing position on the terrace so the two suits don't overlap
-        if (this.game.onPad) {
+        if (this.game.onPad && !rejoined) {
           this.applyPadSpawnOffset();
         }
         // Push our selected suit so peer sees the right armor immediately
         this.transport.sendControl({ type: 'select', suit: this.suit, mode: this.mode });
+        if (rejoined) {
+          this.notify();
+          break;
+        }
         this.game.events.emit('jarvis', {
           text:
             msg.peers.length > 0

@@ -3,7 +3,8 @@
  * Zero-dependency local WebSocket room relay for testing Iron Man + War Machine
  * multiplayer on localhost without needing Wrangler or any npm packages.
  *
- * Implements the exact same `/room/:code` protocol as `server/worker.ts`.
+ * Implements the same `/room/:code` protocol as `server/worker.ts`, except the
+ * `?rejoin=` seat swap (see README: a reconnect here is an ordinary join).
  * Run with: `npm run mp:dev` (listens on ws://localhost:8787).
  */
 
