@@ -98,7 +98,8 @@ export class Input {
 
   constructor(private readonly target: HTMLElement) {
     window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
+      // Typing in a field (the room code) is text, not flying: no keys held, nothing swallowed
+      if (e.repeat || isTextEntry(e.target)) return;
       this.keys.add(e.code);
       this.pressedQueue.add(e.code);
       if (e.code === 'KeyA' || e.code === 'KeyD' || e.code === 'KeyQ') {
@@ -261,4 +262,11 @@ function rampTo(x: number, goal: number, dt: number): number {
 function ease(x: number): number {
   const a = Math.min(1, Math.abs(x));
   return Math.sign(x) * a * a * (3 - 2 * a);
+}
+
+/** A field the keyboard is typing into. */
+function isTextEntry(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el || typeof el.tagName !== 'string') return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true;
 }

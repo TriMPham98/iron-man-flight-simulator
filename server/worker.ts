@@ -86,7 +86,40 @@ export class FlightRoom implements DurableObject {
     const url = new URL(request.url);
     this.roomCode = sanitizeRoom(url.searchParams.get('room') ?? this.roomCode);
 
-    const existing = this.ctx.getWebSockets();
+    // A seat whose socket we've let go of (see below) no longer counts
+    let existing = this.ctx.getWebSockets().filter((ws) => this.readPeer(ws) !== null);
+
+    // A pilot whose phone dropped the link comes back for their own seat: the
+    // old socket may not have closed yet (a dead mobile connection can linger),
+    // so it is let go quietly (no peerLeft) and the pilot keeps id, role and suit
+    const rejoin = url.searchParams.get('rejoin');
+    const stale = rejoin ? existing.find((ws) => this.readPeer(ws)?.id === rejoin) : undefined;
+    if (stale) {
+      const back = this.readPeer(stale)!;
+      stale.serializeAttachment(null);
+      try {
+        stale.close(4000, 'replaced');
+      } catch {
+        /* already gone */
+      }
+      existing = existing.filter((ws) => ws !== stale);
+      const [client, server] = Object.values(new WebSocketPair());
+      this.ctx.acceptWebSocket(server);
+      server.serializeAttachment(back);
+      this.sendJson(server, {
+        type: 'welcome',
+        id: back.id,
+        room: this.roomCode,
+        role: back.role,
+        suit: back.suit,
+        mode: back.mode,
+        peers: existing.map((ws) => this.readPeer(ws)).filter((p): p is PeerAttachment => p !== null),
+        worldTime: (Date.now() - this.startedAt) / 1000,
+      });
+      for (const other of existing) this.sendJson(other, { type: 'peerUpdated', peer: back });
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
     if (existing.length >= MAX_PLAYERS) {
       return new Response('Room full (max 2 pilots)', { status: 409, headers: CORS_HEADERS });
     }
@@ -220,7 +253,14 @@ export class FlightRoom implements DurableObject {
   private handleDisconnect(ws: WebSocket): void {
     const leaving = this.readPeer(ws);
     if (!leaving) return;
-    const remaining = this.ctx.getWebSockets().filter((s) => s !== ws);
+    // Free the seat at once (a closing socket can still be listed for a while)
+    try {
+      ws.serializeAttachment(null);
+      ws.close(1000, 'bye');
+    } catch {
+      /* already closed */
+    }
+    const remaining = this.ctx.getWebSockets().filter((s) => s !== ws && this.readPeer(s) !== null);
     let newHostId: string | undefined;
 
     if (leaving.role === 'host' && remaining.length > 0) {
